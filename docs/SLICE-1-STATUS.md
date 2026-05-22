@@ -43,9 +43,8 @@ Prereqs (one-time):
 ```bash
 brew install llama.cpp ollama
 mkdir -p models
-# Download a Jina v4 GGUF into models/, e.g.:
-#   huggingface-cli download <jinaai-org>/jina-embeddings-v4-GGUF \
-#       jina-embeddings-v4.Q4_K_M.gguf --local-dir models/
+# Download Jina models into models/ directory:
+#   ./scripts/download-models.sh
 ```
 
 Then:

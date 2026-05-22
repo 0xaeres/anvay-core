@@ -70,10 +70,8 @@ uv sync                               # installs everything from uv.lock
 # One-time: local model servers
 brew install llama.cpp ollama
 mkdir -p models
-# Download into models/:
-#   jina-embeddings-v4.Q4_K_M.gguf   (embedder)
-#   jina-reranker-v3.Q4_K_M.gguf     (reranker)
-# From: https://huggingface.co/jinaai
+# Download Jina models into models/ directory:
+./scripts/download-models.sh
 ```
 
 ### Configure
