@@ -3,9 +3,10 @@
 Launched by an MCP client (e.g. Claude Desktop) as a subprocess. Each request
 is served against a single product configured at launch:
 
-  uv run python -m nexus.mcp_server.server --product forge
+  uv run python -m nexus.mcp_server.server --product <your-product-id> --user <user-id>
 
-Exposes the 5 tools and 4 resources defined in ENGINEERING.md §8.
+Exposes the skill/corpus tools + resources from ENGINEERING.md §8, plus the
+Assistant tools (Jira/Confluence query + action) from docs/ASSISTANT-LAYER.md §11.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Resource, TextContent, Tool
 
 from nexus.config import NexusConfig
+from nexus.mcp_server import assistant_tools as nx_assistant
 from nexus.mcp_server import tools as nx_tools
 
 log = logging.getLogger("nexus.mcp_server")
@@ -32,9 +34,12 @@ log = logging.getLogger("nexus.mcp_server")
 # ---------------------------------------------------------------- factory
 
 
-def _build_server(*, product: str, config: NexusConfig) -> Server:
+def _build_server(*, product: str, user: str, config: NexusConfig) -> Server:
     server: Server = Server("nexus")
     state = nx_tools.ToolState(product=product, config=config)
+    assistant_state = nx_assistant.AssistantToolState(
+        product=product, user=user, config=config
+    )
 
     # ---- tool registry ----
 
@@ -114,6 +119,71 @@ def _build_server(*, product: str, config: NexusConfig) -> Server:
                     "required": ["query"],
                 },
             ),
+            # ---- Assistant layer (docs/ASSISTANT-LAYER.md §11) ----
+            Tool(
+                name="assistant_ask",
+                description=(
+                    "Ask the Nexus Assistant a question about this product's Jira, "
+                    "Confluence, or codebase. It may also DRAFT (never apply) "
+                    "Jira/Confluence changes — returned as an action_proposal you "
+                    "must surface to your user and confirm via assistant_confirm_action."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "conversation_id": {"type": "string"},
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="assistant_get_jira_issue",
+                description="Fetch a single Jira issue by key (e.g. PROJ-123).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"key": {"type": "string"}},
+                    "required": ["key"],
+                },
+            ),
+            Tool(
+                name="assistant_search_confluence",
+                description="Search Confluence pages, optionally scoped to a space key.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "space": {"type": "string"},
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="assistant_list_actions",
+                description=(
+                    "List drafted action proposals (subtask/transition/comment/page "
+                    "changes) awaiting confirmation."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "default": "pending"}
+                    },
+                },
+            ),
+            Tool(
+                name="assistant_confirm_action",
+                description=(
+                    "Execute a drafted action proposal. THIS PERFORMS WRITES to "
+                    "Jira/Confluence — only call it after your user has reviewed and "
+                    "approved the proposal's preview."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {"proposal_id": {"type": "string"}},
+                    "required": ["proposal_id"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -132,6 +202,24 @@ def _build_server(*, product: str, config: NexusConfig) -> Server:
                 payload = await nx_tools.query_code_context(state, **args)
             elif name == "hybrid_search_corpus":
                 payload = await nx_tools.hybrid_search_corpus(state, **args)
+            elif name == "assistant_ask":
+                payload = await nx_assistant.assistant_ask(assistant_state, **args)
+            elif name == "assistant_get_jira_issue":
+                payload = await nx_assistant.assistant_get_jira_issue(
+                    assistant_state, **args
+                )
+            elif name == "assistant_search_confluence":
+                payload = await nx_assistant.assistant_search_confluence(
+                    assistant_state, **args
+                )
+            elif name == "assistant_list_actions":
+                payload = await nx_assistant.assistant_list_actions(
+                    assistant_state, **args
+                )
+            elif name == "assistant_confirm_action":
+                payload = await nx_assistant.assistant_confirm_action(
+                    assistant_state, **args
+                )
             else:
                 payload = {"error": f"unknown tool: {name}"}
         except Exception as e:
@@ -213,8 +301,17 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Nexus MCP server (stdio).")
     p.add_argument(
         "--product",
-        default=os.environ.get("NEXUS_PRODUCT", "forge"),
-        help="Default product ID for tool/resource calls.",
+        default=os.environ.get("NEXUS_PRODUCT"),
+        required=not os.environ.get("NEXUS_PRODUCT"),
+        help="Product ID to serve (required). Set via --product or NEXUS_PRODUCT env var.",
+    )
+    p.add_argument(
+        "--user",
+        default=os.environ.get("NEXUS_USER", "admin"),
+        help=(
+            "User identity for the assistant_* tools — drives per-user OAuth "
+            "attribution. Set via --user or NEXUS_USER env var."
+        ),
     )
     p.add_argument(
         "--config",
@@ -227,7 +324,7 @@ def _parse_args() -> argparse.Namespace:
 async def amain() -> None:
     args = _parse_args()
     config = NexusConfig.load(args.config)
-    server = _build_server(product=args.product, config=config)
+    server = _build_server(product=args.product, user=args.user, config=config)
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
 

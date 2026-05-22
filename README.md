@@ -1,130 +1,286 @@
-# Nexus
+# Nexus — Context Engine for Engineering Teams
 
-Sovereign, MCP-native skill server for your codebase. Ingests code + docs through MCP connectors, runs an LLM Council to draft validated skills, and serves them back via MCP to any AI client.
+Nexus is a **sovereign, MCP-native context engine** for your codebase. It ingests your code and docs, runs an LLM Council to draft curated skill files with human approval, and serves those skills back via MCP to any AI client (Claude, Cursor, Continue, etc.).
 
-Full spec: [ENGINEERING.md](./ENGINEERING.md). Per-slice status notes: [`docs/`](./docs).
+Every AI tool your team uses gets grounded in *your* actual code and conventions — not hallucinated from general training data.
 
-## 15-minute quickstart (Apple Silicon dev)
+It also ships an **Assistant layer** — a conversational + action interface that queries Jira and Confluence and takes human-confirmed actions (create subtasks, transition issues, update docs), reachable from coding agents (via MCP) and a chat panel in the web UI. See [`docs/ASSISTANT-LAYER.md`](./docs/ASSISTANT-LAYER.md).
+
+```
+Your codebase + docs
+        │
+        ▼
+  Nexus ingests (MCP connectors: GitHub, Jira, Confluence)
+        │
+        ▼
+  LLM Council drafts skill files  ←  human reviews + approves in the UI
+        │
+        ▼
+  Skills served via MCP to Claude / Cursor / Continue / any agent
+        │
+        ▼
+  Agents give grounded, cited, org-specific answers
+```
+
+---
+
+## What is a skill file?
+
+A skill file is a plain Markdown + YAML document that tells an agent *how to work in your codebase*: patterns to follow, pitfalls to avoid, architectural context, domain vocabulary. Skills are versioned, human-ratified, and composable.
+
+```yaml
+---
+kind: master          # one master per product; describes the product itself
+product: my-api
+version: 3
+confidence: 0.91
+composes_with: []
+provenance:
+  validated_by: alice@example.com
+  validated_at: 2026-05-18T00:00:00Z
+---
+
+# My API — Master Skill
+
+## Architecture
+The API is a FastAPI + PostgreSQL service…
+
+## Domain Vocabulary
+| Term | Meaning |
+|---|---|
+| Workspace | A tenant-scoped container for all resources |
+
+## Positive Patterns
+Always use `get_or_404` for resource lookups. See [src/deps.py:42].
+
+## Anti-Patterns
+Never access `db.session` outside a dependency — session lifetime is managed by the DI container.
+```
+
+---
+
+## Local setup (Apple Silicon dev)
+
+### Prerequisites
 
 ```bash
-# 1. Clone + Python deps
-git clone <this-repo> && cd nexus
-uv sync
+# Python env
+uv sync                               # installs everything from uv.lock
 
-# 2. Local LLM serving prereqs (one-time)
+# One-time: local model servers
 brew install llama.cpp ollama
 mkdir -p models
-# Download GGUFs into models/:
-#   jina-embeddings-v4.Q4_K_M.gguf
-#   jina-reranker-v3.Q4_K_M.gguf
+# Download into models/:
+#   jina-embeddings-v4.Q4_K_M.gguf   (embedder)
+#   jina-reranker-v3.Q4_K_M.gguf     (reranker)
+# From: https://huggingface.co/jinaai
+```
 
-# 3. Configure
+### Configure
+
+```bash
 cp nexus.yaml.example nexus.yaml
 cp .env.example .env
-# Edit .env: DEEPINFRA_API_KEY, GITHUB_TOKEN, GITHUB_WEBHOOK_SECRET, NEO4J_PASSWORD
+```
 
-# 4. Infrastructure (Qdrant + Neo4j + Langfuse + Postgres)
+Edit `nexus.yaml`:
+- `skills_repo` — a Git repo where approved skills are pushed (e.g. `git@github.com:myorg/nexus-skills.git`)
+- `connectors` — add your GitHub org/repos, Confluence spaces, Jira project keys
+
+Edit `.env`:
+- `DEEPINFRA_API_KEY` — council + PR review LLMs (get one at deepinfra.com)
+- `GITHUB_TOKEN` — for the GitHub connector
+- `GITHUB_WEBHOOK_SECRET` — for PR review automation (can leave blank for local dev)
+
+### Start infrastructure
+
+```bash
+# Qdrant (vector store) + Neo4j (graph) + Langfuse (tracing) + Postgres
 docker compose up -d
 
-# 5. Local model services (llama.cpp embedder + reranker + Ollama)
+# Local model servers (runs on Metal — keep these terminals open)
 make services-up
+```
 
-# 6. Run the API
+### Run the API
+
+```bash
 uv run uvicorn nexus.api.app:app --port 8000 --reload
-
-# 7. Smoke
-curl localhost:8000/health
-# -> {"status":"ok"}
+# → http://localhost:8000/health  {"status":"ok"}
 ```
 
-## End-to-end flows
+### Run the UI
 
-### Ingest a codebase
 ```bash
-uv run nexus ingest --product forge --path /path/to/your/repo
+cd ../nexus-ui
+npm install
+npm run dev
+# → http://localhost:3000
 ```
 
-### Draft a skill via Council
+On first boot there are no products. The app opens the onboarding wizard at `http://localhost:3000/onboarding` — create your first product there.
+
+---
+
+## Docker (all-in-one)
+
 ```bash
-uv run nexus council draft --product forge --topic "PDA seed validation" --kind product_domain
-# -> proposal pending at http://localhost:3000
+docker compose --profile full up -d
 ```
 
-### Approve from the UI
+This brings up Qdrant, Neo4j, Langfuse, Postgres, **and** the Nexus API. The UI still runs from `nexus-ui/` with `npm run dev`.
+
+> **Apple Silicon:** llama.cpp embedding/reranker services always run on the host (Metal acceleration). For Linux + NVIDIA, point `models.embedding.url` / `models.reranker.url` at any OpenAI-compatible server.
+
+---
+
+## End-to-end flow
+
+### 1. Onboard a product via the UI
+
+Visit `http://localhost:3000/onboarding` — the 4-step wizard:
+1. Name your product
+2. Connect sources (GitHub repo, Confluence space, etc.)
+3. Trigger ingestion (watch the live sync log)
+4. Start a council session to draft the master skill
+
+### 2. Onboard via CLI (scriptable)
+
 ```bash
-cd ../nexus-ui && npm run dev
-# Visit http://localhost:3000/p/forge/proposals
+# Ingest a local codebase
+uv run nexus ingest --product <your-product-id> --path /path/to/repo
+
+# Draft a skill via Council
+uv run nexus council draft \
+  --product <your-product-id> \
+  --topic "authentication middleware" \
+  --kind product_domain
+
+# Approve from the UI
+open http://localhost:3000/p/<your-product-id>/proposals
 ```
 
-### Use Nexus from Claude Desktop
+Replace `<your-product-id>` with the product ID you created in the UI (e.g. `my-api`, `backend`, whatever you named it).
+
+### 3. Use Nexus from Claude Desktop
+
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
 ```json
 {
   "mcpServers": {
     "nexus": {
       "command": "uv",
       "args": [
-        "--directory", "/path/to/nexus",
+        "--directory", "/absolute/path/to/nexus",
         "run", "nexus-mcp-server",
-        "--product", "forge"
-      ]
+        "--product", "<your-product-id>"
+      ],
+      "env": {
+        "NEXUS_CONFIG": "/absolute/path/to/nexus/nexus.yaml"
+      }
     }
   }
 }
 ```
 
-## Production deployment
+Claude Desktop will now call `find_skills`, `query_code_context`, and `hybrid_search_corpus` against your indexed codebase.
 
-The full stack runs from one Docker Compose with a profile:
+---
 
-```bash
-docker compose --profile full up -d
-# Brings up Qdrant, Neo4j, Langfuse, Postgres, AND nexus-api
+## Continuous automation
+
+Once the daemon is running (`make daemon-up`), Nexus watches your configured sources and automatically:
+
+- Re-indexes changed files within ~5 seconds of a push
+- Posts structured PR review comments citing relevant skills
+- Generates release notes on tag push
+
+These require `GITHUB_TOKEN` and a configured webhook endpoint.
+
+---
+
+## The Assistant — query and act on Jira/Confluence
+
+The Assistant layer adds a conversational + action interface on top of Nexus's knowledge:
+
+- **Ask** — "summarize JIRA-1234", "search Confluence for the on-call runbook"
+- **Act** — "break JIRA-1234 into subtasks" drafts a plan you confirm before anything is written
+
+Two ways to use it:
+
+- **Web UI** — the chat panel at `/p/<product>/assistant`
+- **Coding agents** — the Nexus MCP server exposes `assistant_ask`, `assistant_get_jira_issue`, `assistant_confirm_action`, etc., so Claude Desktop / Cursor can query and act mid-task
+
+Live Jira/Confluence access requires the Atlassian integration (`atlassian.enabled` in `nexus.yaml`) and per-user OAuth — without it the Assistant runs against stubbed data. Writes always require explicit human confirmation. Full design: [`docs/ASSISTANT-LAYER.md`](./docs/ASSISTANT-LAYER.md).
+
+---
+
+## Project layout
+
+```
+nexus/
+├── nexus/
+│   ├── api/          FastAPI routes (/products, /council, /skills, /assistant, /auth, …)
+│   ├── ingest/       Chunking, embedding, indexing pipeline
+│   ├── retrieval/    5-stage RAG: sparse+dense → classifier → HyDE → RRF → rerank
+│   ├── council/      LangGraph multi-agent council (6 agents)
+│   ├── assistant/    Assistant layer — agent loop, capabilities, action proposals
+│   ├── auth/         Per-user OAuth (Atlassian) + token encryption
+│   ├── skills/       Skill models, store, seed files
+│   ├── connectors/   MCP client (stdio + remote) + local_fs connector
+│   ├── graph/        Neo4j GraphRAG layer
+│   ├── mcp_server/   MCP server (stdio) — what Claude Desktop connects to
+│   ├── tasks/        PR review + changelog task runners
+│   ├── daemon.py     Continuous index daemon
+│   └── config.py     nexus.yaml loader
+├── evals/            RAGAS + code-retrieval eval runners + golden set
+├── tests/            104 unit + integration tests
+├── scripts/          resilience-smoke.sh, model download helpers
+├── nexus.yaml.example
+└── docker-compose.yml
 ```
 
-llama.cpp services still run on the host on Apple Silicon (Metal). For Linux + NVIDIA, point `models.embedding.url` / `models.reranker.url` at any OpenAI-compatible embedding/reranker server.
+---
 
 ## Quality gates
 
 ```bash
-# Unit + integration tests
-uv run pytest
-
-# RAGAS-style retrieval + generation eval
+uv run pytest                                               # 104 tests
 uv run python -m evals.run_ragas --golden evals/golden.jsonl
-
-# Code retrieval (nDCG@10, Recall@10, pairwise preference)
 uv run python -m evals.run_code_eval --golden evals/golden.jsonl
-
-# Resilience smoke (degraded modes)
 bash scripts/resilience-smoke.sh
 ```
 
-Gate thresholds:
-- `faithfulness >= 0.85`, `answer_relevancy >= 0.80`, `context_recall >= 0.75`
-- `nDCG@10 >= 0.75`, `Recall@10 >= 0.80`, pairwise preference `>= 0.85`
+| Metric | Gate |
+|---|---|
+| `faithfulness` | ≥ 0.85 |
+| `answer_relevancy` | ≥ 0.80 |
+| `context_recall` | ≥ 0.75 |
+| `nDCG@10` | ≥ 0.75 |
+| `Recall@10` | ≥ 0.80 |
+| Pairwise preference | ≥ 0.85 |
 
-CI: `.github/workflows/ci.yml` runs lint + tests + RAGAS regression on every PR and fails if faithfulness drops > 5% from the baseline.
+CI (`.github/workflows/ci.yml`) runs lint + tests + RAGAS regression on every PR and fails if faithfulness drops > 5% from baseline.
+
+---
 
 ## Documentation
 
-| File | Purpose |
+| File | What it covers |
 |---|---|
-| `ENGINEERING.md` | Full spec - architecture, data model, ADRs |
-| `INTEGRATION.md` | UI <-> backend cutover map |
-| `docs/SLICE-*-STATUS.md` | Per-slice delivery status |
+| [`AGENTS.md`](./AGENTS.md) | Quick orientation for AI agents & new contributors — invariants, conventions, commit checks. |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | **New contributor guide** — code map, end-to-end traces, dev workflow, recipes. Start here. |
+| [`ENGINEERING.md`](./ENGINEERING.md) | Full architecture spec, data model, ADRs, API surface |
+| [`INTEGRATION.md`](./INTEGRATION.md) | UI ↔ backend cutover map |
+| [`docs/UI-CUTOVER-STATUS.md`](./docs/UI-CUTOVER-STATUS.md) | End-to-end demo walkthrough |
+| [`docs/SLICE-*-STATUS.md`](./docs/) | Per-slice delivery notes |
+| [`docs/ASSISTANT-LAYER.md`](./docs/ASSISTANT-LAYER.md) | Design — conversational + action layer over Jira/Confluence |
+| [`docs/SLICE-8-STATUS.md`](./docs/SLICE-8-STATUS.md) | Assistant layer — delivery status (Increment 1 shipped) |
+| [`../nexus-ui/DESIGN.md`](../nexus-ui/DESIGN.md) | UI design system rules |
 
-## Slice progress
-
-- [x] Slice 0 - Foundations (project, Docker, scripts)
-- [x] Slice 1 - Ingestion via MCP
-- [x] Slice 2 - 5-stage retrieval + MCP server
-- [x] Slice 3 - LLM Council MVP (3 agents)
-- [x] Slice 4 - Adversary + approval + async kickoff
-- [x] Slice 5 - Continuous daemon + PR review + Changelog
-- [x] Slice 6 - GraphRAG + Org Library + Curator
-- [x] Slice 7 - Evals + CI + polish
+---
 
 ## License
 
-Proprietary - internal use only for now.
+Proprietary — internal use only.

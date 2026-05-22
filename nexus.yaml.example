@@ -3,7 +3,7 @@
 # light LLMs via Ollama, council LLMs via DeepInfra (cloud).
 
 # Skill repos — cloned on boot, pushed to on approve
-skills_repo: git@github.com:myorg/nexus-skills-forge.git
+skills_repo: git@github.com:myorg/nexus-skills.git
 org_skills_repo: git@github.com:nexus-community/org-skills.git
 
 hierarchy_root: ./skills           # in prod, an ephemeral clone of skills_repo
@@ -69,6 +69,10 @@ models:
     provider: deepinfra
     model: zai-org/GLM-5
     api_key: ${DEEPINFRA_API_KEY}
+  # assistant:                  # OPTIONAL — Assistant agent loop (docs/ASSISTANT-LAYER.md).
+  #   provider: deepinfra       # Falls back to `council_agents` when omitted.
+  #   model: MiniMaxAI/MiniMax-M2.5
+  #   api_key: ${DEEPINFRA_API_KEY}
   light:                        # local on Apple Silicon — relation extractor, HyDE, classifier, enricher
     provider: ollama
     model: qwen2.5:3b
@@ -128,6 +132,21 @@ server:
   host: 0.0.0.0
   port: 8000
   webhook_secret: ${GITHUB_WEBHOOK_SECRET}
+
+# ---------------------------------------------------------------- Assistant
+# Atlassian Rovo MCP Server — powers the Assistant's live Jira/Confluence read +
+# action capabilities (docs/ASSISTANT-LAYER.md §5-6). Optional: when disabled,
+# the Assistant runs against a stub connector.
+# Per-user OAuth also requires NEXUS_TOKEN_KEY in the environment (see .env.example).
+atlassian:
+  enabled: false
+  client_id: ${ATLASSIAN_CLIENT_ID}
+  client_secret: ${ATLASSIAN_CLIENT_SECRET}
+  redirect_uri: http://localhost:8000/auth/atlassian/callback
+  post_auth_redirect: http://localhost:3000/settings/org
+  # mcp_url defaults to the current Atlassian endpoint; the legacy
+  # mcp.atlassian.com/v1/sse endpoint is retired after 2026-06-30.
+  mcp_url: https://mcp.atlassian.com/v1/mcp
 
 storage:
   proposal_queue: ./data/proposals.db

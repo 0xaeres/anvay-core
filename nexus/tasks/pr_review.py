@@ -46,7 +46,10 @@ async def run_pr_review(*, payload: dict, config: NexusConfig) -> None:
         log.warning("pr_review: GITHUB_TOKEN not set; aborting")
         return
 
-    product_id = _product_for_repo(payload, default="forge")
+    product_id = _product_for_repo(payload, default=None)
+    if not product_id:
+        log.warning("pr_review: cannot determine product_id for repo; set nexus.yaml repo→product mapping")
+        return
 
     async with httpx.AsyncClient(timeout=60.0) as gh:
         gh.headers.update(
@@ -142,9 +145,9 @@ def _wrap_comment(body: str, skills: list[dict]) -> str:
     return f"{header}\n\n{body}{footer}"
 
 
-def _product_for_repo(payload: dict, *, default: str) -> str:
-    """Map a repo to a Nexus product. For Slice 5 we use a single default;
-    real mapping arrives with multi-product onboarding."""
+def _product_for_repo(payload: dict, *, default: str | None = None) -> str | None:
+    """Map a repo to a Nexus product via a GitHub topic tag 'nexus-product:<id>'.
+    Returns None when no mapping is found and no default is given."""
     repo_topics = (payload.get("repository") or {}).get("topics") or []
     for t in repo_topics:
         if t.startswith("nexus-product:"):

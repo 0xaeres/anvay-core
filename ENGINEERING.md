@@ -1,12 +1,13 @@
 # Nexus — Engineering Reference
 
-**Last updated:** 2026-05-18 (production hardening pass)  
+**Last updated:** 2026-05-21 (Assistant layer — Slice 8)  
 
 | Component | Status | Location |
 |---|---|---|
-| **Frontend UI** | ✅ Built — design-locked | `~/Desktop/projects/nexus-ui` |
-| **Backend** | ⬜ Not started | This document is the spec |
-| **Integration** | ⬜ Not started | See [§10 Integration Roadmap](#10-integration-roadmap) |
+| **Frontend UI** | ✅ Complete — live-connected to backend | `~/Desktop/projects/nexus-ui` |
+| **Backend** | ✅ Complete — Slices 0-7 shipped | This repo (`nexus/`) |
+| **Integration** | ✅ Complete — all screens cut over | [`INTEGRATION.md`](./INTEGRATION.md), [`docs/UI-CUTOVER-STATUS.md`](./docs/UI-CUTOVER-STATUS.md) |
+| **Assistant layer** | ✅ Slice 8 — conversational + action layer over Jira/Confluence | [§17](#17-assistant-layer-slice-8), [`docs/ASSISTANT-LAYER.md`](./docs/ASSISTANT-LAYER.md), [`docs/SLICE-8-STATUS.md`](./docs/SLICE-8-STATUS.md) |
 
 ---
 
@@ -1684,7 +1685,71 @@ A circuit breaker (`retrieval/circuit.py`) opens after 3 consecutive failures pe
 
 ---
 
-## 17. Verification — E2E Checklist
+### ADR-012: Curate, Don't Proxy, Downstream MCP Tools
+
+**Status:** Accepted  
+**Date:** 2026-05-21
+
+**Context:** The Assistant layer (Slice 8) consumes the Atlassian Rovo MCP Server, which exposes 30-40 raw tools. Passing that whole catalogue to the assistant's agent LLM degrades tool-selection accuracy, inflates token cost on every turn, and widens the security surface.
+
+**Decision:** A three-tier tool model. The agent LLM only ever sees a hand-curated facade of ~8 intent-shaped tools (`nexus/assistant/capabilities.py`). The raw downstream catalogue stays behind the connector boundary — `nexus/assistant/atlassian.py` is the single place that maps a curated capability onto concrete Atlassian tools. Broad write coverage (transitions, comments, assignments, page creation) lives as typed steps inside an `ActionProposal.plan`, **not** as extra agent tools.
+
+**Rationale:** Tool-selection accuracy collapses past ~15-20 tools; the curated facade keeps it small and stable. Intent-shaped names (`propose_jira_changes`) are better LLM affordances than API-shaped ones. The connector boundary doubles as a security/visibility filter.
+
+**Consequences:** The agent's tool surface stays constant (~8) regardless of how much downstream coverage is added. The MCP server's assistant tools (the coding-agent channel) follow the same discipline — 5 curated tools, not a proxy.
+
+---
+
+### ADR-013: Per-User OAuth for Assistant Write Actions
+
+**Status:** Accepted  
+**Date:** 2026-05-21
+
+**Context:** The Assistant can mutate Jira/Confluence (create subtasks, transition issues, edit pages). Those writes need an identity.
+
+**Decision:** Writes run as the **real user** via per-user OAuth 2.1 (PKCE) — never a shared service account. Tokens are encrypted at rest (Fernet, key from `NEXUS_TOKEN_KEY`) and refreshed silently. Without a token key configured, the feature cleanly disables itself and the Assistant falls back to a stub connector.
+
+**Rationale:** Correct attribution and permission enforcement come for free — the Atlassian Rovo MCP Server already acts within the signed-in user's permissions. A service account would over-grant and mis-attribute.
+
+**Consequences:** New `nexus/auth/` package (OAuth flow + token cipher); `assistant_identities` table; OAuth routes (`/auth/atlassian/*`). The MCP server gains a `--user` arg for per-user attribution.
+
+---
+
+### ADR-014: Action Proposals Reuse the Proposal/Approval Pattern
+
+**Status:** Accepted  
+**Date:** 2026-05-21
+
+**Context:** Invariant 3 — humans approve, agents draft — must hold for Assistant write actions, exactly as it does for council-authored skills.
+
+**Decision:** `ActionProposal` is a deliberate sibling of `SkillProposal`. The agent loop can only *draft* a proposal (`propose_*` tools); nothing is written until an explicit `POST /assistant/actions/{id}/confirm`. `confirm_action` is never an autonomous agent tool — it is a human-facing API route (and, on the MCP channel, a deliberate separate tool call the calling agent makes only on its user's approval).
+
+**Rationale:** Consistency with the existing council approval flow; a single mental model for "AI drafts, human ratifies" across the product.
+
+**Consequences:** `nexus/assistant/{models,store,executor}.py`; the proposal review surface in the UI is shared between skill proposals and action proposals.
+
+---
+
+## 17. Assistant Layer (Slice 8)
+
+The **Assistant** is a conversational + action layer on top of Nexus's existing knowledge. It lets a user (or another agent) query Jira/Confluence and the indexed corpus, and take **human-confirmed** actions — create Jira subtasks, transition issues, comment, assign, create/update Confluence pages.
+
+It is consumable through multiple **channels** that share one brain:
+
+```
+CHANNEL   MCP tools (coding agents) · Nexus UI chat · MS Teams (future)
+ASSISTANT tool-calling agent loop · conversation memory · action proposals
+CAPABILITY ~8 curated, intent-shaped tools (the only tools the LLM sees)
+CONNECTOR read + act; consumes the Atlassian Rovo MCP Server (per-user OAuth)
+```
+
+**Key contracts:** curate-don't-proxy (ADR-012); per-user OAuth for writes (ADR-013); action proposals honour Invariant 3 (ADR-014).
+
+**Delivery:** four increments — backend brain · Atlassian connector + OAuth · MCP server channel · UI chat panel. Full design in [`docs/ASSISTANT-LAYER.md`](./docs/ASSISTANT-LAYER.md); per-increment status in [`docs/SLICE-8-STATUS.md`](./docs/SLICE-8-STATUS.md). API surface: `POST /products/{id}/assistant/messages`, `GET /products/{id}/assistant/conversations`, `POST /assistant/actions/{id}/confirm|reject`, `/auth/atlassian/*`.
+
+---
+
+## 18. Verification — E2E Checklist
 
 ```bash
 # 1. Start infrastructure

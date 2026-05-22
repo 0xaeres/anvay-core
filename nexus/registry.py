@@ -67,26 +67,12 @@ class Registry:
 
     def _seed_defaults(self) -> None:
         with self._conn() as conn:
-            n = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
-            if n == 0:
-                conn.execute(
-                    """INSERT INTO products (id, name, tagline, owner_js, onboarded_at, master_skill_id)
-                       VALUES (?,?,?,?,?,?)""",
-                    (
-                        "forge",
-                        "Forge",
-                        "On-chain swap program",
-                        json.dumps({"team": "Forge", "lead": "jl"}),
-                        "2026-05-01T00:00:00Z",
-                        "forge",
-                    ),
-                )
             n = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
             if n == 0:
                 conn.execute(
                     """INSERT INTO users (id, name, role, products_js)
                        VALUES (?,?,?,?)""",
-                    ("jl", "Jamie Lee", "product_admin", json.dumps(["forge"])),
+                    ("admin", "Admin", "org_admin", json.dumps([])),
                 )
 
     # ------------------------------------------------------------ products

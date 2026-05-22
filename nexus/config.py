@@ -75,6 +75,9 @@ class ModelsCfg(BaseModel):
     light: ModelCfg
     embedding: ModelCfg
     reranker: ModelCfg
+    # Optional dedicated tier for the Assistant agent loop. Falls back to
+    # `council_agents` when unset, so existing nexus.yaml files keep working.
+    assistant: ModelCfg | None = None
 
 
 class LangfuseCfg(BaseModel):
@@ -121,6 +124,31 @@ class RetrievalCfg(BaseModel):
     circuit_breaker: CircuitBreakerCfg = Field(default_factory=CircuitBreakerCfg)
 
 
+class AtlassianCfg(BaseModel):
+    """Atlassian Rovo MCP Server connection + per-user OAuth — see
+    docs/ASSISTANT-LAYER.md §5-6. Optional: when `enabled` is false the Assistant
+    falls back to the stub connector."""
+
+    enabled: bool = False
+    client_id: str = ""
+    client_secret: str = ""
+    redirect_uri: str = "http://localhost:8000/auth/atlassian/callback"
+    mcp_url: str = "https://mcp.atlassian.com/v1/mcp"
+    authorize_url: str = "https://auth.atlassian.com/authorize"
+    token_url: str = "https://auth.atlassian.com/oauth/token"
+    # UI page to return to after the OAuth callback completes.
+    post_auth_redirect: str = "http://localhost:3000/settings/org"
+    scopes: list[str] = Field(
+        default_factory=lambda: [
+            "read:jira-work",
+            "write:jira-work",
+            "read:confluence-content.all",
+            "write:confluence-content",
+            "offline_access",
+        ]
+    )
+
+
 class ServerCfg(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
@@ -157,6 +185,7 @@ class NexusConfig(BaseSettings):
     retrieval: RetrievalCfg = Field(default_factory=RetrievalCfg)
     server: ServerCfg = Field(default_factory=ServerCfg)
     storage: StorageCfg = Field(default_factory=StorageCfg)
+    atlassian: AtlassianCfg = Field(default_factory=AtlassianCfg)
 
     @classmethod
     def load(cls, path: str | Path = "nexus.yaml") -> NexusConfig:

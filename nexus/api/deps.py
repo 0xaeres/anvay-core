@@ -2,18 +2,39 @@
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 
+from nexus.assistant.factory import build_assistant_store, build_connector_port
+from nexus.assistant.store import AssistantStore
+from nexus.auth.atlassian_oauth import AtlassianOAuth
 from nexus.config import NexusConfig, get_config
 from nexus.council.queue import ProposalQueue
 from nexus.registry import Registry
 from nexus.skills.store import SkillStore
+
+log = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
 def get_proposal_queue() -> ProposalQueue:
     config: NexusConfig = get_config()
     return ProposalQueue(config.storage.proposal_queue)
+
+
+@lru_cache(maxsize=1)
+def get_assistant_store() -> AssistantStore:
+    return build_assistant_store(get_config())
+
+
+@lru_cache(maxsize=1)
+def get_atlassian_oauth() -> AtlassianOAuth:
+    return AtlassianOAuth(get_config().atlassian)
+
+
+@lru_cache(maxsize=1)
+def get_connector_port():
+    return build_connector_port(get_config(), get_assistant_store())
 
 
 @lru_cache(maxsize=1)

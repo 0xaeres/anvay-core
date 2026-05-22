@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from nexus.api.routes import (
     activity,
+    assistant,
+    auth,
     council,
     dashboard,
     org_library,
@@ -46,3 +48,5 @@ app.include_router(proposals.router)
 app.include_router(org_library.router)
 app.include_router(activity.router)
 app.include_router(webhooks.router)
+app.include_router(assistant.router)
+app.include_router(auth.router)

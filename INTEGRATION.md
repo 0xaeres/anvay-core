@@ -1,8 +1,13 @@
 # UI Integration Map
 
-The frontend at `~/Desktop/projects/nexus-ui/` consumes mock data from `lib/data.ts`. During Phase 4 (Slice 4) each screen is converted in-place to call the FastAPI backend defined in `ENGINEERING.md §11`. This document is the cutover checklist.
+> **Historical — the cutover is complete.** Every screen is now live-connected to
+> the FastAPI backend; `lib/data.ts` was deleted. This document is the record of
+> how the migration was sequenced. For the finished state see
+> [`docs/UI-CUTOVER-STATUS.md`](./docs/UI-CUTOVER-STATUS.md).
 
-**Rule**: do not touch `nexus-ui/` until the corresponding backend route is implemented and returning real data. No mock-vs-live env flag; the mock export is deleted as soon as the screen is cut over.
+The frontend at `~/Desktop/projects/nexus-ui/` originally consumed mock data from `lib/data.ts`. During Phase 4 (Slice 4) each screen was converted in-place to call the FastAPI backend defined in `ENGINEERING.md §11`. This document was the cutover checklist.
+
+**Rule (during the cutover):** do not touch `nexus-ui/` until the corresponding backend route is implemented and returning real data. No mock-vs-live env flag; the mock export is deleted as soon as the screen is cut over.
 
 ## Reconciliation rules
 
@@ -28,6 +33,8 @@ Before the first screen cuts over, lift types out of the mock and reconcile to s
 | `screens/Proposals.tsx` | `GET /proposals` + `POST .../approve\|reject` | ✅ already live (Slice 4) |
 | `screens/Settings.tsx` | `GET /products/{id}/settings`, `GET /settings/org` | ✅ cut over (4 tabs: general, members, models, roster) |
 | `screens/Onboarding.tsx` | `POST /products`, `POST .../sources`, `POST .../council/sessions` | ✅ cut over (4-step wizard chains all three) |
+| `screens/SkillDetailPage.tsx` | `GET /skills/{id}` | ✅ built live — skill detail + composition graph |
+| `screens/Assistant.tsx` | `POST /products/{id}/assistant/messages`, `POST /assistant/actions/{id}/confirm\|reject`, `/auth/atlassian/*` | ✅ built live (Slice 8) — never had a mock phase |
 
 ## Streaming endpoints (replace `setTimeout` simulators)
 

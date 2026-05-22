@@ -18,7 +18,7 @@ def test_load_seed_skills_from_disk() -> None:
     skills = store.iter_skills()
     assert len(skills) >= 4
     by_name = {s.name: s for s in skills}
-    assert "forge" in by_name
+    assert "demo" in by_name
     assert "pda-seed-validation" in by_name
     assert "owasp-input-validation" in by_name
 
@@ -26,10 +26,10 @@ def test_load_seed_skills_from_disk() -> None:
 def test_master_seed_shape() -> None:
     root = Path(__file__).resolve().parent.parent / "nexus" / "skills" / "seed"
     store = SkillStore(root)
-    skill = next(s for s in store.iter_skills() if s.name == "forge")
+    skill = next(s for s in store.iter_skills() if s.name == "demo")
     assert isinstance(skill, Skill)
     assert skill.kind is SkillKind.MASTER
-    assert skill.product == "forge"
+    assert skill.product == "demo"
     assert "Master Skill" in skill.body
     assert skill.confidence > 0
 
