@@ -40,7 +40,13 @@ class ChatResponse:
     content: str
     usage: TokenUsage
     model: str
+    finish_reason: str = "stop"  # "stop" | "length" | "content_filter" | other
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def truncated(self) -> bool:
+        """True when the response hit max_tokens before the model would have stopped."""
+        return self.finish_reason == "length"
 
 
 class LLMError(RuntimeError):
@@ -117,6 +123,7 @@ class ChatClient:
         if not choices:
             raise LLMError(f"{self.role}: empty choices in response")
         content = choices[0].get("message", {}).get("content", "")
+        finish_reason = str(choices[0].get("finish_reason") or "stop").lower()
         usage_obj = payload.get("usage", {}) or {}
         return ChatResponse(
             content=content or "",
@@ -125,6 +132,7 @@ class ChatClient:
                 completion=int(usage_obj.get("completion_tokens", 0)),
             ),
             model=self.model,
+            finish_reason=finish_reason,
             raw=payload,
         )
 
@@ -137,6 +145,66 @@ class ChatClient:
             messages, temperature=temperature, max_tokens=max_tokens, json_mode=True
         )
         return _parse_json_payload(resp.content), resp.usage
+
+    async def chat_markdown(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+        max_continuations: int = 2,
+    ) -> ChatResponse:
+        """Long-form markdown with auto-continuation on finish_reason=='length'.
+
+        The aider/cursor pattern: when the API returns length-truncated, send the
+        partial content back as an assistant message and ask the model to continue
+        from exactly where it stopped. Combines the chunks into a single response.
+        Token usage is summed across continuations.
+        """
+        resp = await self.chat(
+            messages, temperature=temperature, max_tokens=max_tokens, json_mode=False
+        )
+        if not resp.truncated:
+            return resp
+
+        combined = resp.content
+        total_prompt = resp.usage.prompt
+        total_completion = resp.usage.completion
+        finish = resp.finish_reason
+
+        for _ in range(max_continuations):
+            continuation_messages = [
+                *messages,
+                {"role": "assistant", "content": combined},
+                {
+                    "role": "user",
+                    "content": (
+                        "Continue exactly where you stopped. Do not repeat any prior "
+                        "text. Do not add any preamble. Resume mid-sentence if that's "
+                        "where you stopped. End cleanly when the document is complete."
+                    ),
+                },
+            ]
+            next_resp = await self.chat(
+                continuation_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                json_mode=False,
+            )
+            combined += next_resp.content
+            total_prompt += next_resp.usage.prompt
+            total_completion += next_resp.usage.completion
+            finish = next_resp.finish_reason
+            if not next_resp.truncated:
+                break
+
+        return ChatResponse(
+            content=combined,
+            usage=TokenUsage(prompt=total_prompt, completion=total_completion),
+            model=self.model,
+            finish_reason=finish,
+            raw=resp.raw,
+        )
 
 
 def _parse_json_payload(text: str) -> Any:

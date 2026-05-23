@@ -1,14 +1,15 @@
 """Drafter — retrieves evidence and writes the initial skill proposal.
 
-One LLM call. Receives top-k retrieved chunks; produces a Markdown skill body
-with `[file: path:line]` citations on every non-trivial claim. Uncited
-assertions inside the Rules section are stripped before storage.
+Output is plain markdown (not JSON-wrapped) so we don't burn ~30-40% of the
+token budget on JSON escaping. Truncation is handled by chat_markdown's
+auto-continuation (aider/cursor pattern). Missing sections trigger a single
+targeted section-fill call. Caller can rely on the returned proposal having
+all required sections — see CompletenessReport in skill_parser.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from datetime import UTC, datetime
 
@@ -17,15 +18,20 @@ from nexus.council.agents._common import (
     evidence_for_prompt,
     hits_to_evidence,
 )
+from nexus.council.skill_parser import (
+    parse_skill_markdown,
+    strip_uncited_rules,
+    validate_completeness,
+)
 from nexus.council.state import (
     AgentCost,
     CouncilState,
     DeliberationMessage,
     EvidenceChunk,
 )
-from nexus.llm.client import ChatClient
+from nexus.llm.client import ChatClient, TokenUsage
 from nexus.retrieval.pipeline import RetrievalContext, retrieve
-from nexus.skills.models import Citation, SkillProposal, compute_confidence
+from nexus.skills.models import SkillProposal, compute_confidence
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +42,7 @@ _SYSTEM = (
     "produce a SKILL — a short, opinionated Markdown playbook that guides "
     "future AI agents working in this codebase. Every non-trivial claim must "
     "carry a `[file: path:line]` citation drawn from the evidence below. "
-    "Uncited claims will be stripped from your output."
+    "Uncited claims in the Rules section will be stripped from your output."
 )
 
 
@@ -49,29 +55,47 @@ Each excerpt is labelled [E1], [E2], etc. with its file:line anchor.
 
 {evidence}
 
-# Task
+# Task — output plain Markdown (no JSON wrapper, no code fences around the whole thing)
 
-Draft the skill as Markdown.
+Required structure (in this order):
 
-Structure:
-1. `# Title` — kebab-cased noun phrase.
-2. A 2-3 sentence opening that frames why this skill matters.
-3. `## Rules` — 3-7 numbered rules. Each rule MUST cite at least one
-   `[file: path:line]` from the evidence above.
-4. `## Anti-patterns` — concrete things to avoid. Cite where possible;
-   uncited general-best-practice items are allowed here.
+# {{kebab-case-name}}
 
-Output ONLY JSON in this schema (no markdown fences):
+A 2-3 sentence opening paragraph framing why this skill matters.
 
-{{
-  "name": "kebab-case-skill-name",
-  "body": "the markdown body as a single string",
-  "citations": [
-    {{"file": "path", "line": 42, "excerpt": "..."}}
-  ]
-}}
+## Rules
 
-`citations` must contain every distinct file:line you used in the body.
+1. First rule with `[file: path:line]` citation. Be concrete and actionable.
+2. Second rule with citation.
+3. Third rule with citation.
+(3-7 numbered rules total; each MUST carry at least one citation)
+
+## Anti-patterns
+
+- Concrete thing to avoid, with `[file: path:line]` citation when supported by evidence.
+- Another anti-pattern (uncited general-best-practice is allowed here).
+
+Output the markdown directly. Do NOT wrap it in JSON. Do NOT add commentary
+before or after. The first line must be the `# ` heading.
+"""
+
+
+_SECTION_FILL_TEMPLATE = """The following sections are missing or too short in
+the draft you just produced:
+
+{missing}
+
+Here is the draft as it stands:
+
+{current_body}
+
+Here is the available evidence (you must cite by file:line):
+
+{evidence}
+
+Produce ONLY the missing section(s), in markdown, in the order listed above.
+Do not repeat sections that already exist. Each section starts with its `##`
+heading. Maintain the same style + voice as the existing draft.
 """
 
 
@@ -104,31 +128,69 @@ async def run(
             ),
         },
     ]
-    payload, usage = await chat.chat_json(messages, max_tokens=3000)
+    resp = await chat.chat_markdown(messages, max_tokens=3000, max_continuations=2)
+    usage = resp.usage
+    body = resp.content.strip()
 
-    name = _normalise_name(payload.get("name") or topic)
-    raw_body = str(payload.get("body", "")).strip()
-    body, dropped = _strip_uncited_assertions(raw_body, evidence)
-    citations = _build_citations(payload.get("citations") or [], evidence)
-    paragraphs = max(1, body.count("\n\n") + 1)
+    # ---- completeness gate: section-fill any missing required sections ----
+    report = validate_completeness(body)
+    fill_attempts = 0
+    while not report.is_complete and fill_attempts < 1:
+        fill_attempts += 1
+        missing_summary = _format_missing(report)
+        log.info("drafter: section-fill pass — %s", missing_summary)
+        fill_messages = [
+            {"role": "system", "content": _SYSTEM},
+            {
+                "role": "user",
+                "content": _SECTION_FILL_TEMPLATE.format(
+                    missing=missing_summary,
+                    current_body=body,
+                    evidence=evidence_for_prompt(evidence),
+                ),
+            },
+        ]
+        fill_resp = await chat.chat_markdown(
+            fill_messages, max_tokens=1500, max_continuations=1
+        )
+        body = _merge_section_fill(body, fill_resp.content.strip())
+        usage = TokenUsage(
+            prompt=usage.prompt + fill_resp.usage.prompt,
+            completion=usage.completion + fill_resp.usage.completion,
+        )
+        report = validate_completeness(body)
+
+    # ---- parse + post-hoc guardrails ----
+    body, dropped = strip_uncited_rules(body)
+    parsed = parse_skill_markdown(body, fallback_name=topic, evidence=evidence)
+
+    paragraphs = max(1, parsed.body.count("\n\n") + 1)
     confidence = compute_confidence(
-        citations=citations, paragraphs=paragraphs, revision_count=0
+        citations=parsed.citations, paragraphs=paragraphs, revision_count=0
     )
 
     proposal = SkillProposal(
         id=str(uuid.uuid4()),
-        name=name,
-        body=body,
-        citations=citations,
+        name=parsed.name,
+        body=parsed.body,
+        citations=parsed.citations,
         confidence=confidence,
         status="pending",
         created_at=datetime.now(UTC).isoformat(),
     )
 
-    note = f" ({dropped} uncited line(s) stripped)" if dropped else ""
+    note_parts: list[str] = []
+    if dropped:
+        note_parts.append(f"{dropped} uncited line(s) stripped")
+    if resp.truncated:
+        note_parts.append("continued after truncation")
+    if fill_attempts:
+        note_parts.append(f"{fill_attempts} section-fill pass(es)")
+    note = f" ({'; '.join(note_parts)})" if note_parts else ""
+
     summary = (
-        f"Drafted **{name}** — confidence {confidence:.2f}, "
-        f"{len(citations)} citations, {paragraphs} paragraphs{note}."
+        f"Drafted **{parsed.name}** — confidence {confidence:.2f}, "
+        f"{len(parsed.citations)} citations, {paragraphs} paragraphs{note}."
     )
 
     return {
@@ -142,7 +204,7 @@ async def run(
                 agent="drafter",
                 timestamp=datetime.now(UTC).isoformat(),
                 body=summary,
-                cite_ids=[c.id for c in citations if c.id],
+                cite_ids=[c.id for c in parsed.citations if c.id],
             )
         ],
         "costs": [
@@ -158,71 +220,32 @@ async def run(
 
 # ---------------------------------------------------------------- helpers
 
-_NAME_RE = re.compile(r"[^a-z0-9-]+")
-_DASH_RUN = re.compile(r"-{2,}")
-_CITATION_RE = re.compile(r"\[(?:file|cve)[^\]]+\]", re.IGNORECASE)
+
+def _format_missing(report) -> str:
+    parts = list(report.missing_sections) + list(report.short_sections)
+    return ", ".join(parts) if parts else "(none)"
 
 
-def _normalise_name(raw: str) -> str:
-    s = raw.strip().lower().replace("_", "-").replace(" ", "-")
-    s = _NAME_RE.sub("-", s)
-    s = _DASH_RUN.sub("-", s).strip("-")
-    return s[:60] or "untitled-skill"
+def _merge_section_fill(current: str, fill: str) -> str:
+    """Append section-fill output to the current body.
 
-
-def _strip_uncited_assertions(body: str, evidence: list[EvidenceChunk]) -> tuple[str, int]:
-    """Drop list items in `## Rules` that lack any citation marker."""
-    rules_block = re.search(
-        r"##\s+Rules(.*?)(?=\n##\s+|\Z)", body, flags=re.DOTALL | re.IGNORECASE
-    )
-    if not rules_block:
-        return body, 0
-
-    block_text = rules_block.group(1)
-    new_lines: list[str] = []
-    dropped = 0
-    for line in block_text.splitlines():
-        is_list_item = bool(re.match(r"^\s*(?:\d+\.|[-*])\s", line))
-        if is_list_item and not _CITATION_RE.search(line):
-            dropped += 1
-            continue
-        new_lines.append(line)
-    if dropped == 0:
-        return body, 0
-    new_block = "\n".join(new_lines)
-    return body[: rules_block.start(1)] + new_block + body[rules_block.end(1) :], dropped
-
-
-def _build_citations(raw: list, evidence: list[EvidenceChunk]) -> list[Citation]:
-    by_anchor: dict[tuple[str, int], EvidenceChunk] = {(e.file, e.line): e for e in evidence}
-    out: list[Citation] = []
-    seen: set[tuple[str, int]] = set()
-    for c in raw:
-        try:
-            file_ = str(c.get("file"))
-            line = int(c.get("line"))
-        except Exception:
-            continue
-        key = (file_, line)
-        if key in seen:
-            continue
-        evi = by_anchor.get(key)
-        out.append(
-            Citation(
-                id=evi.chunk_id if evi else None,
-                file=file_,
-                line=line,
-                excerpt=(evi.excerpt if evi else str(c.get("excerpt", ""))),
-            )
-        )
-        seen.add(key)
-    return out
+    The fill prompt is constrained to emit only the missing sections, each
+    starting with `##`. We append a blank line then the fill content — no
+    deduplication needed because the prompt forbids repeating existing sections.
+    """
+    fill = fill.strip()
+    if not fill:
+        return current
+    return current.rstrip() + "\n\n" + fill + "\n"
 
 
 def _empty_update(topic: str, model: str) -> dict:
+    parsed = parse_skill_markdown(
+        f"# {topic}\n\n(no evidence)", fallback_name=topic
+    )
     proposal = SkillProposal(
         id=str(uuid.uuid4()),
-        name=_normalise_name(topic),
+        name=parsed.name,
         body=(
             "# (no proposal)\n\n"
             "The council could not gather enough evidence to draft a skill. "
@@ -248,3 +271,7 @@ def _empty_update(topic: str, model: str) -> dict:
         ],
         "costs": [AgentCost(agent="drafter", model=model)],
     }
+
+
+# silence unused import in this module
+_ = EvidenceChunk
