@@ -15,16 +15,22 @@ fi
 
 # Start ollama in the background if it isn't already
 if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
-  echo "Starting ollama server in background…"
+  echo "Starting ollama server in background..."
   nohup ollama serve >/tmp/nexus-ollama.log 2>&1 &
-  for _ in $(seq 1 30); do
+  for i in $(seq 1 30); do
     sleep 0.5
-    curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && break
+    if curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+      break
+    fi
   done
 fi
 
-if ! ollama list | awk 'NR>1 {print $1}' | grep -qx "$MODEL"; then
-  echo "Pulling $MODEL…"
+# Check if the model is already pulled.
+# NOTE: avoid `! cmd | grep` under set -euo pipefail — grep exit 1 (no match)
+# propagates through the pipe and aborts the script before we can act on it.
+# Use a subshell + explicit exit-code capture instead.
+if ! ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qFx "$MODEL" 2>/dev/null; then
+  echo "Pulling $MODEL..."
   ollama pull "$MODEL"
 fi
 
