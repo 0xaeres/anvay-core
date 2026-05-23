@@ -1,8 +1,8 @@
-"""Council state — single Pydantic model that flows through every LangGraph node.
+"""Council state — flat dict that flows through every LangGraph node.
 
-Each agent appends to the same dict-shaped state. Reducers (`add_messages`-style
-list appends) are configured on each list field so concurrent updates from
-fan-out nodes don't clobber each other.
+Three nodes touch this state: Drafter, Critic, Reviser. Each appends to the
+same TypedDict; reducers on the append-only list fields keep concurrent updates
+from clobbering each other.
 """
 
 from __future__ import annotations
@@ -14,8 +14,6 @@ from pydantic import BaseModel, Field
 
 from nexus.skills.models import Critique, SkillProposal
 
-# ---------------------------------------------------------------- agent outputs
-
 
 class EvidenceChunk(BaseModel):
     chunk_id: str
@@ -23,28 +21,6 @@ class EvidenceChunk(BaseModel):
     line: int
     score: float
     excerpt: str = ""
-
-
-class CodePattern(BaseModel):
-    name: str
-    description: str
-    evidence: list[EvidenceChunk] = Field(default_factory=list)
-
-
-class CodePatterns(BaseModel):
-    """Output of the Archaeologist agent."""
-
-    patterns: list[CodePattern]
-    notes: str = ""
-
-
-class DomainContext(BaseModel):
-    """Output of the Domain Expert agent."""
-
-    vocabulary: list[str] = Field(default_factory=list)
-    entity_relationships: list[str] = Field(default_factory=list)
-    summary: str = ""
-    evidence: list[EvidenceChunk] = Field(default_factory=list)
 
 
 class DeliberationMessage(BaseModel):
@@ -61,22 +37,18 @@ class AgentCost(BaseModel):
     model: str = ""
 
 
-# ---------------------------------------------------------------- state
-
-
 class CouncilState(TypedDict, total=False):
-    """LangGraph state. Each field has a reducer so fan-out updates merge cleanly."""
-
     # Inputs
     session_id: str
     product_id: str
     topic: str
-    skill_kind: Literal["master", "product_domain"]
+    skill_kind: Literal["master", "product_domain"]  # passthrough; collapses in next commit
     config_path: str
 
-    # Agent outputs (set by individual nodes)
-    code_patterns: CodePatterns | None
-    domain_context: DomainContext | None
+    # Shared evidence — populated by Drafter; Critic adds its own re-retrieval to it.
+    evidence: Annotated[list[EvidenceChunk], operator.add]
+
+    # Per-node outputs
     proposal: SkillProposal | None
     proposal_id: str | None
     critique: Critique | None
@@ -101,8 +73,7 @@ def initial_state(
         "topic": topic,
         "skill_kind": skill_kind,  # type: ignore[typeddict-item]
         "config_path": config_path,
-        "code_patterns": None,
-        "domain_context": None,
+        "evidence": [],
         "proposal": None,
         "proposal_id": None,
         "critique": None,

@@ -1,4 +1,4 @@
-from nexus.council.agents.synthesizer import _normalise_name, _strip_uncited_assertions
+from nexus.council.agents.drafter import _normalise_name, _strip_uncited_assertions
 from nexus.council.state import EvidenceChunk
 
 

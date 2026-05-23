@@ -1,10 +1,9 @@
-"""Shared agent utilities — evidence rendering, prompt scaffolding, span helpers."""
+"""Shared council-agent helpers — evidence rendering, retrieval-empty checks."""
 
 from __future__ import annotations
 
 from nexus.council.state import EvidenceChunk
 from nexus.retrieval.hybrid import Hit
-from nexus.retrieval.pipeline import RetrievalResult
 
 
 def hits_to_evidence(hits: list[Hit], *, limit: int = 20) -> list[EvidenceChunk]:
@@ -34,17 +33,6 @@ def evidence_for_prompt(chunks: list[EvidenceChunk]) -> str:
         lines.append(c.excerpt)
         lines.append("")
     return "\n".join(lines)
-
-
-def retrieval_unavailable(result: RetrievalResult) -> str | None:
-    """Friendly explanation for why retrieval came back empty (None if it didn't)."""
-    if result.hits:
-        return None
-    if result.mode == "no_context":
-        return "retrieval quality gate filtered everything"
-    if result.degraded_components:
-        return f"retrieval degraded: {', '.join(result.degraded_components)}"
-    return "no chunks indexed for this product yet"
 
 
 def _truncate(s: str, n: int) -> str:

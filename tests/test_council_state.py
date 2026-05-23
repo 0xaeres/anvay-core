@@ -1,9 +1,4 @@
-from nexus.council.state import (
-    CodePatterns,
-    DomainContext,
-    EvidenceChunk,
-    initial_state,
-)
+from nexus.council.state import EvidenceChunk, initial_state
 
 
 def test_initial_state_has_empty_streams() -> None:
@@ -16,40 +11,15 @@ def test_initial_state_has_empty_streams() -> None:
     )
     assert s["deliberation"] == []
     assert s["costs"] == []
-    assert s["code_patterns"] is None
-    assert s["domain_context"] is None
+    assert s["evidence"] == []
+    assert s["proposal"] is None
+    assert s["critique"] is None
+    assert s["revision_count"] == 0
 
 
-def test_code_patterns_roundtrip_via_pydantic() -> None:
-    cp = CodePatterns(
-        patterns=[
-            {
-                "name": "owner-check",
-                "description": "always verify account owner",
-                "evidence": [
-                    EvidenceChunk(
-                        chunk_id="c1",
-                        file="lib.rs",
-                        line=42,
-                        score=0.9,
-                        excerpt="check owner",
-                    )
-                ],
-            }
-        ],
-        notes="ok",
-    )
-    dumped = cp.model_dump_json()
-    restored = CodePatterns.model_validate_json(dumped)
-    assert restored.patterns[0].name == "owner-check"
-    assert restored.patterns[0].evidence[0].file == "lib.rs"
-
-
-def test_domain_context_caps_inputs() -> None:
-    ctx = DomainContext(
-        vocabulary=["a"] * 30,
-        entity_relationships=["x owns y"] * 10,
-        summary="hi",
-    )
-    # No internal cap on the model itself — caps are applied by the agent.
-    assert len(ctx.vocabulary) == 30
+def test_evidence_chunk_roundtrip() -> None:
+    e = EvidenceChunk(chunk_id="c1", file="lib.rs", line=42, score=0.9, excerpt="check owner")
+    dumped = e.model_dump_json()
+    restored = EvidenceChunk.model_validate_json(dumped)
+    assert restored.file == "lib.rs"
+    assert restored.line == 42
