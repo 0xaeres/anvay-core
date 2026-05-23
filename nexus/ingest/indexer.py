@@ -1,4 +1,4 @@
-"""Qdrant indexer — named vectors + per-product shard key isolation (§12).
+"""Qdrant indexer — named vectors, per-product payload isolation.
 
 Two collections (per nexus.yaml `vector_store.collections`):
 
@@ -8,8 +8,8 @@ Two collections (per nexus.yaml `vector_store.collections`):
 `dense`  — Jina v4 (JINA_V4_DIM, cosine)
 `bm25`   — fastembed Qdrant/bm25 sparse encoder; Qdrant applies IDF server-side
 
-Both collections use `sharding_method: custom` with `product_id` as the shard
-key — queries that omit a `product_id` filter return nothing by construction.
+Tenant isolation via `product_id` payload filter on every query/scroll/delete.
+A keyword index on `product_id` makes these filters fast.
 """
 
 from __future__ import annotations
@@ -74,7 +74,6 @@ class Indexer:
                         modifier=qm.Modifier.IDF,
                     ),
                 },
-                sharding_method=qm.ShardingMethod.CUSTOM,
             )
             await self.client.create_payload_index(
                 collection_name=name,
@@ -106,11 +105,10 @@ class Indexer:
             buckets.setdefault((coll, ec.chunk.product_id), []).append(point)
 
         n = 0
-        for (coll, product_id), points in buckets.items():
+        for (coll, _product_id), points in buckets.items():
             await self.client.upsert(
                 collection_name=coll,
                 points=points,
-                shard_key_selector=product_id,
             )
             n += len(points)
         return n
@@ -166,7 +164,6 @@ class Indexer:
             query=query,
             using=using,
             limit=top_k,
-            shard_key_selector=product_id,
             query_filter=qm.Filter(
                 must=[
                     qm.FieldCondition(
@@ -227,7 +224,6 @@ class Indexer:
             await self.client.delete(
                 collection_name=coll,
                 points_selector=qm.PointIdsList(points=[pt.id for pt in scrolled]),
-                shard_key_selector=product_id,
             )
         return deleted
 

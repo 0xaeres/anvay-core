@@ -8,10 +8,68 @@ so the UI has something to render.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+
+from nexus.auth.token_cipher import TokenCipher, TokenCipherError
+
+log = logging.getLogger(__name__)
+
+# Keys whose values are encrypted at rest in source config blobs.
+_SECRET_KEY_HINTS = ("token", "api_key", "password", "secret")
+
+
+def _get_cipher() -> TokenCipher | None:
+    key = os.environ.get("NEXUS_TOKEN_KEY")
+    if not key:
+        log.warning(
+            "NEXUS_TOKEN_KEY is not set — connector secrets will be stored in "
+            "plaintext. Set this variable to enable encryption at rest."
+        )
+        return None
+    try:
+        return TokenCipher(key)
+    except TokenCipherError:
+        log.exception("NEXUS_TOKEN_KEY is set but invalid; connector secrets unencrypted")
+        return None
+
+
+def _encrypt_config(config: dict, cipher: TokenCipher | None) -> dict:
+    if not cipher:
+        return config
+    out: dict = {}
+    for k, v in config.items():
+        if isinstance(v, str) and v and any(s in k.lower() for s in _SECRET_KEY_HINTS):
+            out[k] = "enc:" + cipher.encrypt(v)
+        else:
+            out[k] = v
+    return out
+
+
+def _decrypt_config(config: dict, cipher: TokenCipher | None) -> dict:
+    out: dict = {}
+    for k, v in config.items():
+        if isinstance(v, str) and v.startswith("enc:"):
+            if cipher:
+                try:
+                    out[k] = cipher.decrypt(v[4:])
+                except TokenCipherError:
+                    log.error("Failed to decrypt config key %r — returning redacted value", k)
+                    out[k] = ""
+            else:
+                # Key was encrypted but NEXUS_TOKEN_KEY is now missing.
+                log.warning(
+                    "Encrypted value for %r but NEXUS_TOKEN_KEY not set; returning empty", k
+                )
+                out[k] = ""
+        else:
+            out[k] = v
+    return out
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
@@ -84,9 +142,7 @@ class Registry:
 
     def get_product(self, product_id: str) -> dict | None:
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM products WHERE id = ?", (product_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
         return _row_to_product(row) if row else None
 
     def upsert_product(self, product: dict) -> None:
@@ -109,9 +165,7 @@ class Registry:
 
     def get_user(self, user_id: str) -> dict | None:
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM users WHERE id = ?", (user_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if not row:
             return None
         d = dict(row)
@@ -142,7 +196,8 @@ def _row_to_product(row: sqlite3.Row) -> dict:
 
 def _row_to_source(row: sqlite3.Row) -> dict:
     d = dict(row)
-    d["config"] = json.loads(d.pop("config_js") or "{}")
+    raw_config = json.loads(d.pop("config_js") or "{}")
+    d["config"] = _decrypt_config(raw_config, _get_cipher())
     d["lastSync"] = d.pop("last_sync", None)
     d["resourceCount"] = d.pop("resource_count", 0)
     d["product"] = d.pop("product_id")
@@ -160,11 +215,11 @@ def add_source_methods(cls):
             ).fetchall()
         return [_row_to_source(r) for r in rows]
 
-    def get_source(self, product_id: str, source_name: str) -> dict | None:
+    def get_source(self, product_id: str, source_id_or_name: str) -> dict | None:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM sources WHERE product_id = ? AND name = ?",
-                (product_id, source_name),
+                "SELECT * FROM sources WHERE product_id = ? AND (id = ? OR name = ?)",
+                (product_id, source_id_or_name, source_id_or_name),
             ).fetchone()
         return _row_to_source(row) if row else None
 
@@ -172,6 +227,7 @@ def add_source_methods(cls):
         import uuid as _uuid
         from datetime import UTC as _UTC
         from datetime import datetime as _dt
+
         sid = source.get("id") or f"src_{_uuid.uuid4().hex[:12]}"
         with self._conn() as conn:
             conn.execute(
@@ -185,18 +241,18 @@ def add_source_methods(cls):
                     source["name"],
                     source["type"],
                     source.get("status", "connected"),
-                    json.dumps(source.get("config", {})),
+                    json.dumps(_encrypt_config(source.get("config", {}), _get_cipher())),
                     source.get("lastSync"),
                     int(source.get("resourceCount", 0)),
                     source.get("createdAt") or _dt.now(_UTC).isoformat(),
                 ),
             )
 
-    def delete_source(self, product_id: str, source_name: str) -> bool:
+    def delete_source(self, product_id: str, source_id_or_name: str) -> bool:
         with self._conn() as conn:
             cur = conn.execute(
-                "DELETE FROM sources WHERE product_id = ? AND name = ?",
-                (product_id, source_name),
+                "DELETE FROM sources WHERE product_id = ? AND (id = ? OR name = ?)",
+                (product_id, source_id_or_name, source_id_or_name),
             )
             return cur.rowcount > 0
 

@@ -164,7 +164,7 @@ flowchart LR
 
 ```mermaid
 graph LR
-    ROOT["/"] -->|no products| OB["/onboarding\n4-step wizard"]
+    ROOT["/"] -->|no products| OB["/onboarding\n3-step wizard"]
     ROOT -->|has products| DASH["/p/product/dashboard"]
 
     DASH --> SRC["/p/product/sources\nConnectors + sync logs"]
@@ -185,7 +185,7 @@ graph LR
 | Route | Purpose | Notes |
 |---|---|---|
 | `/` | First-run gate | → `/onboarding` if no products, else → `/p/<lastProduct>/dashboard` |
-| `/onboarding` | Product wizard | 4 steps: identity → sources → ingestion → council kickoff |
+| `/onboarding` | Product wizard | 3 sequential steps: identity → connect & ingest (live progress) → council kickoff (unlocked on ingest success) |
 | `/p/[product]/dashboard` | Product overview | Pipeline counts, daemon status, pending proposals |
 | `/p/[product]/sources` | Connector management | Add/remove/edit sources; sync logs (SSE) |
 | `/p/[product]/sources/new` | Add connector | OAuth or token wizard depending on connector type |
@@ -202,17 +202,34 @@ graph LR
 | `/settings/org` | Org settings | Model defaults, billing placeholder, org admins, Curator entry point |
 | `/dashboard`, `/council`, etc. | Legacy routes | Server-side redirect to `/p/<currentProduct>/…` |
 
-### 3.3 Onboarding Wizard (4 Steps)
+### 3.3 Onboarding Wizard (3 Steps — sequential)
 
 ```mermaid
 flowchart LR
-    S1["Step 1\nIdentity\nName, tagline, owner"] --> S2["Step 2\nSources\n≥1 connector required"]
-    S2 --> S3["Step 3\nIngestion\nLive progress + SSE log"]
-    S3 --> S4["Step 4\nCouncil Kickoff\nDraft Master Skill\n~$0.012 · 7 min"]
-    S4 --> SESSION["/p/product/council/sessionId\nMaster roster preset"]
+    S1["Step 1\nIdentity\nName, tagline, owner"] --> S2["Step 2\nConnect & Ingest\nPick connector · fill credentials\nclicking Continue commits:\ncreateProduct + addSource + syncSource"]
+    S2 --> S3["Step 3\nLive Ingestion Progress\nSSE log stream · delta summary\nCouncil CTA hidden until done"]
+    S3 --> |ingest success| COUNCIL["Council Kickoff\nTopic · roster preview\nStart council → createSession"]
+    S3 --> |ingest error| ERR["Error state\nBack to fix source config\nor Retry ingestion"]
+    COUNCIL --> SESSION["/p/product/council/sessionId\nMaster roster preset"]
 ```
 
-After master skill approval, the product **auto-adopts** applicable Org Library skills (matched from stack detected during ingestion) — shown as a simple confirmation list, not a council run.
+The wizard is strictly sequential — the council form is only revealed after the
+ingestion SSE stream closes with a terminal success frame (`level: done` on the
+plain-data channel, or a named `delta` event). If ingestion fails, the council
+CTA is not shown; the user can go back to fix the source config or use an
+explicit escape-hatch to skip.
+
+**Transaction boundary:** Steps 1 and 2 collect state in the browser. On the
+Step 2 → 3 transition ("Connect & ingest" click) `createProduct`, `addSource`,
+and `syncSource` are called. The product row and source row are committed at
+that point. `createSession` fires only after the user clicks "Start council" in
+Step 3, which requires a successful ingest. If the user abandons after Step 2
+but before Step 3 completes, the product + source exist in the DB; the product
+id cannot be reused without first deleting it.
+
+After master skill approval, the product **auto-adopts** applicable Org Library
+skills (matched from stack detected during ingestion) — shown as a simple
+confirmation list, not a council run.
 
 ### 3.4 Council Session UI
 
@@ -316,6 +333,25 @@ flowchart TD
 
 **Jina v4 dual-mode:** Code chunks are embedded using the `retrieval.passage.code` task LoRA; doc/text chunks use `retrieval.passage`. Query vectors use `retrieval.query.code` and `retrieval.query` respectively. These map directly to the `dense_code` and `dense_text` named vectors in Qdrant — no architecture change from Jina v3, just a model swap.
 
+### 4.1 Delta-only resync semantics
+
+Both the daemon's `resources/updated` path and the user-triggered `POST /products/{pid}/sources/{sid}/sync` endpoint compute a delta against the existing vector partition — they do **not** re-embed everything on each tick. This is the dominant cost-saver in production:
+
+- For each chunk pulled from the connector, compute a content hash (`path + anchor + content`).
+- Compare against the stored hash table for that source.
+- **Added** (hash not in store) → embed + insert.
+- **Updated** (path/anchor in store, hash differs) → re-embed + upsert.
+- **Removed** (in store, not in current pull) → delete from index.
+- **Untouched** → no-op (the dominant case, where the cost win comes from).
+
+**Contract:**
+
+- `POST /products/{pid}/sources/{sid}/sync` returns `{ ok: true, delta: { added, updated, removed, unchanged } }`.
+- The SSE sync-log stream at `/products/{pid}/sources/{sid}/log` emits a terminal `delta` event with the same shape, plus per-chunk lines (`added path:line`, `updated path:line`, `removed path:line`) so the UI can show progress live.
+- `Source.lastDelta` and `Source.nextSync` are persisted on the row and returned via `listSources` / `getSource` so the UI can show "+12 ~4 -1" cards and "next sync · HH:MM" hints without subscribing to the stream.
+
+The semantic cache is invalidated only for chunks in the delta — untouched chunks keep their cached query results.
+
 ---
 
 ## 5. Retrieval Pipeline — GraphRAG
@@ -383,7 +419,7 @@ Framework: **LangGraph StateGraph** with **SqliteSaver** checkpointer. All agent
 
 ### 6.1 Master Skill Council (4 agents)
 
-Triggered by onboarding step 4 or an explicit "Draft Master Skill" action.
+Triggered by onboarding Step 3 (after ingestion completes successfully) or an explicit "Draft Master Skill" action from the product dashboard.
 
 ```mermaid
 sequenceDiagram
@@ -490,6 +526,84 @@ sequenceDiagram
 | **Adversary** | reads proposal + evidence, generates counter-examples | `Critique` | All product councils |
 | **Security Sentinel** | `hybrid_search`, static CVE rule pack | `SecurityConcerns` | CR review for security skills |
 | **Curator** | `web_search`, `hybrid_search` (validation only) | `OrgSkillProposal` | Org Library authoring |
+
+### 6.6 Cadence, priors, and compaction
+
+The cap inside a single session is `revision_count ∈ {0, 1}` (ADR-007). The three mechanisms below control what happens **across** sessions — they're what make the system sustainable over time as a product accumulates SME corrections and source churn.
+
+#### 6.6.1 Change-gated council cadence (ADR-015)
+
+Council does **not** fire on every resync. Three layers, all server-side:
+
+- **Gate** — after each ingestion delta (§4.1), intersect the changed-chunk IDs with each skill's `provenance.evidence_chunks`. If the overlap exceeds a configured threshold, enqueue a council run for that skill.
+- **Cap** — at most one council run per `(product_id, skill_id)` per 7 days. Multiple gate trips inside the window coalesce into one richer session that uses the union of changed chunks.
+- **Override** — `POST /products/{pid}/council/sessions` accepts `{ force: boolean, skill_id?: string }`. When `force: true`, the cap is bypassed. Admin perms required.
+
+The backend exposes `nextCouncilEligibleAt` per skill in the skill detail response. Activity rows for council events are suffixed `(gated)` or `(manual override)` so audit is clear.
+
+`createSession` response shape:
+
+```ts
+POST /products/{pid}/council/sessions  body: { topic, skill_kind?, force?, skill_id? }
+→ {
+    session_id: string,
+    status: string,
+    priors?: { revision: number, corrections: number, rejections: number }
+  }
+```
+
+#### 6.6.2 Council priors (ADR-016)
+
+Every council session is seeded with three priors derived from prior interactions on the same `(product, skill)` pair. Goal: SMEs see less of the council over time, not more.
+
+- **Starting revision** — if a current approved skill exists, the council is launched with that skill body as input, not a blank draft. Sections that re-derive identically to the prior carry `inherited: true` in the proposal payload and render with a subtle "inherited" pill in the UI.
+- **Corrections corpus** — every `POST /proposals/{id}/edit` call captures the (council-draft → SME-edit) diff against `(product_id, skill_kind)`. Recent corrections + a distilled summary of older ones (see §6.6.3) are rendered into the council's system prompt as house rules ("Past SMEs have said: …").
+- **Rejection log** — `POST /proposals/{id}/reject` accepts `{ reason: string, category?: 'factual' | 'out-of-scope' | 'duplicate' | 'other', actor: string }`. Reasons persist and are fed into the next session's prompt as anti-priors. Today the body is required (was previously a URL query parameter that was dropped on the floor).
+
+Two revision counters — easy to confuse, do not collapse:
+
+| Field | Scope | Bound | Purpose |
+|---|---|---|---|
+| `provenance.revision_count` | within a single council session | `0 \| 1` (ADR-007) | input to the confidence formula `adversary_passes = 1.0 if 0 \| 0.7 if 1` |
+| `provenance.cumulative_revisions` | across all sessions for this skill | monotonic, uncapped | the "rev N" shown in the Council session header's priors badge and on the skill provenance row |
+
+#### 6.6.3 Corrections compaction (ADR-017)
+
+Without compaction the corrections corpus becomes a token bomb: a master skill with 200 approved edits over 6 months would carry 50K+ tokens of "house rules" prepended to every council run, growing linearly with usage. We compact.
+
+`GET /skills/{skill_id}/corrections` returns:
+
+```ts
+{
+  corrections: Correction[],           // recent, raw; capped (default ~10)
+  distilled: {
+    rules: string,                     // condensed house-rules text actually injected into prompts
+    from_count: number,                // how many raw corrections were folded in
+    last_compacted_at: string,
+  } | null,                            // null until the first compaction happens
+  total: number,                       // total raw corrections ever recorded
+}
+```
+
+Compaction policy is backend-owned (e.g. "compact when raw count > 25, fold all but the most recent 10"). The UI surfaces both — a "Distilled rules" accent panel above a list of recent raw corrections, with "showing 10 of 47 (older folded into distilled rules)" subtitle. SMEs always have the raw audit trail; the *injected prompt context stays bounded*.
+
+#### 6.6.4 Evidence chunks per session cap (ADR-018)
+
+The synthesizer's prompt is also bounded on the citation side: `EVIDENCE_CHUNKS_PER_SESSION_CAP = 20` ([nexus-ui/lib/types.ts](../nexus-ui/lib/types.ts)).
+
+Above this, the reranker's top-K decides which chunks survive into the prompt; the rest are dropped for that session. The cap is enforced backend-side. The UI surfaces it on the skill provenance row as `N / 20 cap` so the budget is visible to SMEs.
+
+If a skill's stored `provenance.evidence_chunks` ever exceeds the cap, that's a historical artifact (the cap was raised, then lowered). Display the actual length; the cap is a constant the prompt assembler enforces, not a storage limit.
+
+#### 6.6.5 New endpoints
+
+```
+GET /skills/{skill_id}/corrections       → CorrectionsResponse (see §6.6.3)
+GET /skills/{skill_id}/rejections        → { rejections: SkillProposal[] }
+GET /skills/{skill_id}/council-history   → { sessions: CouncilSessionSummary[] }
+```
+
+These power the corresponding panels on the Skill detail screen.
 
 ---
 
@@ -872,23 +986,35 @@ GET    /products/{product_id}/sources              → {sources: Source[]}
 POST   /products/{product_id}/sources              → {source: Source}
 DELETE /products/{product_id}/sources/{source_id}  → {ok: bool}
 POST   /products/{product_id}/sources/{source_id}/sync
-                                                   → {job_id: string}
+                                                   → {ok: bool, delta: SyncDelta}
+                                                     // delta is the {added, updated, removed, unchanged}
+                                                     // chunk counts; see §4.1.
 GET    /products/{product_id}/sources/{source_id}/log
-                                                   → SSE stream of LogEntry[]
+                                                   → SSE stream; terminal `delta` event
+                                                     carries the same SyncDelta shape.
 ```
 
 ### Council + Proposals
 
 ```
 GET  /products/{product_id}/council/sessions       → {sessions: CouncilSession[]}
-POST /products/{product_id}/council/sessions       → {session: CouncilSession}
+POST /products/{product_id}/council/sessions       → {session_id, status, priors?}
+                                                     body: { topic, skill_kind?, force?, skill_id? }
+                                                     // force=true bypasses the 7-day cap (§6.6.1).
+                                                     // priors = {revision, corrections, rejections}.
 GET  /council/sessions/{session_id}               → {session: CouncilSession}
 GET  /council/sessions/{session_id}/stream        → SSE stream of DeliberationMessage[]
 
 GET  /proposals                                    → {proposals: SkillProposal[]}
 POST /proposals/{proposal_id}/approve             → {skill: Skill}
 POST /proposals/{proposal_id}/edit                → {proposal: SkillProposal}
-POST /proposals/{proposal_id}/reject              → {ok: bool}  ← reason required
+                                                     body: { body, actor }
+                                                     // captures (council-draft → SME-edit) diff
+                                                     // into the corrections corpus (§6.6.2).
+POST /proposals/{proposal_id}/reject              → {ok: bool}
+                                                     body: { reason: string, category?, actor }
+                                                     // body-encoded; reason persists into the
+                                                     // rejection log (§6.6.2).
 ```
 
 ### Skills
@@ -896,6 +1022,9 @@ POST /proposals/{proposal_id}/reject              → {ok: bool}  ← reason req
 ```
 GET /products/{product_id}/skills                 → {skills: Skill[]}
 GET /skills/{skill_id}                            → {skill: Skill}
+GET /skills/{skill_id}/corrections                → CorrectionsResponse (§6.6.3)
+GET /skills/{skill_id}/rejections                 → {rejections: SkillProposal[]}
+GET /skills/{skill_id}/council-history            → {sessions: CouncilSessionSummary[]}
 ```
 
 ### Org Library
@@ -1054,10 +1183,11 @@ interface Skill {
   provenance: {
     council_session?: string
     validated_by: string
-    validated_at: string        // ISO-8601
-    evidence_chunks: string[]
+    validated_at: string             // ISO-8601
+    evidence_chunks: string[]        // length bounded by EVIDENCE_CHUNKS_PER_SESSION_CAP (§6.6.4)
     adversary_critique?: string
-    revision_count: 0 | 1
+    revision_count: 0 | 1            // per-session adversary loop cap (ADR-007)
+    cumulative_revisions: number     // across all sessions for this skill (§6.6.2)
   }
   composesWith: string[]        // skill IDs
 }
@@ -1089,15 +1219,31 @@ interface CouncilSession {
   status: SessionStatus
   roster: AgentRole[]
   proposalId?: string
+  priors?: CouncilPriors             // populated on creation; see §6.6.2
+  trigger?: "manual" | "gated" | "override"
   startedAt: string
   completedAt?: string
   cost: { tokens: number; usd: number }
+}
+
+interface CouncilPriors {            // §6.6.2
+  revision: number                   // cumulative_revisions of the seeded skill
+  corrections: number                // raw count, before compaction
+  rejections: number                 // count of historical rejections fed as anti-priors
+}
+
+interface ProposalSection {          // §6.6.2 — "inherited" pill rendering
+  heading: string
+  body: string
+  inherited?: boolean                // true when this section re-derives identically
+                                     //   to the prior revision and was not changed
 }
 
 interface SkillProposal {
   id: string
   name: string
   body: string
+  sections?: ProposalSection[]       // optional; falls back to flat body when absent
   citations: Array<{ id: string; file: string; line: number; excerpt: string }>
   confidence: number
   adversaryCritique: {
@@ -1109,6 +1255,34 @@ interface SkillProposal {
   createdAt: string
   approvedBy?: UserId
   approvedAt?: string
+  rejectReason?: RejectReason | null // §6.6.2 — persisted, fed forward as anti-prior
+}
+
+interface RejectReason {             // §6.6.2
+  reason: string
+  category?: "factual" | "out-of-scope" | "duplicate" | "other"
+}
+
+interface Correction {               // §6.6.2 / 6.6.3
+  id: string
+  skillId: string
+  fromRevision: number
+  editedBy: UserId
+  editedAt: string
+  diff: string
+  appliedAsRule?: string | null      // when the backend has condensed this into a rule
+}
+
+interface DistilledRules {           // §6.6.3
+  rules: string                      // the condensed text actually injected into prompts
+  fromCount: number                  // raw corrections folded in
+  lastCompactedAt: string
+}
+
+interface CorrectionsResponse {      // GET /skills/{id}/corrections
+  corrections: Correction[]          // recent raw, capped (default ~10)
+  distilled: DistilledRules | null   // null until the first compaction happens
+  total: number                      // total raw corrections ever recorded
 }
 
 interface ChangeRequest {
@@ -1136,9 +1310,18 @@ interface Source {
   type: "github" | "gitlab" | "jira" | "confluence" | "notion" |
         "slack" | "gitbook" | "linear" | "custom"
   status: SourceStatus
-  lastSync: string
+  lastSync: string | null
+  nextSync: string | null            // §4.1 — daemon's next scheduled tick
+  lastDelta: SyncDelta | null        // §4.1 — last computed delta summary
   resourceCount: number
-  config: Record<string, unknown>   // connector-specific, never exposed to non-admins
+  config: Record<string, unknown>    // connector-specific, never exposed to non-admins
+}
+
+interface SyncDelta {                // §4.1
+  added: number
+  updated: number
+  removed: number
+  unchanged?: number
 }
 
 interface Activity {
@@ -1725,6 +1908,90 @@ A circuit breaker (`retrieval/circuit.py`) opens after 3 consecutive failures pe
 **Rationale:** Consistency with the existing council approval flow; a single mental model for "AI drafts, human ratifies" across the product.
 
 **Consequences:** `nexus/assistant/{models,store,executor}.py`; the proposal review surface in the UI is shared between skill proposals and action proposals.
+
+---
+
+### ADR-015: Change-Gated Council Cadence with Weekly Cap and Manual Override
+
+**Status:** Accepted
+**Date:** 2026-05-23
+
+**Context:** The ingest daemon ticks every ~30 minutes. If a council session fired on every tick that changed *any* file, costs and SME-review burden would scale linearly with commit activity — at 6 skills × 48 ticks/day × 7 days that's ~2,000 sessions/week per product, indefensible. The opposite extreme — only running council on manual request — leaves skills stale.
+
+**Decision:** Three layers.
+
+1. **Gate** — after each ingestion delta (§4.1), intersect the changed-chunk IDs with each skill's `provenance.evidence_chunks`. If the overlap exceeds a configured threshold, enqueue a council run for that skill. Resyncs that don't touch any cited region trigger no council activity.
+2. **Cap** — at most one council run per `(product_id, skill_id)` per 7 days. Multiple gate trips inside the window coalesce into one richer session that consumes the union of changed chunks.
+3. **Override** — `POST /products/{pid}/council/sessions { force: true, skill_id }` bypasses the cap. Requires admin perms; surfaced in the UI as a "Re-run council" button on the skill detail page, with a cost-estimate confirm dialog.
+
+**Rationale:** The gate filters out resync ticks that do not affect any skill — the dominant case. The cap prevents thrashing when a single commit touches many cited regions. The override gives SMEs an escape hatch for known-important changes without needing to wait for the next gate trip. Together they cap upper-bound council cost per product to ~`(skill_count × cost_per_run)` per week, which is bounded and predictable.
+
+**Consequences:** Activity rows for council events are suffixed `(gated)` or `(manual override)`. The Dashboard surfaces "next sync · HH:MM · next council eligible · HH:MM (skill X)" as a quiet hint. Skills that have no `evidence_chunks` overlap will never be re-drafted automatically — by design.
+
+---
+
+### ADR-016: Council Priors — Skills Should Not Re-Litigate
+
+**Status:** Accepted
+**Date:** 2026-05-23
+
+**Context:** Today (and historically) every council session begins from a blank draft. The Adversary often re-raises the same critiques across sessions; SMEs re-edit the same sentence in the same way; rejected proposals' rationale is discarded and not learned from. The marginal cost of council to SMEs grows linearly with corpus churn.
+
+**Decision:** Every council session is seeded with three priors derived from prior interactions on the same `(product_id, skill_id)`:
+
+1. **Starting revision** — when a current approved skill exists, the session is launched with that body as input. The Synthesizer edits in place; sections that re-derive identically carry `inherited: true` in the proposal payload (UI shows an "inherited" pill so SMEs skip them).
+2. **Corrections corpus** — every `POST /proposals/{id}/edit` captures the (council-draft → SME-edit) diff. Recent corrections plus a distilled summary of older ones (see ADR-017) are rendered into the system prompt as "Past SMEs have said: …".
+3. **Rejection log** — `POST /proposals/{id}/reject` now requires `{ reason, category? }` in the body (previously sent as a URL query and dropped). Reasons persist and are injected as anti-priors on the next session.
+
+`createSession` returns `priors = { revision, corrections, rejections }` so the UI can render a "Priors loaded · rev N · M corr · K rej" badge in the session header.
+
+`Skill.provenance` gains a `cumulative_revisions: number` field for the cross-session counter the priors badge displays. The existing `revision_count: 0 | 1` (per-session adversary cap, ADR-007) is **not** changed — they are different counters and must not be collapsed.
+
+**Rationale:** Every SME edit is the highest-signal training data we have for this product. Throwing it away is the largest leak in the system. Feeding it forward as deterministic prompt content turns each correction into a permanent house rule with no model training required.
+
+**Consequences:** Over time, SME approvals should drift toward rubber stamps for stable sections, with edits concentrating on genuinely new content. New endpoints: `GET /skills/{id}/corrections`, `GET /skills/{id}/rejections`, `GET /skills/{id}/council-history`. The reject UI is now a Dialog with required reason + optional category, replacing the previous `window.prompt`.
+
+---
+
+### ADR-017: Corrections Corpus Compaction
+
+**Status:** Accepted
+**Date:** 2026-05-23
+
+**Context:** ADR-016 introduces the corrections corpus, where every SME edit becomes a permanent house rule fed into future council prompts. Without bounds this is a linear-growth token bomb: at 200 edits × ~250 tokens each = 50K tokens prepended to every council session for that skill, forever. Master skills on long-lived products would silently blow the model context window after ~12–18 months.
+
+**Decision:** The backend compacts older corrections into a single distilled summary. `GET /skills/{id}/corrections` returns:
+
+```ts
+{
+  corrections: Correction[],       // recent, raw; capped (default ~10)
+  distilled: DistilledRules | null,// older corrections, folded; null until first compaction
+  total: number,                   // total raw corrections ever recorded
+}
+```
+
+Compaction policy is backend-owned (proposed: compact when raw count > 25, fold all but the most recent 10 into a new distilled summary; on subsequent compactions, the previous distillation is re-summarized together with the new entries to prevent slow drift).
+
+The UI surfaces both — a "Distilled rules" accent panel above the list of recent raw corrections, with "showing 10 of 47 (older folded into distilled rules)" subtitle. The raw audit trail remains available for SMEs; the *injected prompt context stays bounded*.
+
+**Rationale:** Compaction is necessary, not optional. The alternative — letting the corpus grow without bound — is a known failure mode at 12–18 months on active products. A bounded prompt with periodic re-distillation preserves the operational signal of corrections while keeping per-session cost flat.
+
+**Consequences:** A second-order LLM call is needed at compaction time (low frequency; light tier model). The distillation step itself should be evaluable on a golden set: does the new distilled summary still cause the council to respect rules that were folded in?
+
+---
+
+### ADR-018: Per-Session Evidence Chunks Cap
+
+**Status:** Accepted
+**Date:** 2026-05-23
+
+**Context:** Citation-side input to the Synthesizer also needs bounding. As a corpus grows, the reranker may return more high-scoring chunks than a single prompt can absorb. Without a cap, prompts grow with corpus size and per-session cost grows with it.
+
+**Decision:** `EVIDENCE_CHUNKS_PER_SESSION_CAP = 20` (defined in [nexus-ui/lib/types.ts](../nexus-ui/lib/types.ts), enforced in the backend's prompt assembler). The reranker's top-K decides which chunks survive into the prompt; the rest are dropped for that session. The UI surfaces the budget on the skill provenance row as `N / 20 cap`.
+
+**Rationale:** Empirically, the marginal precision improvement from chunks 21–50 is small for skill drafting. Capping at 20 keeps prompt size predictable while leaving enough room for the Adversary to find real flaws. The constant is single-sourced in TypeScript and referenced by the backend so it stays in sync.
+
+**Consequences:** A skill's *stored* `evidence_chunks` may exceed 20 if the cap was raised previously and lowered later — historical artifact, no behavior change. The cap is per session, not per skill: each session re-selects its top-20 against the current changed-chunk set.
 
 ---
 

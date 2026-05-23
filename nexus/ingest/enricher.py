@@ -1,9 +1,13 @@
-"""Contextual chunk enrichment - ADR-010.
+"""Contextual chunk enrichment via hypothetical question generation (HQE) - ADR-010.
 
-For each chunk, ask a light LLM to write 1-2 sentences describing where the
-chunk sits in the surrounding resource (file path, class/function, doc section).
-Prepended to the chunk's text only when sent to the embedder; chunk.content
-itself is never mutated. Per-source-type toggle: docs default on, code default off.
+For code chunks, asks a light LLM to generate 3 hypothetical questions that the
+chunk answers. Stored in context_summary and prepended before embedding via
+text_for_embedding() — bridges the code→natural-language query gap.
+
+Doc chunks: no LLM call. context_path (heading hierarchy) is prepended directly
+by text_for_embedding() in models.py.
+
+Uses OpenAI-compatible /v1/chat/completions (DeepInfra or any compatible endpoint).
 """
 
 from __future__ import annotations
@@ -16,10 +20,10 @@ import httpx
 from nexus.ingest.models import Chunk, ChunkKind
 
 _DEFAULT_PROMPT = (
-    "You annotate retrieval corpora. In ONE short sentence (max 30 words), describe "
-    "where this excerpt lives so that future retrieval queries can find it. Mention "
-    "the file path and the enclosing structure (class/function/heading) when known. "
-    "Do not summarise the body; only describe the location."
+    "You are a retrieval corpus annotator. For this code excerpt, write exactly 3 concise "
+    "questions (each on its own line, prefixed with 'Q:') that a developer would type into "
+    "a search engine to find this code. Focus on what the code DOES and what PROBLEM it "
+    "SOLVES. Do not describe the location. Output only the 3 Q: lines, nothing else."
 )
 
 
@@ -28,23 +32,26 @@ class EnricherError(RuntimeError):
 
 
 class ContextualEnricher:
-    """Calls Ollama's /api/generate with a small instruction-tuned model."""
+    """Calls an OpenAI-compatible LLM to generate hypothetical questions for code chunks."""
 
     def __init__(
         self,
-        base_url: str = "http://localhost:11434",
+        base_url: str = "https://api.deepinfra.com/v1/openai",
         *,
-        model: str = "qwen2.5:3b",
-        enrich_code: bool = False,
-        enrich_docs: bool = True,
+        model: str = "google/gemma-3-4b-it",
+        api_key: str | None = None,
+        enrich_code: bool = True,
+        enrich_docs: bool = False,
         concurrency: int = 4,
         timeout_s: float = 30.0,
     ):
-        self.base_url = base_url.rstrip("/")
         self.model = model
         self.enrich_code = enrich_code
         self.enrich_docs = enrich_docs
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout_s)
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self._client = httpx.AsyncClient(
+            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout_s
+        )
         self._sem = asyncio.Semaphore(concurrency)
 
     async def aclose(self) -> None:
@@ -74,27 +81,28 @@ class ContextualEnricher:
             prompt = self._render_prompt(chunk)
             try:
                 resp = await self._client.post(
-                    "/api/generate",
+                    "/chat/completions",
                     json={
                         "model": self.model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.2, "num_predict": 80},
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 150,
+                        "temperature": 0.2,
                     },
                 )
             except httpx.HTTPError:
                 return None
             if resp.status_code != 200:
                 return None
-            text = resp.json().get("response", "").strip()
+            choices = resp.json().get("choices") or []
+            if not choices:
+                return None
+            text = (choices[0].get("message") or {}).get("content", "").strip()
             return text or None
 
     @staticmethod
     def _render_prompt(chunk: Chunk) -> str:
-        head = _DEFAULT_PROMPT
         meta_lines = [
             f"FILE: {chunk.resource.uri}",
-            f"KIND: {chunk.kind.value}",
             f"LINES: {chunk.start_line}-{chunk.end_line}",
         ]
         if chunk.context_path:
@@ -103,11 +111,11 @@ class ContextualEnricher:
         snippet = chunk.content
         if len(snippet) > 1200:
             snippet = snippet[:1200] + "\n…"
-        return f"{head}\n\n{meta}\n\nEXCERPT:\n```\n{snippet}\n```\n\nLOCATION:"
+        return f"{_DEFAULT_PROMPT}\n\n{meta}\n\nEXCERPT:\n```\n{snippet}\n```\n\nQUESTIONS:"
 
     async def health(self) -> bool:
         try:
-            r = await self._client.get("/api/tags")
+            r = await self._client.get("/models")
             return r.status_code == 200
         except httpx.HTTPError:
             return False

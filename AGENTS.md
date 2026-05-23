@@ -26,6 +26,27 @@ sibling repo `../nexus-ui/` is the Next.js web UI.
    *proposals*. Nothing becomes real — a skill file, a Jira write — without an
    explicit human confirm.
 
+## Cost/scale invariants — see ENGINEERING.md §4.1, §6.6, ADR-015 to ADR-018
+
+These are recent and easy to miss in the broader spec — call them out so they're
+not silently regressed:
+
+- **Resync is delta-only** (§4.1) — every sync returns
+  `{added, updated, removed, unchanged}` and only the changed chunks are re-embedded.
+  Don't reintroduce full re-ingest paths.
+- **Council is change-gated, weekly-capped, override-able** (ADR-015) — it does not
+  fire on every resync. The cap is per `(product, skill)`. `force: true` is admin-only.
+- **Sessions are seeded with priors** (ADR-016) — current approved skill body, distilled
+  corrections corpus, rejection log. Sessions never start blank when a precedent exists.
+- **Corrections compact** (ADR-017) — older corrections are folded into a single
+  distilled summary so the council's prompt stays bounded as the corpus grows.
+- **Evidence chunks per session is capped** (ADR-018) at `EVIDENCE_CHUNKS_PER_SESSION_CAP = 20`
+  in [nexus-ui/lib/types.ts](../nexus-ui/lib/types.ts). Backend enforces; the constant
+  is single-sourced from TS.
+- **Two revision counters, do not collapse them:**
+  `provenance.revision_count` is `0 | 1` per session (ADR-007, confidence formula input);
+  `provenance.cumulative_revisions` is monotonic across sessions (powers the UI priors badge).
+
 ## Conventions
 
 - **Python 3.13+, managed by `uv`.** `from __future__ import annotations` at the

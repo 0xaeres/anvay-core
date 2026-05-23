@@ -224,6 +224,19 @@ This isn't a similarity question — it's a *traversal* question. To answer it y
 
 Our relation extractor (`nexus/ingest/relation_extractor.py`) uses a light LLM at ingest time to extract triples from doc chunks. The retrieval-side expansion lives in `nexus/retrieval/graph.py`.
 
+#### f) Delta-only re-indexing
+
+Re-embedding every chunk on every resync would be wasteful — most pulls touch only a few files. The daemon and the manual `sync` endpoint both compute a delta:
+
+- Each chunk has a content hash (`path + anchor + content`).
+- Pull from the connector → compare hashes against the stored set.
+- **Added** (new hash) → embed + insert.
+- **Updated** (same anchor, different hash) → re-embed + upsert.
+- **Removed** (in store, not in pull) → delete from Qdrant.
+- **Untouched** → no-op (the dominant case).
+
+`POST /products/{pid}/sources/{sid}/sync` returns `{ ok, delta: { added, updated, removed, unchanged } }`. The UI shows the three counts on each source card and in the live sync log. Spec: ENGINEERING.md §4.1.
+
 #### The full Nexus pipeline (5 stages)
 
 ```
@@ -323,6 +336,11 @@ compiled = graph.compile(checkpointer=SqliteSaver(...))
 
 Each node is a single function in `nexus/council/agents/`. They call retrieval + ChatClient + return partial state. Nothing magic.
 
+Two important constraints around this graph:
+
+- The **Adversary → Synthesizer** edge fires at most once per session (ADR-007). After one redraft, the second Adversary output is attached to the proposal as-is and the session ends. This is the hard cap on per-session cost.
+- The graph's **initial state** is seeded with priors when a current approved skill exists: starting body, distilled corrections corpus, prior rejection log. Sessions never start from a blank page when there's a precedent — they edit, they don't redraft. Spec: ENGINEERING.md §6.6.2.
+
 ### 2.6 Server-Sent Events (SSE)
 
 **Server-Sent Events** is a tiny standard for one-way streaming from a server to a browser over HTTP. It's simpler than WebSockets (one-way, plain text, auto-reconnects), and the browser API is one line:
@@ -416,8 +434,9 @@ provenance:
   council_session: cs_abc123
   validated_by: alice@example.com
   validated_at: 2026-05-18T10:00:00Z
-  evidence_chunks: [chunk_id_1, chunk_id_2]
-  revision_count: 1
+  evidence_chunks: [chunk_id_1, chunk_id_2]   # length capped per session (ADR-018)
+  revision_count: 1            # per-session adversary loop cap, 0 or 1 (ADR-007)
+  cumulative_revisions: 4      # across all sessions for this skill (ADR-016)
 ---
 
 # Auth Middleware
@@ -939,14 +958,20 @@ These walk through real code paths. Open the referenced files in a second pane a
            calls reindex_resource(update, product_id, …)
    ↓
 [ingest]   nexus/ingest/incremental.py::reindex_resource
-           1. delete the old chunks for this resource from Qdrant (by resource_id payload filter)
-           2. chunker.chunk_resource() — tree-sitter aware
-           3. (if docs) enricher prepends context summary
-           4. embedder.embed_batch(chunks) — calls llama-server /v1/embeddings
-           5. (if docs) relation_extractor extracts triples
-           6. indexer.upsert(embedded_chunks) — Qdrant write with shard_key=product_id
-           7. (if triples) graph_store.upsert_triples(triples, product_id) — Neo4j write
-           8. semantic_cache.invalidate_for_chunks(...) — purge affected cache entries
+           1. compute content hashes for the new chunks (path + anchor + content)
+           2. diff against the stored hash table — derive added / updated / removed sets
+              (this is what makes resync cheap — untouched chunks are no-ops; ADR-018-adjacent §4.1)
+           3. chunker.chunk_resource() — tree-sitter aware, runs only on changed resources
+           4. (if docs) enricher prepends context summary
+           5. embedder.embed_batch(new + changed chunks only) — never the whole tree
+           6. (if docs) relation_extractor extracts triples for new/changed chunks
+           7. indexer.apply_delta(...) — Qdrant: insert added, upsert updated, delete removed
+              all with shard_key=product_id
+           8. (if triples) graph_store.upsert_triples(...) — Neo4j write
+           9. semantic_cache.invalidate_for_chunks(delta.added ∪ delta.updated ∪ delta.removed)
+              — untouched chunks keep their cached query results
+          10. emit `delta` SSE event with {added, updated, removed, unchanged} counts;
+              persist Source.lastDelta + Source.nextSync on the row
    ↓
 [Logging] daemon logs duration + chunk count; OTel span closes
 ```
@@ -1393,6 +1418,16 @@ connectors:
 | **stdio (transport)** | Standard input/output. MCP's default transport — JSON-RPC over a subprocess's stdin/stdout. |
 | **Tree-sitter** | Incremental parser library with grammars for many languages. We use it for semantic chunking. |
 | **Webhook** | An HTTP POST your service receives from an external system when an event occurs. |
+| **Sync delta** | `{added, updated, removed, unchanged}` chunk counts returned by a resync. Source of "+12 ~4 -1" cards in the UI. ENGINEERING.md §4.1. |
+| **Change gate** | Backend logic that decides whether a resync delta should fire a council session — by intersecting changed-chunk IDs with each skill's `evidence_chunks`. ADR-015. |
+| **Weekly cap** | At most one council run per `(product, skill)` per 7 days. Multiple gate trips coalesce. ADR-015. |
+| **Force / override** | `force: true` on `POST /council/sessions` bypasses the weekly cap. Admin-only, surfaced as "Re-run council" on skill detail. ADR-015. |
+| **Council priors** | The three things every council session is seeded with: starting revision (current approved skill), corrections corpus, rejection log. Returned on session creation as `{revision, corrections, rejections}` and shown as a header badge. ADR-016. |
+| **Corrections corpus** | Per-`(product, skill)` log of SME `editProposal` diffs, fed into future council prompts as "Past SMEs have said: …" house rules. ADR-016. |
+| **Distilled rules** | Older corrections compacted into one summary string to keep prompts bounded. Surfaced as an accent panel above recent corrections on skill detail. ADR-017. |
+| **Rejection log** | Persisted `{reason, category?}` from every rejected proposal, fed into future council prompts as anti-priors. ADR-016. |
+| **cumulative_revisions** | Cross-session monotonic counter on `Skill.provenance`. Powers the "rev N" in the priors badge. Distinct from `revision_count: 0 \| 1` (per-session, ADR-007). ADR-016. |
+| **EVIDENCE_CHUNKS_PER_SESSION_CAP** | Hard cap (= 20) on chunks fed into the Synthesizer's prompt per session. Enforced backend-side; constant lives in `nexus-ui/lib/types.ts`. ADR-018. |
 
 ---
 

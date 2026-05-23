@@ -94,7 +94,11 @@ def test_text_for_embedding_prepends_context_summary() -> None:
     chunks = chunk_resource("p", _res("z.py", "text/x-python"), code)
     assert chunks, "expected at least one chunk for a real function body"
     c = chunks[0]
-    assert c.text_for_embedding() == c.content
-    c.context_summary = "Location: foo() in z.py"
-    assert c.text_for_embedding().startswith("Location: foo() in z.py")
+    # context_path is prepended even without a context_summary
+    assert c.context_path is not None
+    assert c.text_for_embedding().startswith(c.context_path)
+    assert c.content in c.text_for_embedding()
+    # context_summary takes priority over context_path
+    c.context_summary = "Q: How to produce a list from seed?\nQ: What does foo return?"
+    assert c.text_for_embedding().startswith("Q: How to produce")
     assert c.content in c.text_for_embedding()

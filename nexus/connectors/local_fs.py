@@ -30,7 +30,22 @@ _DEFAULT_EXCLUDE = (
     "*.egg-info/*",
     "models/*",
     "skills/*",
+    # Lock / generated files — high token density (hex hashes), zero LLM signal.
     "*.lock",
+    "*-lock.yaml",
+    "*-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "package-lock.json",
+    "Pipfile.lock",
+    "poetry.lock",
+    "Cargo.lock",
+    "go.sum",
+    # Minified / source-map artefacts.
+    "*.min.js",
+    "*.min.css",
+    "*.map",
+    # Binaries / media.
     "*.png",
     "*.jpg",
     "*.jpeg",
@@ -38,6 +53,9 @@ _DEFAULT_EXCLUDE = (
     "*.pdf",
     "*.zip",
     "*.tar.gz",
+    "*.wasm",
+    "*.ico",
+    "*.svg",
 )
 
 _DEFAULT_INCLUDE = (

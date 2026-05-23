@@ -12,14 +12,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import shutil
+import tempfile
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from git import Repo
 
 from nexus.api.deps import get_config_dep, get_registry
 from nexus.config import NexusConfig
+from nexus.connectors.local_fs import LocalFsConfig, LocalFsSource
+from nexus.ingest.models import ResourceRef
+from nexus.ingest.pipeline import run_ingest
 from nexus.registry import Registry
+from nexus.setup.bootstrap import _authenticated_clone_url
+
+log = logging.getLogger(__name__)
 
 # Per-source log queues: product_id:source_id → asyncio.Queue[dict | None]
 # None signals end-of-stream to a waiting SSE subscriber.
@@ -136,33 +148,202 @@ async def sync_source(
 
     source = runtime or config_sources[source_id]
     key = f"{product_id}:{source_id}"
-    q: asyncio.Queue = asyncio.Queue(maxsize=256)
+    q: asyncio.Queue = asyncio.Queue(maxsize=2048)
     _log_queues[key] = q
 
     async def _run() -> None:
-        src_type = source.get("type", "unknown")
-        events = [
-            ("info", f"Connecting to {src_type} source…"),
-            ("info", "Authenticating with connector…"),
-            ("info", "Listing resources…"),
-            ("info", "Found 42 resources — starting scan"),
-            ("info", "Chunking: 0/42 resources processed"),
-            ("info", "Chunking: 14/42 resources processed"),
-            ("info", "Chunking: 28/42 resources processed"),
-            ("info", "Chunking: 42/42 resources processed"),
-            ("info", "Embedding 312 chunks (batch_size=32)…"),
-            ("info", "Indexed 312 chunks into vector store"),
-            ("info", "Extracting relations for graph layer…"),
-            ("success", "Sync complete — 42 resources, 312 chunks indexed"),
-        ]
-        for level, msg in events:
-            await asyncio.sleep(0.8)
-            await q.put({"level": level, "msg": msg, "ts": datetime.now(UTC).isoformat()})
-        await q.put(None)
+        await _real_ingest(
+            product_id=product_id,
+            source=source,
+            runtime=runtime,
+            config=config,
+            registry=registry,
+            q=q,
+        )
 
     task = asyncio.create_task(_run())
     task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
     return {"ok": True, "queued": True, "product": product_id, "source": source_id}
+
+
+# ---------------------------------------------------------------- real ingest
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+async def _emit(q: asyncio.Queue, level: str, msg: str, **extra) -> None:
+    try:
+        await q.put({"level": level, "msg": msg, "ts": _now(), **extra})
+    except Exception:
+        # Queue full or closed — degrade silently. The pipeline keeps going.
+        log.debug("ingest log queue rejected: %s %s", level, msg)
+
+
+class _ProgressAdapter:
+    """Wraps a LocalFsSource to emit structured progress events per resource read.
+
+    Implements the `_Source` protocol from nexus.ingest.pipeline.
+    """
+
+    def __init__(self, inner: LocalFsSource, put: Callable[..., None], total: int):
+        self.inner = inner
+        self.put = put
+        self.source_id = inner.source_id
+        self.total = total
+        self.processed = 0
+
+    async def list_resources(self) -> AsyncIterator[ResourceRef]:
+        async for ref in self.inner.list_resources():
+            yield ref
+
+    async def read_resource(self, ref: ResourceRef) -> str:
+        self.processed += 1
+        pct = round(100 * self.processed / self.total) if self.total else 0
+        short = ref.uri.rsplit("/", 1)[-1] or ref.uri
+        self.put(
+            "progress",
+            f"Indexing {self.processed} of {self.total} — {short[:80]}",
+            done=self.processed,
+            total=self.total,
+            pct=pct,
+        )
+        return await self.inner.read_resource(ref)
+
+
+async def _real_ingest(
+    *,
+    product_id: str,
+    source: dict,
+    runtime: dict | None,
+    config: NexusConfig,
+    registry: Registry,
+    q: asyncio.Queue,
+) -> None:
+    """Drive the actual run_ingest pipeline + stream progress."""
+    src_type = source.get("type", "unknown")
+    cleanup_dir: Path | None = None
+    try:
+        await _emit(q, "info", f"Starting sync for '{source.get('name')}' ({src_type})")
+
+        if src_type == "github":
+            local_root, cleanup_dir = await _clone_github(source, q)
+        elif src_type in ("filesystem", "local_fs"):
+            roots = source.get("config", {}).get("roots") or [
+                source.get("config", {}).get("root")
+            ]
+            if not roots or not roots[0]:
+                await _emit(q, "error", "filesystem source missing 'root' in config")
+                return
+            local_root = Path(str(roots[0]))
+            if not local_root.is_dir():
+                await _emit(q, "error", f"filesystem root not a directory: {local_root}")
+                return
+        else:
+            await _emit(
+                q,
+                "error",
+                f"Connector type {src_type!r} is not yet wired for sync. "
+                "Currently supported: github, filesystem.",
+            )
+            return
+
+        await _emit(q, "info", f"Walking {local_root}…")
+
+        def _put(level: str, msg: str, **extra) -> None:
+            try:
+                q.put_nowait({"level": level, "msg": msg, "ts": _now(), **extra})
+            except asyncio.QueueFull:
+                log.debug("ingest log queue full; dropping: %s", msg)
+
+        fs_source = LocalFsSource(LocalFsConfig(root=local_root))
+
+        await _emit(q, "info", "Counting files…")
+        total = 0
+        async for _ in fs_source.list_resources():
+            total += 1
+        await _emit(q, "started", f"Starting ingestion — {total} files found", total=total)
+
+        adapter = _ProgressAdapter(fs_source, _put, total=total)
+
+        await _emit(q, "info", "Running ingest pipeline (chunk → enrich → embed → index)…")
+        stats = await run_ingest(
+            product_id=product_id, source=adapter, config=config, enrich=True
+        )
+
+        if stats.embed_errors:
+            await _emit(
+                q,
+                "warn",
+                f"{stats.embed_errors} batch(es) failed to embed — "
+                "chunks too large for embedder token limit. "
+                "Restart llama-server with --ubatch-size 2048 and re-sync.",
+            )
+        await _emit(
+            q,
+            "success" if not stats.embed_errors else "done",
+            (
+                f"Sync complete — {stats.resources_indexed} indexed, "
+                f"{stats.resources_skipped} skipped, "
+                f"{stats.chunks_indexed} chunks in vector store"
+            ),
+        )
+
+        if runtime:
+            registry.upsert_source({
+                **runtime,
+                "lastSync": _now(),
+                "resourceCount": stats.resources_indexed,
+                "status": "connected",
+            })
+
+    except Exception as e:
+        log.exception(
+            "sync_source failed for product=%s source=%s", product_id, source.get("name")
+        )
+        await _emit(q, "error", f"Ingest failed: {type(e).__name__}: {e}")
+        if runtime:
+            try:
+                registry.upsert_source({**runtime, "status": "error"})
+            except Exception:
+                log.debug("failed to mark source 'error' status")
+    finally:
+        if cleanup_dir is not None:
+            await asyncio.to_thread(shutil.rmtree, str(cleanup_dir), ignore_errors=True)
+        await q.put(None)
+
+
+async def _clone_github(source: dict, q: asyncio.Queue) -> tuple[Path, Path]:
+    """Shallow-clone the first configured repo into a temp dir. Returns (root, cleanup_dir)."""
+    cfg = source.get("config") or {}
+    repos = cfg.get("repos") or []
+    token = cfg.get("token") or None
+    if not repos:
+        raise ValueError(
+            "github source has no 'repos' configured (expected a GitHub URL)"
+        )
+    url = str(repos[0]).rstrip("/").removesuffix(".git")
+    if not url.startswith("https://github.com/") and not url.startswith("git@"):
+        raise ValueError(
+            f"unsupported github URL: {url!r} (expected https://github.com/<org>/<repo>)"
+        )
+
+    await _emit(q, "info", f"Cloning {url} (shallow, depth=1)…")
+    tmp = Path(tempfile.mkdtemp(prefix="nexus-ingest-"))
+    clone_path = tmp / "repo"
+    auth_url = _authenticated_clone_url(url + ".git", token)
+
+    try:
+        await asyncio.to_thread(
+            Repo.clone_from, auth_url, str(clone_path), depth=1, multi_options=["--quiet"]
+        )
+    except Exception as e:
+        shutil.rmtree(str(tmp), ignore_errors=True)
+        raise RuntimeError(f"git clone failed: {e}") from e
+
+    await _emit(q, "info", "Clone complete")
+    return clone_path, tmp
 
 
 @router.get("/{source_id}/log")

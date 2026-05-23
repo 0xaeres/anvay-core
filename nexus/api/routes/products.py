@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from nexus.api.deps import get_proposal_queue, get_registry, get_skill_store
 from nexus.council.queue import ProposalQueue
 from nexus.registry import Registry
-from nexus.skills.models import OrgSkill
+from nexus.skills.models import OrgSkill, Skill, SkillKind
 from nexus.skills.store import SkillStore
 
 router = APIRouter(tags=["products"])
@@ -67,6 +67,66 @@ async def get_product(
     if not p:
         raise HTTPException(status_code=404, detail="product not found")
     return p
+
+
+# Live stages, ordered from latest to earliest.
+_TERMINAL_SESSION_STATUSES = {"completed", "failed"}
+
+
+@router.get("/products/{product_id}/status")
+async def get_product_status(
+    product_id: str,
+    registry: Registry = Depends(get_registry),
+    queue: ProposalQueue = Depends(get_proposal_queue),
+    store: SkillStore = Depends(get_skill_store),
+) -> dict:
+    """Single cheap call that powers project-card state in the dashboard.
+
+    Stage precedence (highest wins): skill > review > council > ingesting > none.
+    The `councilInProgress` flag is independent of stage so the UI can render
+    "Run Council" vs "Council in progress" at the same stage.
+    """
+    if not registry.get_product(product_id):
+        raise HTTPException(status_code=404, detail="product not found")
+
+    sources = registry.list_sources(product_id)
+    has_sources = bool(sources)
+    has_embeddings = any(
+        s.get("lastSync") and int(s.get("resourceCount") or 0) > 0 for s in sources
+    )
+
+    has_master = any(
+        isinstance(s, Skill) and s.product == product_id and s.kind is SkillKind.MASTER
+        for s in store.iter_skills()
+    )
+
+    pending = queue.list(status="pending", product_id=product_id)
+    has_pending = bool(pending)
+
+    sessions = queue.list_sessions(product_id=product_id)
+    live = next(
+        (s for s in sessions if s["status"] not in _TERMINAL_SESSION_STATUSES),
+        None,
+    )
+
+    if has_master:
+        stage = "skill"
+    elif has_pending:
+        stage = "review"
+    elif has_embeddings:
+        stage = "council"
+    elif has_sources:
+        stage = "ingesting"
+    else:
+        stage = "none"
+
+    return {
+        "hasEmbeddings": has_embeddings,
+        "hasSkill": has_master,
+        "councilInProgress": live is not None,
+        "currentSessionId": (live["id"] if live else None),
+        "currentStage": stage,
+    }
 
 
 @router.post("/products")

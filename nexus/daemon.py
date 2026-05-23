@@ -41,10 +41,12 @@ async def run_daemon(
             batch_size=config.ingestion.embed_batch_size,
         )
         enricher = ContextualEnricher(
-            base_url=config.models.light.base_url or "http://localhost:11434",
+            base_url=config.models.light.base_url or "https://api.deepinfra.com/v1/openai",
             model=config.models.light.model,
+            api_key=config.models.light.api_key,
             enrich_code=config.ingestion.enrich_chunks.code,
             enrich_docs=config.ingestion.enrich_chunks.docs,
+            concurrency=config.ingestion.enricher_concurrency,
         )
         indexer = Indexer(url=config.vector_store.url)
         cache = SemanticCache(
@@ -58,8 +60,9 @@ async def run_daemon(
             password=config.graph.password,
         )
         extractor = RelationExtractor(
-            base_url=config.models.light.base_url or "http://localhost:11434",
+            base_url=config.models.light.base_url or "https://api.deepinfra.com/v1/openai",
             model=config.models.light.model,
+            api_key=config.models.light.api_key,
             extract_docs=config.ingestion.extract_relations.docs,
             extract_code=config.ingestion.extract_relations.code,
         )

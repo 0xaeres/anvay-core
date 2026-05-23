@@ -68,6 +68,8 @@ class Chunk(BaseModel):
         """Return the string actually fed to the embedder (with context prepended)."""
         if self.context_summary:
             return f"{self.context_summary}\n\n{self.content}"
+        if self.context_path:
+            return f"{self.context_path}\n\n{self.content}"
         return self.content
 
 

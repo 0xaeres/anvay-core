@@ -1,12 +1,14 @@
 """LangGraph StateGraph for the council.
 
-Topology (Slice 3, no Adversary yet — that lands in Slice 4):
+Topology:
 
       START
       /  \\
    Arch   Domain
       \\  /
    Synth
+      |
+     Adv ←─ conditional: routes back to Synth iff blocking + no revisions yet
       |
       END
 
@@ -22,7 +24,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from nexus.config import NexusConfig
@@ -135,10 +137,10 @@ def build_graph(config: NexusConfig, handles: CouncilHandles):
 # ---------------------------------------------------------------- checkpointer
 
 
-def open_checkpointer(db_path: Path) -> SqliteSaver:
-    """Open a SqliteSaver against `db_path`. Caller owns lifecycle."""
+def open_checkpointer(db_path: Path) -> AsyncSqliteSaver:
+    """Open an AsyncSqliteSaver against `db_path`. Caller owns lifecycle."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    return SqliteSaver.from_conn_string(str(db_path))
+    return AsyncSqliteSaver.from_conn_string(str(db_path))
 
 
 # ---------------------------------------------------------------- entry point
@@ -152,21 +154,20 @@ async def run_council(
     checkpoint_db: Path,
 ):
     """Run one council session end-to-end. Returns (final_state, proposal-or-None)."""
-    async with council_handles(config) as handles:
-        with open_checkpointer(checkpoint_db) as saver:
-            graph = build_graph(config, handles)
-            compiled = graph.compile(checkpointer=saver)
-            log.info("council: %s starting (topic=%r)", session_id, initial.get("topic"))
-            final_state = await compiled.ainvoke(
-                initial,
-                config={"configurable": {"thread_id": session_id}},
-            )
-            proposal = final_state.get("proposal")
-            log.info(
-                "council: %s done — proposal=%s, msgs=%d, cost_entries=%d",
-                session_id,
-                getattr(proposal, "id", None),
-                len(final_state.get("deliberation", [])),
-                len(final_state.get("costs", [])),
-            )
-            return final_state, proposal
+    async with council_handles(config) as handles, open_checkpointer(checkpoint_db) as saver:
+        graph = build_graph(config, handles)
+        compiled = graph.compile(checkpointer=saver)
+        log.info("council: %s starting (topic=%r)", session_id, initial.get("topic"))
+        final_state = await compiled.ainvoke(
+            initial,
+            config={"configurable": {"thread_id": session_id}},
+        )
+        proposal = final_state.get("proposal")
+        log.info(
+            "council: %s done — proposal=%s, msgs=%d, cost_entries=%d",
+            session_id,
+            getattr(proposal, "id", None),
+            len(final_state.get("deliberation", [])),
+            len(final_state.get("costs", [])),
+        )
+        return final_state, proposal

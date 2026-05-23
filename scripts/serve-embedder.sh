@@ -37,5 +37,5 @@ exec llama-server \
   --ctx-size "$CTX_SIZE" \
   --embedding \
   --pooling mean \
-  --batch-size 32 \
+  --batch-size 2048 \
   --n-gpu-layers 999

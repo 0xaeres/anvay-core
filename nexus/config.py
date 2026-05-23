@@ -97,8 +97,8 @@ class CacheCfg(BaseModel):
 
 
 class EnrichCfg(BaseModel):
-    docs: bool = True
-    code: bool = False
+    docs: bool = False  # context_path heading hierarchy sufficient; zero LLM cost
+    code: bool = True   # HQE: 3 hypothetical questions bridge code → natural language queries
 
 
 class ExtractRelationsCfg(BaseModel):
@@ -109,8 +109,11 @@ class ExtractRelationsCfg(BaseModel):
 class IngestionCfg(BaseModel):
     enrich_chunks: EnrichCfg = Field(default_factory=EnrichCfg)
     extract_relations: ExtractRelationsCfg = Field(default_factory=ExtractRelationsCfg)
-    embed_batch_size: int = 32
+    embed_batch_size: int = 16          # M2/8GB: 16 | upgrade 16GB+: 32
     quality_gate_threshold: float = 0.3
+    file_batch_size: int = 20           # M2/8GB: 20 | upgrade 16GB+: 50
+    read_concurrency: int = 5           # M2/8GB: 5  | upgrade 16GB+: 10
+    enricher_concurrency: int = 4       # cloud inference — rate-limited, not RAM-limited
 
 
 class CircuitBreakerCfg(BaseModel):

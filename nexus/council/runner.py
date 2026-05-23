@@ -14,7 +14,6 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from pathlib import Path
 
 from nexus.config import NexusConfig
 from nexus.council.graph import build_graph, council_handles, open_checkpointer
@@ -69,10 +68,7 @@ class _SessionHub:
                 self._subscribers.pop(session_id, None)
 
     def is_live(self, session_id: str) -> bool:
-        return (
-            session_id in self._subscribers
-            and session_id not in self._completed
-        )
+        return session_id in self._subscribers and session_id not in self._completed
 
 
 HUB = _SessionHub()
@@ -151,23 +147,25 @@ async def _run_session(
         costs_dumped: list[dict] = []
         proposal = None
 
-        async with council_handles(config) as handles:
-            with open_checkpointer(config.storage.council_checkpoint) as saver:
-                graph = build_graph(config, handles)
-                compiled = graph.compile(checkpointer=saver)
-                async for node_update in compiled.astream(
-                    initial,
-                    config={"configurable": {"thread_id": session_id}},
-                ):
-                    # `node_update` is `{node_name: partial_state}` per LangGraph
-                    for node_name, delta in (node_update or {}).items():
-                        await _publish_node_delta(session_id, node_name, delta)
-                        for m in delta.get("deliberation", []) or []:
-                            deliberation_dumped.append(_dump(m))
-                        for c in delta.get("costs", []) or []:
-                            costs_dumped.append(_dump(c))
-                        if "proposal" in delta and delta["proposal"] is not None:
-                            proposal = delta["proposal"]
+        async with (
+            council_handles(config) as handles,
+            open_checkpointer(config.storage.council_checkpoint) as saver,
+        ):
+            graph = build_graph(config, handles)
+            compiled = graph.compile(checkpointer=saver)
+            async for node_update in compiled.astream(
+                initial,
+                config={"configurable": {"thread_id": session_id}},
+            ):
+                # `node_update` is `{node_name: partial_state}` per LangGraph
+                for node_name, delta in (node_update or {}).items():
+                    await _publish_node_delta(session_id, node_name, delta)
+                    for m in delta.get("deliberation", []) or []:
+                        deliberation_dumped.append(_dump(m))
+                    for c in delta.get("costs", []) or []:
+                        costs_dumped.append(_dump(c))
+                    if "proposal" in delta and delta["proposal"] is not None:
+                        proposal = delta["proposal"]
 
         if proposal is not None:
             queue.enqueue(
@@ -269,7 +267,3 @@ async def stream_events(session_id: str) -> AsyncIterator[dict]:
             yield {"event": item.get("event", "message"), "data": json.dumps(item.get("data", {}))}
     finally:
         await HUB.unsubscribe(session_id, q)
-
-
-# convenience for callers needing pathlib
-_PathlibPath = Path

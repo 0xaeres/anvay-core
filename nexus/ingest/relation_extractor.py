@@ -95,17 +95,20 @@ class RelationExtractor:
     def __init__(
         self,
         *,
-        base_url: str = "http://localhost:11434",
-        model: str = "qwen2.5:3b",
+        base_url: str = "https://api.deepinfra.com/v1/openai",
+        model: str = "google/gemma-3-4b-it",
+        api_key: str | None = None,
         extract_docs: bool = True,
         extract_code: bool = False,
         timeout_s: float = 30.0,
     ):
-        self.base_url = base_url.rstrip("/")
         self.model = model
         self.extract_docs = extract_docs
         self.extract_code = extract_code
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout_s)
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self._client = httpx.AsyncClient(
+            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout_s
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -140,24 +143,24 @@ class RelationExtractor:
         )
         try:
             resp = await self._client.post(
-                "/api/chat",
+                "/chat/completions",
                 json={
                     "model": self.model,
                     "messages": [
                         {"role": "system", "content": _SYSTEM},
                         {"role": "user", "content": body},
                     ],
-                    "format": "json",
-                    "stream": False,
-                    "options": {"temperature": 0.1, "num_predict": 400},
+                    "max_tokens": 400,
+                    "temperature": 0.1,
+                    "response_format": {"type": "json_object"},
                 },
             )
         except httpx.HTTPError as e:
-            raise RuntimeError(f"ollama call failed: {e}") from e
+            raise RuntimeError(f"inference call failed: {e}") from e
         if resp.status_code != 200:
-            raise RuntimeError(f"ollama returned {resp.status_code}: {resp.text[:200]}")
-        message = resp.json().get("message", {}) or {}
-        content = message.get("content", "") or "{}"
+            raise RuntimeError(f"inference returned {resp.status_code}: {resp.text[:200]}")
+        choices = resp.json().get("choices") or []
+        content = ((choices[0].get("message") or {}).get("content") or "{}") if choices else "{}"
         import json as _json
 
         try:

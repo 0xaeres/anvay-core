@@ -16,11 +16,14 @@ This is consistent with how transformers-jina v4 internally formats inputs.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Literal
 
 import httpx
 
 from nexus.ingest.models import Chunk, EmbeddedChunk
+
+log = logging.getLogger(__name__)
 
 VectorName = Literal["dense_code", "dense_text"]
 Modality = Literal["passage", "query"]
@@ -38,10 +41,13 @@ class EmbedderError(RuntimeError):
     pass
 
 
+_RETRY_DELAYS = (1.0, 3.0, 8.0)  # seconds between attempts (3 total)
+
+
 class EmbedderClient:
     """Thin async client. Construct once, reuse across the ingestion pipeline."""
 
-    def __init__(self, base_url: str, *, timeout_s: float = 30.0, batch_size: int = 32):
+    def __init__(self, base_url: str, *, timeout_s: float = 120.0, batch_size: int = 32):
         self.base_url = base_url.rstrip("/")
         self.batch_size = batch_size
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout_s)
@@ -65,21 +71,31 @@ class EmbedderClient:
         return out
 
     async def _call(self, inputs: list[str]) -> list[list[float]]:
-        try:
-            resp = await self._client.post(
-                "/v1/embeddings",
-                json={"input": inputs, "model": "jina-embeddings-v4"},
-            )
-        except httpx.HTTPError as e:
-            raise EmbedderError(f"embedder request failed: {e}") from e
-        if resp.status_code != 200:
-            raise EmbedderError(
-                f"embedder returned {resp.status_code}: {resp.text[:200]}"
-            )
-        data = resp.json().get("data", [])
-        # OpenAI-compat response keeps input order via the `index` field
-        ordered = sorted(data, key=lambda d: d.get("index", 0))
-        return [d["embedding"] for d in ordered]
+        last_exc: Exception | None = None
+        for attempt, delay in enumerate((*_RETRY_DELAYS, None)):
+            try:
+                resp = await self._client.post(
+                    "/v1/embeddings",
+                    json={"input": inputs, "model": "jina-embeddings-v4"},
+                )
+            except httpx.HTTPError as e:
+                last_exc = EmbedderError(f"embedder request failed: {e}")
+            else:
+                if resp.status_code == 200:
+                    data = resp.json().get("data", [])
+                    ordered = sorted(data, key=lambda d: d.get("index", 0))
+                    return [d["embedding"] for d in ordered]
+                msg = f"embedder returned {resp.status_code}: {resp.text[:300]}"
+                # 4xx = bad request (e.g. token limit) — don't retry
+                if resp.status_code < 500:
+                    raise EmbedderError(msg)
+                last_exc = EmbedderError(msg)
+
+            if delay is not None:
+                log.warning("embedder attempt %d failed; retrying in %.0fs", attempt + 1, delay)
+                await asyncio.sleep(delay)
+
+        raise last_exc or EmbedderError("embedder failed after retries")
 
     # ------------------------------------------------------------------ helpers
 

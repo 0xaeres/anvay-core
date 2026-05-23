@@ -21,11 +21,12 @@ from nexus.ingest.models import Chunk, ChunkKind, ResourceRef
 
 # ---------------------------------------------------------------- constants
 
-MAX_CHUNK_CHARS = 3000
+MAX_CHUNK_CHARS = 1200    # ~300-400 tokens; leaves headroom for HQE prefix under llama.cpp --ubatch-size 512
 MIN_CHUNK_CHARS = 64  # for code — filters trivial 1-liner defs
 MIN_DOC_CHUNK_CHARS = 20  # docs: keep short sections (headings + a sentence)
-CHAR_SPLIT_TARGET = 1200
-CHAR_SPLIT_OVERLAP = 120
+CHAR_SPLIT_TARGET = 700   # target for oversized chunks; ~175-250 tokens
+CHAR_SPLIT_OVERLAP = 70
+
 
 
 # ---------------------------------------------------------------- per-language config
