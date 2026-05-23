@@ -439,7 +439,9 @@ Key properties:
 - **Confidence-rated** — a float in [0,1] computed at draft time based on citation count, retrieval scores, and adversary critique severity. The UI shows it as a colored bar.
 - **Provenance-tracked** — every skill records which council session drafted it, who validated, when, with what evidence.
 
-Skills are stored as files in a git repo (`skills_repo` in `nexus.yaml`) for full history. They're served via MCP as resources (`nexus://skills/{product}/{kind}/{name}`).
+Skills are stored as files in a single org-wide Git repo (one repo per org — `skills_repo` in `nexus.yaml`, or set at runtime via the `/setup` wizard). The repo root contains one directory per product alongside a `shared/` directory for cross-product standards (tech-stack, language, security). New orgs get the bundled starter pack (`nexus/skills/starter/shared/` — 13 curated skills) seeded into `shared/` on first-run setup. Skills are served via MCP as resources (`nexus://skills/{product}/{kind}/{name}`).
+
+The MCP `find_skills` tool does **selective serving** to keep the LLM context tight: it filters by `applies_to.files` glob (when `current_file` is given) and `applies_to.contexts` (when a non-`general` context tag is given), then walks `composes_with` to pull in prerequisites. See `nexus/mcp_server/tools.py`.
 
 > **Naming note:** Anthropic also has a feature called "Skills" for Claude Code. Nexus skills predate that and serve a different purpose — they're *grounded guidance for any agent*, not an Anthropic-specific construct.
 
@@ -740,6 +742,16 @@ if not hmac.compare_digest(expected, received_signature):
 
 `config.py` is worth reading in full — Pydantic's `BaseSettings` makes it elegant. The whole config schema is type-checked at boot.
 
+### `setup/` — first-run skills_repo bootstrap
+
+| File | Role |
+|---|---|
+| `setup/github_api.py` | Minimal `httpx` client for `POST /user/repos` and `POST /orgs/{org}/repos`. Used only at bootstrap. |
+| `setup/bootstrap.py` | Orchestrator: create-or-attach repo → clone tempdir → copy `nexus/skills/starter/shared/` → commit + push. Idempotent on the seed step. |
+| `setup/kv.py` | `setup_kv` table in `registry.db` for runtime config overrides (`skills_repo` URL the wizard wrote). |
+| `api/routes/setup.py` | `GET /setup/status` + `POST /setup/skills-repo`. The UI's `/setup` page calls these. |
+| `skills/starter/shared/` | 13 curated `.skill.md` files (Java, JS, TS, Python, HTML, CSS, Angular, Spring Boot, code-review, testing, docs, git-workflow, security). |
+
 ### `observability/otel.py`
 
 Sets up OpenTelemetry tracing and Langfuse trace IDs. Every LLM call gets a span; spans propagate through async context.
@@ -1006,7 +1018,7 @@ cd ../nexus-ui/
 npm run dev
 ```
 
-Visit `http://localhost:3000`. First load redirects to `/onboarding`.
+Visit `http://localhost:3000`. First load redirects to `/setup` (org-wide skills_repo bootstrap) on a fresh install, then to `/onboarding` (per-product wizard) once setup is complete.
 
 ### Hot reload
 

@@ -2,15 +2,16 @@
 # Apple Silicon dev defaults: embedding + reranker served locally via llama.cpp,
 # light LLMs via Ollama, council LLMs via DeepInfra (cloud).
 
-# Skill repos — cloned on boot, pushed to on approve
+# One skills repo per org — cloned on boot, pushed to on approve.
+# Structure inside: product dirs + shared/ at the root.
+#   skills/
+#   ├── forge/          ← per-product skill hierarchy
+#   ├── atlas/
+#   └── shared/         ← cross-product standards (tech stack, language, security)
 skills_repo: git@github.com:myorg/nexus-skills.git
-org_skills_repo: git@github.com:nexus-community/org-skills.git
-
-hierarchy_root: ./skills           # in prod, an ephemeral clone of skills_repo
-org_library_root: ./org-skills     # in prod, an ephemeral clone of org_skills_repo
-# For local dev with no skills repo, point at the bundled seeds instead:
+hierarchy_root: ./skills           # local clone path (ephemeral — re-cloned on boot)
+# For local dev without a skills repo, point at the bundled seeds:
 # hierarchy_root: ./nexus/skills/seed
-# org_library_root: ./nexus/skills/seed/org
 
 # ---------------------------------------------------------------- Connectors
 connectors:

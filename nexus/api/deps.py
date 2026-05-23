@@ -11,6 +11,7 @@ from nexus.auth.atlassian_oauth import AtlassianOAuth
 from nexus.config import NexusConfig, get_config
 from nexus.council.queue import ProposalQueue
 from nexus.registry import Registry
+from nexus.setup import SetupKV
 from nexus.skills.store import SkillStore
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,24 @@ def get_registry() -> Registry:
     config: NexusConfig = get_config()
     # Co-locate the registry alongside the proposal queue
     return Registry(config.storage.proposal_queue.parent / "registry.db")
+
+
+@lru_cache(maxsize=1)
+def get_setup_kv() -> SetupKV:
+    config: NexusConfig = get_config()
+    return SetupKV(config.storage.proposal_queue.parent / "registry.db")
+
+
+def resolve_skills_repo_url(
+    config: NexusConfig | None = None, kv: SetupKV | None = None
+) -> str:
+    """Return the active skills_repo URL or '' if setup is still required.
+
+    Resolution order: runtime KV (set by /setup/skills-repo) > nexus.yaml.
+    """
+    cfg = config or get_config()
+    store = kv or get_setup_kv()
+    return store.get("skills_repo") or cfg.skills_repo or ""
 
 
 @lru_cache(maxsize=1)

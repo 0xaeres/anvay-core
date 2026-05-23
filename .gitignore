@@ -31,7 +31,6 @@ nexus.yaml
 
 # Skills (cloned at runtime — never committed to the app repo)
 skills/
-org-skills/
 
 # GGUF model weights (large, downloaded out-of-band)
 models/

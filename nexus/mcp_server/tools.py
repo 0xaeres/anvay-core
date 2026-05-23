@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from nexus.config import NexusConfig
 from nexus.retrieval.pipeline import RetrievalContext, retrieve
@@ -55,20 +56,39 @@ class ToolState:
 
 
 async def find_skills(
-    state: ToolState, *, query: str, context: str = "general"
+    state: ToolState,
+    *,
+    query: str,
+    context: str = "general",
+    current_file: str | None = None,
+    top_k: int = 5,
 ) -> dict:
-    """Return ranked skill summaries for a query+context."""
-    skills = state.store.iter_skills()
-    if not skills:
+    """Return ranked skill summaries for a query+context.
+
+    Selective serving keeps the context window tight:
+      1. `current_file` filters by `applies_to.files` glob match.
+      2. `context` (when not "general") filters by exact `applies_to.contexts` tag.
+      3. Top-K survivors are ranked by lexical overlap + confidence.
+      4. `composes_with` prerequisites are pulled in transitively.
+
+    Skills with empty `applies_to.files` / `applies_to.contexts` are treated as
+    universally applicable (no constraint), so they survive any filter.
+    """
+    all_skills = state.store.iter_skills()
+    if not all_skills:
         return {"skills": [], "warning": "no skills found at hierarchy_root"}
 
-    # Score each skill by lexical overlap on body+frontmatter. Cheap and fully
-    # deterministic — a richer semantic ranker can replace this in Slice 4.
+    candidates = [
+        s
+        for s in all_skills
+        if _matches_file_globs(current_file, s.applies_to.files)
+        and _matches_context(context, s.applies_to.contexts)
+    ]
+
     ql = (query + " " + context).lower()
     q_tokens = {t for t in _tokens(ql) if len(t) >= 3}
-
     scored: list[tuple[float, Skill | OrgSkill]] = []
-    for s in skills:
+    for s in candidates:
         haystack = f"{s.name} {' '.join(s.applies_to.contexts or [])} {s.body}".lower()
         h_tokens = set(_tokens(haystack))
         if not q_tokens:
@@ -79,8 +99,13 @@ async def find_skills(
         scored.append((score, s))
 
     scored.sort(key=lambda x: x[0], reverse=True)
+    top = [s for _, s in scored[:top_k]]
+    expanded = _expand_composes_with(top, all_skills)
+    direct_ids = {s.id for s in top}
+    score_by_id = {s.id: sc for sc, s in scored}
+
     out: list[dict] = []
-    for score, s in scored[:10]:
+    for s in expanded:
         out.append(
             {
                 "id": s.id,
@@ -88,11 +113,18 @@ async def find_skills(
                 "kind": str(s.kind),
                 "scope": str(_scope_of(s)),
                 "confidence": s.confidence,
-                "rank_score": round(score, 4),
+                "rank_score": round(score_by_id.get(s.id, 0.0), 4),
+                "included_as": "match" if s.id in direct_ids else "prerequisite",
                 "summary": _first_paragraph(s.body),
             }
         )
-    return {"query": query, "context": context, "skills": out}
+    return {
+        "query": query,
+        "context": context,
+        "current_file": current_file,
+        "filtered_from": len(all_skills),
+        "skills": out,
+    }
 
 
 async def get_skill(state: ToolState, *, name: str) -> dict:
@@ -205,6 +237,54 @@ async def corpus_summary(state: ToolState, *, product_id: str) -> dict:
 
 
 # ---------------------------------------------------------------- helpers
+
+
+def _matches_file_globs(file_path: str | None, globs: list[str]) -> bool:
+    """True if the file is in-scope for the skill's `applies_to.files`.
+
+    Empty `globs` means "no constraint" — the skill applies to every file.
+    When `file_path` is None, no current-file filter is requested and every skill
+    passes.
+    """
+    if not globs:
+        return True
+    if file_path is None:
+        return True
+    p = PurePath(file_path)
+    return any(p.full_match(g) for g in globs)
+
+
+def _matches_context(requested: str, skill_contexts: list[str]) -> bool:
+    """True if the requested context tag is allowed by the skill.
+
+    Empty `skill_contexts` → universal (no context filter).
+    Requested "general" is treated as no filter (matches everything).
+    """
+    if not skill_contexts:
+        return True
+    if not requested or requested == "general":
+        return True
+    return requested in skill_contexts
+
+
+def _expand_composes_with(
+    selected: Iterable[Skill | OrgSkill],
+    all_skills: Iterable[Skill | OrgSkill],
+) -> list[Skill | OrgSkill]:
+    """Transitive closure under `composes_with`. Cycles are tolerated."""
+    by_id: dict[str, Skill | OrgSkill] = {s.id: s for s in all_skills}
+    result: dict[str, Skill | OrgSkill] = {}
+    queue: list[Skill | OrgSkill] = list(selected)
+    while queue:
+        s = queue.pop(0)
+        if s.id in result:
+            continue
+        result[s.id] = s
+        for dep_id in s.composes_with:
+            dep = by_id.get(dep_id)
+            if dep is not None and dep.id not in result:
+                queue.append(dep)
+    return list(result.values())
 
 
 def _tokens(text: str) -> list[str]:

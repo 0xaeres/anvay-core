@@ -59,7 +59,6 @@ jobs:
         run: |
           cp nexus.yaml.example nexus.yaml
           sed -i 's|hierarchy_root: ./skills|hierarchy_root: ./nexus/skills/seed|' nexus.yaml
-          sed -i 's|org_library_root: ./org-skills|org_library_root: ./nexus/skills/seed/org|' nexus.yaml
 
       - name: Run RAGAS eval
         env:

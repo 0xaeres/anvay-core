@@ -82,7 +82,7 @@ cp .env.example .env
 ```
 
 Edit `nexus.yaml`:
-- `skills_repo` — a Git repo where approved skills are pushed (e.g. `git@github.com:myorg/nexus-skills.git`)
+- `skills_repo` — the org's Git repo (optional in `nexus.yaml`; the first-run UI wizard at `/setup` can create it for you and persist the URL in the registry)
 - `connectors` — add your GitHub org/repos, Confluence spaces, Jira project keys
 
 Edit `.env`:
@@ -116,7 +116,7 @@ npm run dev
 # → http://localhost:3000
 ```
 
-On first boot there are no products. The app opens the onboarding wizard at `http://localhost:3000/onboarding` — create your first product there.
+On first boot there's no skills repository and no products. The app routes you to `http://localhost:3000/setup` — a one-time wizard that either creates a new GitHub repo for you (uses `GITHUB_TOKEN`) or attaches to one you already own. Either way, Nexus seeds it with the bundled starter pack (13 curated shared skills under `shared/`) so the org boots with sensible defaults. After setup completes you're routed to `/onboarding` to create your first product.
 
 ---
 
@@ -134,15 +134,21 @@ This brings up Qdrant, Neo4j, Langfuse, Postgres, **and** the Nexus API. The UI 
 
 ## End-to-end flow
 
-### 1. Onboard a product via the UI
+### 1. First-run setup (one-time, org-wide)
 
-Visit `http://localhost:3000/onboarding` — the 4-step wizard:
+Visit `http://localhost:3000/setup`:
+- **Create new repo** — Nexus uses `GITHUB_TOKEN` to mint a fresh repo (org or personal) and seeds `shared/` with the starter pack.
+- **Use existing repo** — paste a clone URL; Nexus adds the starter pack to `shared/` only if those files don't already exist.
+
+### 2. Onboard a product via the UI
+
+After setup, the 4-step product wizard at `http://localhost:3000/onboarding`:
 1. Name your product
 2. Connect sources (GitHub repo, Confluence space, etc.)
 3. Trigger ingestion (watch the live sync log)
 4. Start a council session to draft the master skill
 
-### 2. Onboard via CLI (scriptable)
+### 3. Onboard via CLI (scriptable)
 
 ```bash
 # Ingest a local codebase
@@ -160,7 +166,7 @@ open http://localhost:3000/p/<your-product-id>/proposals
 
 Replace `<your-product-id>` with the product ID you created in the UI (e.g. `my-api`, `backend`, whatever you named it).
 
-### 3. Use Nexus from Claude Desktop
+### 4. Use Nexus from Claude Desktop
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 

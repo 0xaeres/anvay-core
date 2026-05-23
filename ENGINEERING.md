@@ -500,12 +500,14 @@ Skills are plain Markdown + YAML frontmatter files, but they **do not live on th
 ### Repos
 
 ```
-myorg/nexus-skills-forge          ← product skill repo (private)
-myorg/nexus-skills-atlas           ← another product (private)
-nexus-community/org-skills         ← public marketplace repo (org-library standards)
+myorg/nexus-skills          ← one repo per org (product skills + shared standards)
 ```
 
-**Marketplace:** Org admins can point `org_skills_repo` at any public repo (e.g., `nexus-community/org-skills`) to seed their Org Library with community-maintained tech-stack, language, and security standards. They ratify before adoption — no blind trust.
+**One repo per org.** Product skill hierarchies and cross-product shared standards (tech-stack, language, security) live together in a single Git repo. The repo root contains product directories alongside a `shared/` directory — no separate repo, no separate deploy key, no split git history.
+
+**First-run bootstrap.** On a fresh install `skills_repo` is unconfigured. The UI routes to `/setup`, which calls `POST /setup/skills-repo` (`nexus/api/routes/setup.py`). The orchestrator (`nexus/setup/bootstrap.py`) either creates a new GitHub repo via the REST API (`POST /user/repos` or `POST /orgs/{org}/repos`, `auto_init=true`) or attaches to an existing URL, then clones to a tempdir, copies `nexus/skills/starter/shared/` (13 curated skills) into `shared/`, commits + pushes, and persists the URL in the `setup_kv` table (`nexus/setup/kv.py`). Boot-time resolution order: runtime KV → `nexus.yaml` → empty (setup required).
+
+**Selective serving.** The MCP `find_skills` tool (`nexus/mcp_server/tools.py`) hard-filters by `applies_to.files` (glob match against the agent's `current_file`) and `applies_to.contexts` (exact tag match against the requested context), ranks the survivors lexically, then expands `composes_with` to pull in prerequisites — typical reductions are 50–88% of the worst-case token blob.
 
 ### Lifecycle
 
@@ -523,26 +525,26 @@ On every approve: `store.py` writes the file → shells out `git add -A && git c
 ### Directory Layout (inside the skills repo)
 
 ```
-nexus-skills-forge/                ← git repo root
-├── master.skill.md
-├── L2_domain/
-│   ├── pda-seed-validation.skill.md
-│   └── payment-service-flow.skill.md
-├── overlays/
-│   └── org_springboot.yaml
-└── adopted-standards.json
-
-nexus-community/org-skills/        ← marketplace repo (public)
-├── tech_stack/
-│   ├── springboot.skill.md
-│   ├── angular.skill.md
-│   └── karate-testing.skill.md
-├── language/
-│   ├── java.skill.md
-│   └── typescript.skill.md
-└── security/
-    ├── owasp-input-validation.skill.md
-    └── secrets-no-hardcoded.skill.md
+nexus-skills/                      ← git repo root (one repo per org)
+├── forge/                         ← product: forge
+│   ├── master.skill.md
+│   ├── L2_domain/
+│   │   ├── pda-seed-validation.skill.md
+│   │   └── payment-service-flow.skill.md
+│   └── overlays/
+│       └── org_springboot.yaml
+├── atlas/                         ← product: atlas
+│   └── master.skill.md
+└── shared/                        ← cross-product standards (same level as product dirs)
+    ├── tech_stack/
+    │   ├── springboot.skill.md
+    │   └── angular.skill.md
+    ├── language/
+    │   ├── java.skill.md
+    │   └── typescript.skill.md
+    └── security/
+        ├── owasp-input-validation.skill.md
+        └── secrets-no-hardcoded.skill.md
 ```
 
 ### Skill File Format
@@ -1344,12 +1346,8 @@ nexus/
 ## 15. Configuration — `nexus.yaml`
 
 ```yaml
-skills_repo: git@github.com:myorg/nexus-skills-forge.git   # product skill repo — cloned on boot
-org_skills_repo: git@github.com:nexus-community/org-skills.git  # marketplace repo for Org Library
-
-# Local clone paths (ephemeral — always re-cloned from repos above on boot)
-hierarchy_root: ./skills
-org_library_root: ./org-skills
+skills_repo: git@github.com:myorg/nexus-skills.git  # one repo per org — cloned on boot
+hierarchy_root: ./skills                             # local clone path (ephemeral)
 
 connectors:
   - name: github
@@ -1552,13 +1550,13 @@ server:
 
 **Context:** Skills cannot live on the Nexus instance disk. A cloud instance restart wipes ephemeral storage. Skills are the primary value Nexus produces — losing them on a restart is unacceptable. Additionally, skill files should be human-readable, versionable, and portable.
 
-**Decision:** Skills are plain Markdown + YAML frontmatter files stored in a dedicated Git repo per product (`myorg/nexus-skills-<product>`). Org Library skills live in a separate repo (can be the community marketplace `nexus-community/org-skills` or a private fork). Nexus clones both repos on boot into ephemeral local paths (`./skills/`, `./org-skills/`). On every human-approved skill, `store.py` writes the file and immediately commits + pushes to the remote. The Git repo is the source of truth; the local clone is always disposable.
+**Decision:** Skills are plain Markdown + YAML frontmatter files stored in a single Git repo per org (`myorg/nexus-skills`). The repo root contains one directory per product alongside a `shared/` directory for cross-product standards (tech-stack, language, security). Nexus clones the repo on boot into an ephemeral local path (`./skills/`). On every human-approved skill, `store.py` writes the file and immediately commits + pushes. The Git repo is the source of truth; the local clone is always disposable.
 
 **Rationale:**
-- Instance restart → `git clone` → all skills restored. Zero data loss.
-- Git history is the full provenance record — who approved what, when.
-- Any developer can read a skill without Nexus running.
-- Marketplace: orgs can point `org_skills_repo` at a public community repo to seed their Org Library with battle-tested standards; ratification gate prevents blind adoption.
+- One repo, one deploy key, one clone, one git log — operational simplicity over multi-repo sprawl.
+- Instance restart → `git clone` → all skills (product + shared) restored. Zero data loss.
+- Git history is the full provenance record — who approved what, when, across all products and shared standards in one place.
+- Any developer can browse the full org skill set without Nexus running.
 - Skills can be reviewed as PRs, forked, and diffed in standard Git tooling.
 
 **Consequences:**

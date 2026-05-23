@@ -47,11 +47,11 @@
 ### FastAPI surface (`/org/*`)
 | Route | Behaviour |
 |---|---|
-| `GET /org/skills` | list ratified org skills from `org_library_root` |
+| `GET /org/skills` | list ratified org skills from `hierarchy_root/shared/` |
 | `GET /org/skills/{id}` | full skill body + open change requests |
 | `POST /org/skills` | kick off Curator as background task, returns proposal_id |
 | `GET /org/proposals?status=pending` | list pending Curator proposals |
-| `POST /org/skills/{pid}/ratify` | write `.skill.md` to `org_library_root`, flip queue status |
+| `POST /org/skills/{pid}/ratify` | write `.skill.md` to `hierarchy_root/shared/`, flip queue status |
 | `POST /org/skills/{id}/change-requests` | file CR, schedule agent review |
 | `POST /org/skills/{id}/change-requests/{rid}/approve` | org-admin approve + cache purge hint |
 | `POST /org/skills/{id}/change-requests/{rid}/reject` | reject with reason |
@@ -92,7 +92,7 @@ curl 'http://localhost:8000/org/proposals?status=pending' | jq
 curl -X POST http://localhost:8000/org/skills/orgp_xxx/ratify \
   -H 'Content-Type: application/json' \
   -d '{"actor":"admin@org"}'
-# -> file lands at $org_library_root/tech_stack/<name>.skill.md
+# -> file lands at $hierarchy_root/shared/tech_stack/<name>.skill.md
 
 # 2. File a change request
 curl -X POST 'http://localhost:8000/org/skills/org%2Fowasp-input-validation/change-requests' \

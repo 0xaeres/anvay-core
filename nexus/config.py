@@ -170,10 +170,8 @@ class NexusConfig(BaseSettings):
 
     model_config = SettingsConfigDict(extra="forbid")
 
-    skills_repo: str
-    org_skills_repo: str = ""
+    skills_repo: str = ""  # set via nexus.yaml OR runtime via /setup/skills-repo
     hierarchy_root: Path = Path("./skills")
-    org_library_root: Path = Path("./org-skills")
 
     connectors: list[ConnectorCfg] = Field(default_factory=list)
     vector_store: VectorStoreCfg = Field(default_factory=VectorStoreCfg)

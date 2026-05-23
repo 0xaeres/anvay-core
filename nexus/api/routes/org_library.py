@@ -37,7 +37,7 @@ def _org_queue(queue: ProposalQueue) -> OrgProposalQueue:
 
 
 def _org_store(config: NexusConfig) -> SkillStore:
-    root = Path(config.org_library_root)
+    root = Path(config.hierarchy_root) / "shared"
     if not root.is_absolute():
         root = Path.cwd() / root
     return SkillStore(root)

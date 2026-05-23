@@ -51,13 +51,42 @@ def _build_server(*, product: str, user: str, config: NexusConfig) -> Server:
                 description=(
                     "Rank curated skills relevant to a query+context. Returns skill IDs, "
                     "names, kinds, confidence, and one-line summaries. Always call this "
-                    "first when starting a new task."
+                    "first when starting a new task. Pass `current_file` and/or "
+                    "`context` to hard-filter by skill applicability and keep the "
+                    "response tight; prerequisites declared via composes_with are "
+                    "included automatically and tagged `included_as=prerequisite`."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "query": {"type": "string"},
-                        "context": {"type": "string", "default": "general"},
+                        "context": {
+                            "type": "string",
+                            "default": "general",
+                            "description": (
+                                "Task tag — e.g. 'code-review', 'security-audit', "
+                                "'pull-request'. Skills with a non-empty "
+                                "applies_to.contexts list are kept only when this "
+                                "tag is in that list. 'general' disables the filter."
+                            ),
+                        },
+                        "current_file": {
+                            "type": "string",
+                            "description": (
+                                "Path of the file the agent is currently working on. "
+                                "Skills with a non-empty applies_to.files list are "
+                                "kept only when this path matches one of those globs."
+                            ),
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "default": 5,
+                            "description": (
+                                "Direct matches to return before composes_with "
+                                "expansion. Final list may be larger due to "
+                                "prerequisite chains."
+                            ),
+                        },
                     },
                     "required": ["query"],
                 },

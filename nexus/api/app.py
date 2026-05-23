@@ -14,6 +14,7 @@ from nexus.api.routes import (
     org_library,
     products,
     proposals,
+    setup,
     skills,
     sources,
     webhooks,
@@ -50,3 +51,4 @@ app.include_router(activity.router)
 app.include_router(webhooks.router)
 app.include_router(assistant.router)
 app.include_router(auth.router)
+app.include_router(setup.router)

@@ -94,7 +94,6 @@ services:
       - ./nexus.yaml:/app/nexus.yaml:ro
       - nexus_data:/app/data
       - nexus_skills:/app/skills
-      - nexus_org_skills:/app/org-skills
 
 volumes:
   qdrant_data:
@@ -103,4 +102,3 @@ volumes:
   langfuse_pg:
   nexus_data:
   nexus_skills:
-  nexus_org_skills:
