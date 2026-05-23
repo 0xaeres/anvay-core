@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+# Dockerfile.llama — lightweight llama.cpp server image for embedder + reranker.
+# Used exclusively under --profile full in docker-compose.yml.
+#
+# NOTE (Apple Silicon): this container runs llama.cpp on CPU only — Docker on
+# macOS cannot access Apple Metal. For full Metal acceleration use the host-based
+# `make services-up` path instead.
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        llama.cpp \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/serve-embedder.sh /usr/local/bin/serve-embedder.sh
+COPY scripts/serve-reranker.sh /usr/local/bin/serve-reranker.sh
+COPY scripts/init-models.sh /usr/local/bin/init-models.sh
+RUN chmod +x /usr/local/bin/serve-embedder.sh /usr/local/bin/serve-reranker.sh /usr/local/bin/init-models.sh
+
+WORKDIR /app
+
+# Default to embedder mode; override CMD in compose for reranker.
+CMD ["/usr/local/bin/serve-embedder.sh"]

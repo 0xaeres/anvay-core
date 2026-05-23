@@ -122,13 +122,28 @@ On first boot there's no skills repository and no products. The app routes you t
 
 ## Docker (all-in-one)
 
+**Prerequisites:** only `nexus.yaml` and `.env` — no local installs needed.
+
 ```bash
 docker compose --profile full up -d
 ```
 
-This brings up Qdrant, Neo4j, Langfuse, Postgres, **and** the Nexus API. The UI still runs from `nexus-ui/` with `npm run dev`.
+This single command brings up every service Nexus needs:
 
-> **Apple Silicon:** llama.cpp embedding/reranker services always run on the host (Metal acceleration). For Linux + NVIDIA, point `models.embedding.url` / `models.reranker.url` at any OpenAI-compatible server.
+| Service | What |
+|---|---|
+| Qdrant, Neo4j, Postgres, Langfuse | Data stores + tracing |
+| `ollama` | Light LLM host (serves `qwen2.5:3b` on internal port) |
+| `model-init` | One-shot init container — downloads Jina GGUFs and pulls `qwen2.5:3b` into their respective volumes, then exits. Skips files already present. |
+| `embedder` | Jina Embeddings v4 served via llama.cpp on `:8080` |
+| `reranker` | Jina Reranker v3 served via llama.cpp on `:8081` |
+| `nexus-api` | FastAPI backend on `:8000` |
+
+**First run:** `model-init` downloads ~4.6 GB of models (Jina GGUFs + `qwen2.5:3b`). Subsequent runs are instant — models are persisted in named Docker volumes.
+
+The UI still runs from `nexus-ui/` with `npm run dev`.
+
+> **Apple Silicon — performance note:** Docker containers on macOS cannot access Apple Metal, so the containerised `embedder` and `reranker` run on **CPU only** and will be slower than the host-based path. For the best experience on an Apple Silicon Mac, use the developer setup (`make services-up`) instead, which runs llama.cpp natively with full Metal acceleration. The `--profile full` path is optimised for Linux servers, CI/CD, and team members who don't want to manage local tooling.
 
 ---
 
