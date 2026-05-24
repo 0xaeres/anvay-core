@@ -1,10 +1,5 @@
-# Infrastructure services only — LLM/embedding services run on the host
-# for Metal acceleration on Apple Silicon. See Makefile and scripts/.
-#
-# --profile full  adds Ollama, embedder, reranker, and the Nexus API itself
-# so that `docker compose --profile full up -d` is fully self-contained.
-# NOTE: llama.cpp inside Docker on macOS runs CPU-only (no Metal access).
-# For full Metal performance, use `make services-up` on the host instead.
+# Dev infrastructure only. `make services-up` starts this Qdrant container plus
+# host llama.cpp embedder/reranker processes for Metal acceleration.
 
 services:
   qdrant:
@@ -21,28 +16,10 @@ services:
       timeout: 5s
       retries: 5
 
-  neo4j:
-    image: neo4j:5.25-community
-    container_name: nexus-neo4j
-    ports:
-      - "7474:7474"  # HTTP browser
-      - "7687:7687"  # Bolt
-    environment:
-      NEO4J_AUTH: "${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-nexuslocal}"
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-    volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
-    healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:7474 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   langfuse-db:
     image: postgres:16-alpine
     container_name: nexus-langfuse-db
+    profiles: ["observability"]
     environment:
       POSTGRES_USER: langfuse
       POSTGRES_PASSWORD: langfuse
@@ -58,6 +35,7 @@ services:
   langfuse:
     image: langfuse/langfuse:2
     container_name: nexus-langfuse
+    profiles: ["observability"]
     depends_on:
       langfuse-db:
         condition: service_healthy
@@ -73,129 +51,6 @@ services:
       LANGFUSE_INIT_PROJECT_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY:-pk-lf-local}"
       LANGFUSE_INIT_PROJECT_SECRET_KEY: "${LANGFUSE_SECRET_KEY:-sk-lf-local}"
 
-  # ── full-profile: model + LLM services ────────────────────────────────────
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: nexus-ollama
-    profiles: ["full"]
-    ports:
-      - "11435:11434"  # host 11435 avoids conflict with a native Ollama on 11434
-    volumes:
-      - ollama_data:/root/.ollama
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-
-  model-init:
-    build:
-      context: .
-      dockerfile: Dockerfile.llama
-    container_name: nexus-model-init
-    profiles: ["full"]
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      MODELS_DIR: /models
-      LIGHT_LLM_MODEL: "${LIGHT_LLM_MODEL:-qwen2.5:3b}"
-      OLLAMA_BASE_URL: http://ollama:11434
-    volumes:
-      - nexus_models:/models
-    command: ["/bin/bash", "/usr/local/bin/init-models.sh"]
-    restart: "no"  # exits cleanly after downloads; not a long-running service
-
-  embedder:
-    build:
-      context: .
-      dockerfile: Dockerfile.llama
-    container_name: nexus-embedder
-    profiles: ["full"]
-    depends_on:
-      model-init:
-        condition: service_completed_successfully
-    ports:
-      - "8080:8080"
-    environment:
-      EMBEDDER_MODEL: /models/jina-embeddings-v4.Q4_K_M.gguf
-      EMBEDDER_PORT: "8080"
-    volumes:
-      - nexus_models:/models:ro
-    command: ["/usr/local/bin/serve-embedder.sh"]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  reranker:
-    build:
-      context: .
-      dockerfile: Dockerfile.llama
-    container_name: nexus-reranker
-    profiles: ["full"]
-    depends_on:
-      model-init:
-        condition: service_completed_successfully
-    ports:
-      - "8081:8081"
-    environment:
-      RERANKER_MODEL: /models/jina-reranker-v3.Q4_K_M.gguf
-      RERANKER_PORT: "8081"
-    volumes:
-      - nexus_models:/models:ro
-    command: ["/usr/local/bin/serve-reranker.sh"]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8081/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  # ── full-profile: Nexus API ─────────────────────────────────────────────────
-
-  nexus-api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: nexus-api
-    profiles: ["full"]    # opt-in: `docker compose --profile full up`
-    depends_on:
-      qdrant:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
-      embedder:
-        condition: service_healthy
-      reranker:
-        condition: service_healthy
-    ports:
-      - "8000:8000"
-    environment:
-      DEEPINFRA_API_KEY: "${DEEPINFRA_API_KEY:-}"
-      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
-      GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET:-}"
-      NEO4J_USER: "${NEO4J_USER:-neo4j}"
-      NEO4J_PASSWORD: "${NEO4J_PASSWORD:-nexuslocal}"
-      LANGFUSE_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY:-pk-lf-local}"
-      LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY:-sk-lf-local}"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
-      # LLM service URLs (resolved inside the Docker network)
-      EMBEDDING_URL: "http://embedder:8080"
-      RERANKER_URL: "http://reranker:8081"
-      OLLAMA_BASE_URL: "http://ollama:11434"
-    volumes:
-      - ./nexus.yaml:/app/nexus.yaml:ro
-      - nexus_data:/app/data
-      - nexus_skills:/app/skills
-
 volumes:
   qdrant_data:
-  neo4j_data:
-  neo4j_logs:
   langfuse_pg:
-  nexus_data:
-  nexus_skills:
-  nexus_models:   # shared between model-init, embedder, and reranker (Jina GGUFs)
-  ollama_data:    # persistent Ollama model cache (qwen2.5:3b etc.)

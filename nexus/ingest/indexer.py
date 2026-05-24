@@ -93,15 +93,27 @@ class Indexer:
         embedded: Sequence[EmbeddedChunk],
         *,
         sparse_by_id: dict[str, SparseVector] | None = None,
+        source_key: str | None = None,
+        content_hash_by_id: dict[str, str] | None = None,
+        embedding_version: str | None = None,
+        indexed_at: str | None = None,
     ) -> int:
         """Upsert dense + (optional) sparse vectors per chunk."""
         if not embedded:
             return 0
         sparse_by_id = sparse_by_id or {}
+        content_hash_by_id = content_hash_by_id or {}
         buckets: dict[tuple[str, str], list[qm.PointStruct]] = {}
         for ec in embedded:
             coll = self._code if ec.vector_name == "dense_code" else self._text
-            point = self._to_point(ec, sparse_by_id.get(ec.chunk.id))
+            point = self._to_point(
+                ec,
+                sparse_by_id.get(ec.chunk.id),
+                source_key=source_key,
+                content_hash=content_hash_by_id.get(ec.chunk.id),
+                embedding_version=embedding_version,
+                indexed_at=indexed_at,
+            )
             buckets.setdefault((coll, ec.chunk.product_id), []).append(point)
 
         n = 0
@@ -112,6 +124,27 @@ class Indexer:
             )
             n += len(points)
         return n
+
+    async def delete_points_by_ids(
+        self, point_ids: Sequence[str] | dict[str, Sequence[str]]
+    ) -> int:
+        """Delete points by ID from one or both collections."""
+        if isinstance(point_ids, dict):
+            buckets = point_ids
+        else:
+            buckets = {self._code: point_ids, self._text: point_ids}
+
+        deleted = 0
+        for coll, ids in buckets.items():
+            unique_ids = sorted(set(ids))
+            if not unique_ids:
+                continue
+            await self.client.delete(
+                collection_name=coll,
+                points_selector=qm.PointIdsList(points=list(unique_ids)),
+            )
+            deleted += len(unique_ids)
+        return deleted
 
     # ------------------------------------------------------------ read
 
@@ -230,7 +263,14 @@ class Indexer:
     # ------------------------------------------------------------ helpers
 
     def _to_point(
-        self, ec: EmbeddedChunk, sparse: SparseVector | None
+        self,
+        ec: EmbeddedChunk,
+        sparse: SparseVector | None,
+        *,
+        source_key: str | None = None,
+        content_hash: str | None = None,
+        embedding_version: str | None = None,
+        indexed_at: str | None = None,
     ) -> qm.PointStruct:
         c: Chunk = ec.chunk
         vectors: dict[str, object] = {"dense": ec.vector}
@@ -245,6 +285,10 @@ class Indexer:
                 "product_id": c.product_id,
                 "resource_uri": c.resource.uri,
                 "source_id": c.resource.source_id,
+                "source_key": source_key,
+                "content_hash": content_hash,
+                "embedding_version": embedding_version,
+                "indexed_at": indexed_at,
                 "mime": c.resource.mime,
                 "kind": c.kind.value,
                 "start_line": c.start_line,

@@ -1,4 +1,4 @@
-"""Products + auth — see ENGINEERING.md §11."""
+"""Products + auth — see ENGINEERING.md §8."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ router = APIRouter(tags=["products"])
 
 @router.get("/me")
 async def me(registry: Registry = Depends(get_registry)) -> dict:
-    # Single static user for Slice 4. RBAC arrives later.
+    # Single dev user until real authentication is wired in.
     user = registry.get_user("jl")
     if not user:
         raise HTTPException(status_code=404, detail="current user not provisioned")
@@ -142,6 +142,5 @@ async def create_product(
         "onboardedAt": datetime.now(UTC).isoformat(),
     })
     return registry.get_product(id)
-
 
 

@@ -1,4 +1,4 @@
-"""TokenCipher — Fernet encryption for OAuth tokens at rest."""
+"""TokenCipher — Fernet encryption for connector tokens at rest."""
 
 from __future__ import annotations
 

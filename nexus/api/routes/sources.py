@@ -1,4 +1,4 @@
-"""Source connectors — see ENGINEERING.md §11.
+"""Source connectors — see ENGINEERING.md §8.
 
 Sources come from two places:
 1. `nexus.yaml` `connectors:` block (declarative, baked in at deploy time).
@@ -16,6 +16,7 @@ import logging
 import shutil
 import tempfile
 from collections.abc import AsyncIterator, Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,10 +25,11 @@ from fastapi.responses import StreamingResponse
 from git import Repo
 
 from nexus.api.deps import get_config_dep, get_registry
+from nexus.auth.token_cipher import TokenCipherError
 from nexus.config import NexusConfig
 from nexus.connectors.local_fs import LocalFsConfig, LocalFsSource
 from nexus.ingest.models import ResourceRef
-from nexus.ingest.pipeline import run_ingest
+from nexus.ingest.pipeline import IngestStats, run_ingest
 from nexus.registry import Registry
 from nexus.setup.bootstrap import _authenticated_clone_url
 
@@ -110,16 +112,19 @@ async def add_source(
 ) -> dict:
     if registry.get_source(product_id, name):
         raise HTTPException(status_code=409, detail=f"source {name!r} already exists")
-    registry.upsert_source(
-        {
-            "product": product_id,
-            "name": name,
-            "type": type,
-            "status": "connected",
-            "config": config_block,
-            "resourceCount": 0,
-        }
-    )
+    try:
+        registry.upsert_source(
+            {
+                "product": product_id,
+                "name": name,
+                "type": type,
+                "status": "connected",
+                "config": config_block,
+                "resourceCount": 0,
+            }
+        )
+    except TokenCipherError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     out = registry.get_source(product_id, name) or {}
     out["config"] = _redact(out.get("config") or {})
     return out
@@ -152,7 +157,7 @@ async def sync_source(
     _log_queues[key] = q
 
     async def _run() -> None:
-        await _real_ingest(
+        await _sync_source_contents(
             product_id=product_id,
             source=source,
             runtime=runtime,
@@ -166,7 +171,7 @@ async def sync_source(
     return {"ok": True, "queued": True, "product": product_id, "source": source_id}
 
 
-# ---------------------------------------------------------------- real ingest
+# ---------------------------------------------------------------- sync execution
 
 
 def _now() -> str:
@@ -174,6 +179,7 @@ def _now() -> str:
 
 
 async def _emit(q: asyncio.Queue, level: str, msg: str, **extra) -> None:
+    log.info("source_sync.%s %s extra=%s", level, msg, extra)
     try:
         await q.put({"level": level, "msg": msg, "ts": _now(), **extra})
     except Exception:
@@ -181,22 +187,43 @@ async def _emit(q: asyncio.Queue, level: str, msg: str, **extra) -> None:
         log.debug("ingest log queue rejected: %s %s", level, msg)
 
 
-class _ProgressAdapter:
+class _CanonicalProgressSource:
     """Wraps a LocalFsSource to emit structured progress events per resource read.
 
     Implements the `_Source` protocol from nexus.ingest.pipeline.
     """
 
-    def __init__(self, inner: LocalFsSource, put: Callable[..., None], total: int):
+    def __init__(
+        self,
+        inner: LocalFsSource,
+        *,
+        root: Path,
+        source_id: str,
+        canonical_prefix: str | None,
+        put: Callable[..., None],
+        total: int,
+    ):
         self.inner = inner
+        self.root = root.resolve()
+        self.source_id = source_id
+        self.canonical_prefix = canonical_prefix
         self.put = put
-        self.source_id = inner.source_id
         self.total = total
         self.processed = 0
+        self._real_by_uri: dict[str, ResourceRef] = {}
 
     async def list_resources(self) -> AsyncIterator[ResourceRef]:
         async for ref in self.inner.list_resources():
-            yield ref
+            canonical_uri = self._canonical_uri(ref)
+            canonical = ResourceRef(
+                source_id=self.source_id,
+                uri=canonical_uri,
+                mime=ref.mime,
+                size_bytes=ref.size_bytes,
+                last_modified=ref.last_modified,
+            )
+            self._real_by_uri[canonical_uri] = ref
+            yield canonical
 
     async def read_resource(self, ref: ResourceRef) -> str:
         self.processed += 1
@@ -204,15 +231,24 @@ class _ProgressAdapter:
         short = ref.uri.rsplit("/", 1)[-1] or ref.uri
         self.put(
             "progress",
-            f"Indexing {self.processed} of {self.total} — {short[:80]}",
+            f"Reading {self.processed} of {self.total} — {short[:80]}",
             done=self.processed,
             total=self.total,
             pct=pct,
+            stage="read",
+            uri=ref.uri,
         )
-        return await self.inner.read_resource(ref)
+        real = self._real_by_uri.get(ref.uri, ref)
+        return await self.inner.read_resource(real)
+
+    def _canonical_uri(self, ref: ResourceRef) -> str:
+        if self.canonical_prefix is None:
+            return ref.uri
+        rel = Path(ref.uri).resolve().relative_to(self.root)
+        return f"{self.canonical_prefix}/{rel.as_posix()}"
 
 
-async def _real_ingest(
+async def _sync_source_contents(
     *,
     product_id: str,
     source: dict,
@@ -221,14 +257,15 @@ async def _real_ingest(
     registry: Registry,
     q: asyncio.Queue,
 ) -> None:
-    """Drive the actual run_ingest pipeline + stream progress."""
+    """Resolve source roots, run ingest, update source state, and stream progress."""
     src_type = source.get("type", "unknown")
-    cleanup_dir: Path | None = None
+    cleanup_dirs: list[Path] = []
     try:
         await _emit(q, "info", f"Starting sync for '{source.get('name')}' ({src_type})")
 
         if src_type == "github":
-            local_root, cleanup_dir = await _clone_github(source, q)
+            roots = await _clone_github_repos(source, q)
+            cleanup_dirs.extend(cleanup for _, _, cleanup in roots)
         elif src_type in ("filesystem", "local_fs"):
             roots = source.get("config", {}).get("roots") or [
                 source.get("config", {}).get("root")
@@ -240,6 +277,7 @@ async def _real_ingest(
             if not local_root.is_dir():
                 await _emit(q, "error", f"filesystem root not a directory: {local_root}")
                 return
+            roots = [(source.get("name") or "filesystem", local_root, None)]
         else:
             await _emit(
                 q,
@@ -249,28 +287,61 @@ async def _real_ingest(
             )
             return
 
-        await _emit(q, "info", f"Walking {local_root}…")
+        total_stats = IngestStats()
+        repo_map_symbols = []
+        repo_map_file_count = 0
 
-        def _put(level: str, msg: str, **extra) -> None:
+        source_name = source.get("name") or "source"
+        for root_label, local_root, _cleanup in roots:
+            source_key = f"{source_name}:{_repo_label_for_path(root_label)}"
+            stats, rm = await _ingest_root(
+                product_id=product_id,
+                source_name=source_name,
+                source_key=source_key,
+                root_label=root_label,
+                local_root=local_root,
+                src_type=src_type,
+                registry=registry,
+                config=config,
+                q=q,
+            )
+            total_stats.resources_seen += stats.resources_seen
+            total_stats.resources_indexed += stats.resources_indexed
+            total_stats.resources_skipped += stats.resources_skipped
+            total_stats.resources_failed += stats.resources_failed
+            total_stats.chunks_produced += stats.chunks_produced
+            total_stats.chunks_indexed += stats.chunks_indexed
+            total_stats.embed_errors += stats.embed_errors
+            total_stats.added += stats.added
+            total_stats.updated += stats.updated
+            total_stats.removed += stats.removed
+            total_stats.unchanged += stats.unchanged
+
+            if rm:
+                prefix = _repo_label_for_path(root_label)
+                repo_map_file_count += rm.file_count
+                repo_map_symbols.extend(
+                    replace(sym, file=f"{prefix}/{sym.file}") for sym in rm.symbols
+                )
+
+        stats = total_stats
+
+        if repo_map_symbols:
             try:
-                q.put_nowait({"level": level, "msg": msg, "ts": _now(), **extra})
-            except asyncio.QueueFull:
-                log.debug("ingest log queue full; dropping: %s", msg)
+                from nexus.retrieval.repomap import RepoMap, repomap_path_for, save_repo_map
 
-        fs_source = LocalFsSource(LocalFsConfig(root=local_root))
-
-        await _emit(q, "info", "Counting files…")
-        total = 0
-        async for _ in fs_source.list_resources():
-            total += 1
-        await _emit(q, "started", f"Starting ingestion — {total} files found", total=total)
-
-        adapter = _ProgressAdapter(fs_source, _put, total=total)
-
-        await _emit(q, "info", "Running ingest pipeline (chunk → enrich → embed → index)…")
-        stats = await run_ingest(
-            product_id=product_id, source=adapter, config=config, enrich=True
-        )
+                combined = RepoMap(symbols=repo_map_symbols)
+                state_dir = config.storage.proposal_queue.parent
+                save_repo_map(combined, repomap_path_for(state_dir, product_id))
+                await _emit(
+                    q,
+                    "info",
+                    f"Repo map: {len(combined.symbols)} symbols across "
+                    f"{repo_map_file_count} files",
+                )
+            except Exception as e:
+                log.warning("repomap save failed: %s", e)
+                await _emit(q, "warn", f"Repo map save failed: {e} (council will still run)")
 
         if stats.embed_errors:
             await _emit(
@@ -278,14 +349,16 @@ async def _real_ingest(
                 "warn",
                 f"{stats.embed_errors} batch(es) failed to embed — "
                 "chunks too large for embedder token limit. "
-                "Restart llama-server with --ubatch-size 2048 and re-sync.",
+                "Raise EMBEDDER_UBATCH for the embedder and re-sync "
+                "(1024 is the M2/8GB default; try 2048 on larger machines).",
             )
         await _emit(
             q,
             "success" if not stats.embed_errors else "done",
             (
-                f"Sync complete — {stats.resources_indexed} indexed, "
-                f"{stats.resources_skipped} skipped, "
+                f"Sync complete — added={stats.added}, updated={stats.updated}, "
+                f"removed={stats.removed}, unchanged={stats.unchanged}, "
+                f"failed={stats.resources_failed}, "
                 f"{stats.chunks_indexed} chunks in vector store"
             ),
         )
@@ -294,30 +367,9 @@ async def _real_ingest(
             registry.upsert_source({
                 **runtime,
                 "lastSync": _now(),
-                "resourceCount": stats.resources_indexed,
+                "resourceCount": stats.resources_seen,
                 "status": "connected",
             })
-
-        # ---- repo map: extract symbol outline while local files still exist ----
-        try:
-            from nexus.retrieval.repomap import (
-                extract_repo_map,
-                repomap_path_for,
-                save_repo_map,
-            )
-
-            await _emit(q, "info", "Building repo map (tree-sitter symbol outline)…")
-            rm = await asyncio.to_thread(extract_repo_map, local_root)
-            state_dir = config.storage.proposal_queue.parent
-            save_repo_map(rm, repomap_path_for(state_dir, product_id))
-            await _emit(
-                q,
-                "info",
-                f"Repo map: {len(rm.symbols)} symbols across {rm.file_count} files",
-            )
-        except Exception as e:
-            log.warning("repomap build failed: %s", e)
-            await _emit(q, "warn", f"Repo map build failed: {e} (council will still run)")
 
     except Exception as e:
         log.exception(
@@ -330,27 +382,157 @@ async def _real_ingest(
             except Exception:
                 log.debug("failed to mark source 'error' status")
     finally:
-        if cleanup_dir is not None:
+        for cleanup_dir in cleanup_dirs:
             await asyncio.to_thread(shutil.rmtree, str(cleanup_dir), ignore_errors=True)
         await q.put(None)
 
 
-async def _clone_github(source: dict, q: asyncio.Queue) -> tuple[Path, Path]:
-    """Shallow-clone the first configured repo into a temp dir. Returns (root, cleanup_dir)."""
+async def _ingest_root(
+    *,
+    product_id: str,
+    source_name: str,
+    source_key: str,
+    root_label: str,
+    local_root: Path,
+    src_type: str,
+    registry: Registry,
+    config: NexusConfig,
+    q: asyncio.Queue,
+):
+    await _emit(q, "info", f"Walking {root_label} at {local_root}…")
+
+    def _put(level: str, msg: str, **extra) -> None:
+        log.info("source_sync.%s repo=%s %s extra=%s", level, root_label, msg, extra)
+        try:
+            q.put_nowait({"level": level, "msg": msg, "ts": _now(), "repo": root_label, **extra})
+        except asyncio.QueueFull:
+            log.debug("ingest log queue full; dropping: %s", msg)
+
+    fs_source = LocalFsSource(LocalFsConfig(root=local_root))
+
+    await _emit(q, "info", f"Counting files for {root_label}…")
+    total = 0
+    async for _ in fs_source.list_resources():
+        total += 1
+    await _emit(
+        q,
+        "started",
+        f"Starting ingestion for {root_label} — {total} files found",
+        total=total,
+        repo=root_label,
+    )
+
+    repo_label = _repo_label_for_path(root_label)
+    canonical_prefix = f"github:{repo_label}" if src_type == "github" else None
+    canonical_source_id = f"github:{repo_label}" if src_type == "github" else fs_source.source_id
+    adapter = _CanonicalProgressSource(
+        fs_source,
+        root=local_root,
+        source_id=canonical_source_id,
+        canonical_prefix=canonical_prefix,
+        put=_put,
+        total=total,
+    )
+
+    async def _pipeline_event(event: dict) -> None:
+        payload = dict(event)
+        level = str(payload.pop("level", "stage"))
+        msg = str(payload.pop("msg", ""))
+        await _emit(q, level, msg, repo=root_label, **payload)
+
+    await _emit(
+        q,
+        "info",
+        f"Running ingest pipeline for {root_label} (chunk → enrich → embed → index)…",
+    )
+    run_id = registry.start_sync_run(product_id, source_key, _now())
+    try:
+        stats = await run_ingest(
+            product_id=product_id,
+            source=adapter,
+            config=config,
+            enrich=True,
+            event_sink=_pipeline_event,
+            registry=registry,
+            source_key=source_key,
+        )
+    except Exception:
+        registry.finish_sync_run(
+            run_id,
+            finished_at=_now(),
+            added=0,
+            updated=0,
+            removed=0,
+            unchanged=0,
+            status="error",
+        )
+        raise
+    registry.finish_sync_run(
+        run_id,
+        finished_at=_now(),
+        added=stats.added,
+        updated=stats.updated,
+        removed=stats.removed,
+        unchanged=stats.unchanged,
+        status="done" if stats.resources_failed == 0 and stats.embed_errors == 0 else "partial",
+    )
+
+    rm = None
+    try:
+        from nexus.retrieval.repomap import extract_repo_map
+
+        await _emit(q, "info", f"Building repo map for {root_label}…")
+        rm = await asyncio.to_thread(extract_repo_map, local_root)
+    except Exception as e:
+        log.warning("repomap build failed for %s: %s", root_label, e)
+        await _emit(q, "warn", f"Repo map build failed for {root_label}: {e}")
+
+    return stats, rm
+
+
+def _github_repo_urls(source: dict) -> list[str]:
     cfg = source.get("config") or {}
     repos = cfg.get("repos") or []
-    token = cfg.get("token") or None
     if not repos:
         raise ValueError(
             "github source has no 'repos' configured (expected a GitHub URL)"
         )
-    url = str(repos[0]).rstrip("/").removesuffix(".git")
-    if not url.startswith("https://github.com/") and not url.startswith("git@"):
+    urls = [str(repo).strip().rstrip("/").removesuffix(".git") for repo in repos]
+    invalid = [
+        url
+        for url in urls
+        if not url.startswith("https://github.com/") and not url.startswith("git@github.com:")
+    ]
+    if invalid:
+        bad = ", ".join(repr(url) for url in invalid)
         raise ValueError(
-            f"unsupported github URL: {url!r} (expected https://github.com/<org>/<repo>)"
+            f"unsupported github URL(s): {bad} "
+            "(expected https://github.com/<org>/<repo> or git@github.com:<org>/<repo>)"
         )
+    return urls
 
-    await _emit(q, "info", f"Cloning {url} (shallow, depth=1)…")
+
+async def _clone_github_repos(
+    source: dict, q: asyncio.Queue
+) -> list[tuple[str, Path, Path]]:
+    cfg = source.get("config") or {}
+    token = cfg.get("token") or None
+    urls = _github_repo_urls(source)
+    roots = []
+    for index, url in enumerate(urls, start=1):
+        roots.append((url, *await _clone_github_repo(url, token, q, index, len(urls))))
+    return roots
+
+
+async def _clone_github_repo(
+    url: str,
+    token: str | None,
+    q: asyncio.Queue,
+    index: int,
+    total: int,
+) -> tuple[Path, Path]:
+    """Shallow-clone one GitHub repo into a temp dir. Returns (root, cleanup_dir)."""
+    await _emit(q, "info", f"Cloning repo {index}/{total}: {url} (shallow, depth=1)…")
     tmp = Path(tempfile.mkdtemp(prefix="nexus-ingest-"))
     clone_path = tmp / "repo"
     auth_url = _authenticated_clone_url(url + ".git", token)
@@ -365,6 +547,15 @@ async def _clone_github(source: dict, q: asyncio.Queue) -> tuple[Path, Path]:
 
     await _emit(q, "info", "Clone complete")
     return clone_path, tmp
+
+
+def _repo_label_for_path(label: str) -> str:
+    label = label.rstrip("/").removesuffix(".git")
+    if label.startswith("https://github.com/"):
+        return label.removeprefix("https://github.com/")
+    if label.startswith("git@github.com:"):
+        return label.removeprefix("git@github.com:")
+    return label.strip("/") or "source"
 
 
 @router.get("/{source_id}/log")

@@ -44,6 +44,16 @@ class EmbedderError(RuntimeError):
 _RETRY_DELAYS = (1.0, 3.0, 8.0)  # seconds between attempts (3 total)
 
 
+def _is_nonretryable_server_error(message: str) -> bool:
+    """llama.cpp reports some request-shape errors as HTTP 500."""
+    lower = message.lower()
+    return (
+        "input" in lower
+        and "too large" in lower
+        and ("physical batch size" in lower or "batch size" in lower)
+    )
+
+
 class EmbedderClient:
     """Thin async client. Construct once, reuse across the ingestion pipeline."""
 
@@ -87,7 +97,7 @@ class EmbedderClient:
                     return [d["embedding"] for d in ordered]
                 msg = f"embedder returned {resp.status_code}: {resp.text[:300]}"
                 # 4xx = bad request (e.g. token limit) — don't retry
-                if resp.status_code < 500:
+                if resp.status_code < 500 or _is_nonretryable_server_error(msg):
                     raise EmbedderError(msg)
                 last_exc = EmbedderError(msg)
 

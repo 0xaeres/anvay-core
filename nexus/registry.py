@@ -1,9 +1,4 @@
-"""Tiny SQLite registry for products + users.
-
-Phase-4 minimum viable surface for the API. RBAC + multi-tenant onboarding
-arrives in later slices; for now we seed a default product + user on first boot
-so the UI has something to render.
-"""
+"""SQLite registry for products, users, runtime sources, and setup state."""
 
 from __future__ import annotations
 
@@ -26,24 +21,27 @@ _SECRET_KEY_HINTS = ("token", "api_key", "password", "secret")
 def _get_cipher() -> TokenCipher | None:
     key = os.environ.get("NEXUS_TOKEN_KEY")
     if not key:
-        log.warning(
-            "NEXUS_TOKEN_KEY is not set — connector secrets will be stored in "
-            "plaintext. Set this variable to enable encryption at rest."
-        )
         return None
     try:
         return TokenCipher(key)
     except TokenCipherError:
-        log.exception("NEXUS_TOKEN_KEY is set but invalid; connector secrets unencrypted")
+        log.exception("NEXUS_TOKEN_KEY is set but invalid")
         return None
 
 
+def _is_secret_key(key: str) -> bool:
+    return any(s in key.lower() for s in _SECRET_KEY_HINTS)
+
+
 def _encrypt_config(config: dict, cipher: TokenCipher | None) -> dict:
-    if not cipher:
-        return config
+    if not cipher and any(_is_secret_key(k) and isinstance(v, str) and v for k, v in config.items()):
+        raise TokenCipherError(
+            "NEXUS_TOKEN_KEY is required to store connector secrets; generate one "
+            "with TokenCipher.generate_key()"
+        )
     out: dict = {}
     for k, v in config.items():
-        if isinstance(v, str) and v and any(s in k.lower() for s in _SECRET_KEY_HINTS):
+        if cipher and isinstance(v, str) and v and _is_secret_key(k):
             out[k] = "enc:" + cipher.encrypt(v)
         else:
             out[k] = v
@@ -103,6 +101,39 @@ CREATE TABLE IF NOT EXISTS sources (
 
 CREATE INDEX IF NOT EXISTS idx_sources_product
     ON sources(product_id);
+
+CREATE TABLE IF NOT EXISTS source_resources (
+    product_id        TEXT NOT NULL,
+    source_key        TEXT NOT NULL,
+    resource_uri      TEXT NOT NULL,
+    content_hash      TEXT NOT NULL,
+    mime              TEXT NOT NULL DEFAULT '',
+    size_bytes        INTEGER,
+    last_seen_sync    TEXT NOT NULL,
+    chunk_ids_js      TEXT NOT NULL DEFAULT '[]',
+    indexed_at        TEXT NOT NULL,
+    embedding_version TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (product_id, source_key, resource_uri)
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_resources_source
+    ON source_resources(product_id, source_key);
+
+CREATE TABLE IF NOT EXISTS source_sync_runs (
+    id          TEXT PRIMARY KEY,
+    product_id  TEXT NOT NULL,
+    source_key  TEXT NOT NULL,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    added       INTEGER NOT NULL DEFAULT 0,
+    updated     INTEGER NOT NULL DEFAULT 0,
+    removed     INTEGER NOT NULL DEFAULT 0,
+    unchanged   INTEGER NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'running'
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_sync_runs_source
+    ON source_sync_runs(product_id, source_key, started_at DESC);
 """
 
 
@@ -149,15 +180,14 @@ class Registry:
         with self._conn() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO products
-                   (id, name, tagline, owner_js, onboarded_at, master_skill_id)
-                   VALUES (?,?,?,?,?,?)""",
+                   (id, name, tagline, owner_js, onboarded_at)
+                   VALUES (?,?,?,?,?)""",
                 (
                     product["id"],
                     product["name"],
                     product.get("tagline", ""),
                     json.dumps(product.get("owner", {})),
                     product["onboardedAt"],
-                    product.get("masterSkillId", ""),
                 ),
             )
 
@@ -187,7 +217,7 @@ def _row_to_product(row: sqlite3.Row) -> dict:
     d = dict(row)
     d["owner"] = json.loads(d.pop("owner_js"))
     d["onboardedAt"] = d.pop("onboarded_at")
-    d["masterSkillId"] = d.pop("master_skill_id")
+    d.pop("master_skill_id", None)
     return d
 
 
@@ -264,3 +294,121 @@ def add_source_methods(cls):
 
 
 Registry = add_source_methods(Registry)
+
+
+# ---------------------------------------------------------------- sync manifest
+
+
+def _row_to_resource_manifest(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    d["chunkIds"] = json.loads(d.pop("chunk_ids_js") or "[]")
+    d["sizeBytes"] = d.pop("size_bytes")
+    d["lastSeenSync"] = d.pop("last_seen_sync")
+    d["indexedAt"] = d.pop("indexed_at")
+    d["embeddingVersion"] = d.pop("embedding_version")
+    d["contentHash"] = d.pop("content_hash")
+    d["resourceUri"] = d.pop("resource_uri")
+    d["sourceKey"] = d.pop("source_key")
+    d["product"] = d.pop("product_id")
+    return d
+
+
+def add_manifest_methods(cls):
+    """Add resource manifest helpers used by delta-safe ingest."""
+
+    def list_resource_manifests(self, product_id: str, source_key: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM source_resources
+                   WHERE product_id = ? AND source_key = ?
+                   ORDER BY resource_uri""",
+                (product_id, source_key),
+            ).fetchall()
+        return [_row_to_resource_manifest(r) for r in rows]
+
+    def get_resource_manifest(
+        self, product_id: str, source_key: str, resource_uri: str
+    ) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM source_resources
+                   WHERE product_id = ? AND source_key = ? AND resource_uri = ?""",
+                (product_id, source_key, resource_uri),
+            ).fetchone()
+        return _row_to_resource_manifest(row) if row else None
+
+    def upsert_resource_manifest(self, row: dict) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO source_resources
+                   (product_id, source_key, resource_uri, content_hash, mime, size_bytes,
+                    last_seen_sync, chunk_ids_js, indexed_at, embedding_version)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    row["product"],
+                    row["sourceKey"],
+                    row["resourceUri"],
+                    row["contentHash"],
+                    row.get("mime", ""),
+                    row.get("sizeBytes"),
+                    row["lastSeenSync"],
+                    json.dumps(row.get("chunkIds", [])),
+                    row["indexedAt"],
+                    row.get("embeddingVersion", ""),
+                ),
+            )
+
+    def delete_resource_manifest(
+        self, product_id: str, source_key: str, resource_uri: str
+    ) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                """DELETE FROM source_resources
+                   WHERE product_id = ? AND source_key = ? AND resource_uri = ?""",
+                (product_id, source_key, resource_uri),
+            )
+            return cur.rowcount > 0
+
+    def start_sync_run(self, product_id: str, source_key: str, started_at: str) -> str:
+        import uuid as _uuid
+
+        run_id = f"sync_{_uuid.uuid4().hex[:12]}"
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO source_sync_runs
+                   (id, product_id, source_key, started_at, status)
+                   VALUES (?,?,?,?,?)""",
+                (run_id, product_id, source_key, started_at, "running"),
+            )
+        return run_id
+
+    def finish_sync_run(
+        self,
+        run_id: str,
+        *,
+        finished_at: str,
+        added: int,
+        updated: int,
+        removed: int,
+        unchanged: int,
+        status: str,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE source_sync_runs
+                   SET finished_at = ?, added = ?, updated = ?, removed = ?,
+                       unchanged = ?, status = ?
+                   WHERE id = ?""",
+                (finished_at, added, updated, removed, unchanged, status, run_id),
+            )
+
+    cls.list_resource_manifests = list_resource_manifests
+    cls.get_resource_manifest = get_resource_manifest
+    cls.upsert_resource_manifest = upsert_resource_manifest
+    cls.delete_resource_manifest = delete_resource_manifest
+    cls.start_sync_run = start_sync_run
+    cls.finish_sync_run = finish_sync_run
+    return cls
+
+
+Registry = add_manifest_methods(Registry)

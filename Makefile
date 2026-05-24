@@ -1,4 +1,4 @@
-.PHONY: help install services-up services-down docker-up docker-down embedder reranker light-llm api dev test lint format clean
+.PHONY: help install services-up services-down observability-up docker-up docker-down embedder reranker light-llm api dev test lint format clean
 
 PIDDIR := .pids
 
@@ -6,10 +6,12 @@ help:
 	@echo "Nexus dev orchestration"
 	@echo ""
 	@echo "  make install        — uv sync (Python deps)"
-	@echo "  make services-up    — bring up Docker infra + host LLM services"
+	@echo "  make services-up    — bring up Qdrant + host embedder/reranker"
+	@echo "  make observability-up — optional: bring up Langfuse"
 	@echo "  make services-down  — stop everything"
 	@echo "  make api            — run FastAPI dev server"
 	@echo "  make dev            — services-up + api (one shot)"
+	@echo "  make light-llm      — optional: start local Ollama for light model"
 	@echo "  make test           — pytest"
 	@echo "  make lint           — ruff check"
 	@echo "  make format         — ruff format"
@@ -19,16 +21,19 @@ install:
 
 # ---------------------------------------------------------------- Infra
 docker-up:
-	docker compose up -d
+	docker compose up -d qdrant
 
 docker-down:
 	docker compose down
+
+observability-up:
+	docker compose --profile observability up -d langfuse
 
 # ------------------------------------------------------ Host LLM services
 $(PIDDIR):
 	@mkdir -p $(PIDDIR)
 
-embedder: $(PIDDIR)
+embedder: $(PIDDIR) logs
 	@if [ -f $(PIDDIR)/embedder.pid ] && kill -0 $$(cat $(PIDDIR)/embedder.pid) 2>/dev/null; then \
 		echo "embedder already running (pid=$$(cat $(PIDDIR)/embedder.pid))"; \
 	else \
@@ -36,7 +41,7 @@ embedder: $(PIDDIR)
 		echo "embedder started (pid=$$(cat $(PIDDIR)/embedder.pid))"; \
 	fi
 
-reranker: $(PIDDIR)
+reranker: $(PIDDIR) logs
 	@if [ -f $(PIDDIR)/reranker.pid ] && kill -0 $$(cat $(PIDDIR)/reranker.pid) 2>/dev/null; then \
 		echo "reranker already running (pid=$$(cat $(PIDDIR)/reranker.pid))"; \
 	else \
@@ -50,15 +55,12 @@ light-llm:
 logs:
 	@mkdir -p logs
 
-services-up: logs docker-up embedder reranker light-llm
+services-up: logs docker-up embedder reranker
 	@echo ""
 	@echo "✓ Services up:"
 	@echo "  Qdrant   http://localhost:6333"
-	@echo "  Neo4j    http://localhost:7474  (bolt :7687)"
-	@echo "  Langfuse http://localhost:3001"
 	@echo "  Embedder http://localhost:8080"
 	@echo "  Reranker http://localhost:8081"
-	@echo "  Ollama   http://localhost:11434"
 
 services-down: docker-down
 	@for svc in embedder reranker; do \

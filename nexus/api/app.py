@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+import logging
+import time
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from nexus.api.routes import (
@@ -14,10 +17,14 @@ from nexus.api.routes import (
     skills,
     sources,
 )
+from nexus.logging_config import setup_logging
+
+setup_logging()
+log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Nexus API",
-    description="Backend for the Nexus skill server. See ENGINEERING.md §11.",
+    description="Backend for the Nexus context engine. See ENGINEERING.md §8.",
     version="0.0.1",
 )
 
@@ -28,6 +35,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    log.info(
+        "request method=%s path=%s status=%s elapsed_ms=%.1f",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
 
 
 @app.get("/health", tags=["meta"])

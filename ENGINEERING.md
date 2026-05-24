@@ -1,1605 +1,555 @@
 # Nexus — Engineering Reference
 
-**Last updated:** 2026-05-21 (Assistant layer — Slice 8)  
-
-| Component | Status | Location |
-|---|---|---|
-| **Frontend UI** | ✅ Complete — live-connected to backend | `~/Desktop/projects/nexus-ui` |
-| **Backend** | ✅ Complete — Slices 0-7 shipped | This repo (`nexus/`) |
-| **Integration** | ✅ Complete — all screens cut over | [`INTEGRATION.md`](./INTEGRATION.md), [`docs/UI-CUTOVER-STATUS.md`](./docs/UI-CUTOVER-STATUS.md) |
-| **Assistant layer** | ✅ Slice 8 — conversational + action layer over Jira/Confluence | [§17](#17-assistant-layer-slice-8), [`docs/ASSISTANT-LAYER.md`](./docs/ASSISTANT-LAYER.md), [`docs/SLICE-8-STATUS.md`](./docs/SLICE-8-STATUS.md) |
-
----
+The formal spec. Data model, pipeline shapes, API contracts. Code-first; if a
+behaviour diverges from this doc, the code is the source of truth and the doc
+needs a patch.
 
 ## Overview
 
-**Nexus is a sovereign, MCP-native skill server for your codebase.**
+Nexus indexes a product's code + docs, runs a 3-node council to draft a
+curated skill file, requires a human to approve, and serves the resulting
+skill (and the raw corpus) over MCP to AI coding clients.
 
-It ingests code and documentation through MCP connectors, orchestrates a multi-agent LLM Council to draft validated skill files, and serves those skills back via MCP to any AI client. Human-in-the-loop approval is the product — Nexus does not auto-merge anything.
-
-**Nexus is an agentic RAG system.** Skills are served via MCP to guide agents — they tell an agent *how* to work in a codebase. When the agent needs more context mid-task (to trace a specific pattern, verify a usage, or ground a decision in real code), it queries the vector DB directly through the same MCP connection. The vector DB is not a peer interface — it's the on-demand context layer the agent reaches into while working.
-
-```
-Agent connects to Nexus MCP
-  │
-  ├── Reads nexus://meta-skill          → learns what Nexus can do
-  ├── Calls find_skills(query)          → gets curated guidance (skills)
-  │     "follow these patterns, avoid these anti-patterns"
-  │
-  └── Works on the task...
-        │
-        └── Needs more context?
-              ├── query_code_context(symbol)      → find exact usages in the codebase
-              └── hybrid_search_corpus(query)     → search the full indexed corpus
-                    "here is the actual code that confirms / contradicts the skill"
-```
-
-The vector DB (Qdrant + Neo4j) is never exposed as a raw database — it is always queried through MCP tools that apply the full GraphRAG retrieval pipeline (dense + BM25 → graph expansion → rerank). The agent gets grounded, cited answers, not raw embeddings.
-
-**Five core verbs:**
-
-| Verb | What it means |
-|---|---|
-| **Ingest** | Pull resources from data sources via MCP connectors; chunk, embed, and graph-index |
-| **Author** | LLM Council queries the vector DB to ground drafts in real code, then produces curated skill files |
-| **Validate** | Human reviews drafts in the web UI; approves, edits, or rejects with reason |
-| **Serve** | Expose curated skills via MCP to guide agents; expose vector DB queries via MCP for on-demand context |
-| **Apply** | Task runners (PR Review, Changelog Generator) follow skills and query the corpus for evidence |
-
-**Design constraints (non-negotiable):**
-1. **MCP-native both ways:** ingestion via MCP client; skills + corpus queries served via MCP server
-2. **No overengineering:** every feature earns its place with a concrete demo moment
-3. **Sovereignty:** skills are versioned, provenance-tracked, and human-ratified; corpus is product-isolated
-4. **Cost-aware:** role-based model assignment, semantic cache, cheap Curator passes for org standards
-5. **GraphRAG backend, minimal UI:** knowledge graph is a backend concern; UI shows only flat citation chips
-
----
-
-## 1. System Architecture
-
-```mermaid
-flowchart TD
-    subgraph FE["Frontend — Next.js 16 / React 19"]
-        F1[Onboarding Wizard]
-        F2[Product Dashboard]
-        F3[Council Sessions + Deliberation]
-        F4[Skill Browser + Composition]
-        F5[Org Skill Library]
-        F6[Proposal Validation — 3-pane]
-    end
-
-    subgraph API["FastAPI Backend"]
-        A1[Product / Auth / RBAC]
-        A2[Council Orchestration + SSE]
-        A3[Source / Sync / Ingestion]
-        A4[Org Library + Change Requests]
-        A5[GitHub Webhooks]
-    end
-
-    subgraph Core["Core Services"]
-        C1[LangGraph Council\nStateGraph + SqliteSaver]
-        C2[GraphRAG Retrieval\nQdrant + Neo4j]
-        C3[Continuous Index Daemon\nMCP subscribe loop]
-        C4[Task Runners\nPR Review + Changelog]
-    end
-
-    subgraph Ingest["Ingestion Layer"]
-        I1[Connector Manager\nMCP Client]
-        I2[Chunker\ntree-sitter / Docling]
-        I3[Embedder\nJina v3 dual-mode]
-        I4[Relation Extractor\nlight LLM]
-    end
-
-    subgraph Data["Data Layer"]
-        D1[(Qdrant\nvectors + semantic cache)]
-        D2[(Neo4j\nknowledge graph)]
-        D3[(SQLite\nproposal queue + LangGraph checkpoint)]
-        D4[Filesystem\nskill hierarchy .skill.md]
-    end
-
-    subgraph Ext["External MCP Source Servers"]
-        E1[GitHub / GitLab]
-        E2[Jira / Confluence]
-        E3[Slack / Notion / Linear]
-        E4[Custom MCP servers]
-    end
-
-    FE -->|HTTP + SSE| API
-    API --> Core
-    API --> Ingest
-    Core --> Data
-    Ingest --> Data
-    I1 -->|stdio or SSE| Ext
-```
-
----
-
-## 2. Two-Tier Skill Model
-
-Skills are organised in two tiers with hard isolation between them.
-
-```mermaid
-flowchart LR
-    subgraph OrgLib["Org Skill Library — SHARED across all products"]
-        direction TB
-        CUR["Curator Agent + web_search\nAuthors standards once"]
-        ORG_TS["tech_stack/*\nSpringBoot, Karate, Angular …"]
-        ORG_LA["language/*\nJava, TypeScript …"]
-        ORG_SE["security/*\nOWASP input-validation, secrets …"]
-        CUR --> ORG_TS & ORG_LA & ORG_SE
-    end
-
-    subgraph Product["Product — HARD-ISOLATED"]
-        direction TB
-        MASTER["Master Skill\nCouncil: 4 agents\nProduct admin approves"]
-        DOMAIN["Domain Skills\nCouncil: 3 agents\nProduct admin approves"]
-        ADOPTED["Adopted Standards\nread-only refs to Org Library"]
-        OVERLAY["Product Overlays\njustification required, no LLM"]
-        MASTER --> DOMAIN
-        ADOPTED --> OVERLAY
-    end
-
-    OrgLib -->|auto-adopt on onboarding| ADOPTED
-    OrgLib -->|change-request workflow| OrgLib
-```
-
-**Serve-time composition (query time, not stored):**
-```
-[Product Master] + [Product Domain skills] + [applicable Org Library skills] + [product overlays on those]
-```
-
-**Key rules:**
-- Org Library skills cross product boundaries deliberately — they are standards, not sensitive data.
-- All product-specific data (sources, chunks, master skill, domain skills, overlays) is hard-isolated per product.
-- Only org admins create/ratify/manage Org Library skills and resolve change requests.
-- Product overlays require written justification; no LLM involved — pure human-authored adjustments.
-
----
-
-## 3. Frontend
-
-**Location:** `~/Desktop/projects/nexus-ui` — Next.js 16, React 19, Tailwind v4, shadcn/ui. All screens are built with mock data. **Design is locked** — see `nexus-ui/DESIGN.md`.
-
-### 3.1 Information Architecture
-
-```mermaid
-graph LR
-    ROOT["/"] -->|no products| OB["/onboarding\n3-step wizard"]
-    ROOT -->|has products| DASH["/p/product/dashboard"]
-
-    DASH --> SRC["/p/product/sources\nConnectors + sync logs"]
-    DASH --> CON["/p/product/council\nSessions + deliberation"]
-    DASH --> SKL["/p/product/skills\nMaster → Domain → Adopted"]
-    DASH --> ACT["/p/product/activity\nRunner-typed timeline"]
-    DASH --> SET["/p/product/settings\nMembers, roster overrides"]
-
-    DASH --> ORGLIB["/org/library\nShared standards browser"]
-    ORGLIB --> ORGSKL["/org/library/id\nSkill detail + change requests"]
-    ORGSKL --> CRQ["/org/library/id/requests/rid\nChange-request detail + verdict"]
-
-    DASH --> ORGSET["/settings/org\nBilling, model defaults, admins"]
-```
-
-### 3.2 Route Table
-
-| Route | Purpose | Notes |
-|---|---|---|
-| `/` | First-run gate | → `/onboarding` if no products, else → `/p/<lastProduct>/dashboard` |
-| `/onboarding` | Product wizard | 3 sequential steps: identity → connect & ingest (live progress) → council kickoff (unlocked on ingest success) |
-| `/p/[product]/dashboard` | Product overview | Pipeline counts, daemon status, pending proposals |
-| `/p/[product]/sources` | Connector management | Add/remove/edit sources; sync logs (SSE) |
-| `/p/[product]/sources/new` | Add connector | OAuth or token wizard depending on connector type |
-| `/p/[product]/sources/[name]` | Connector detail | Resource list, re-sync, sync log replay |
-| `/p/[product]/council` | Council landing | Recent sessions + "Start new session" modal |
-| `/p/[product]/council/[sessionId]` | Active session | Deliberation stream, cost meter, dynamic roster |
-| `/p/[product]/skills` | Skill browser | Tree: Master (pinned) → Domain → Adopted standards |
-| `/p/[product]/skills/[id]` | Skill detail | Body preview + composition graph |
-| `/p/[product]/activity` | Activity log | Filter: ingest / council / pr-review / changelog / index |
-| `/p/[product]/settings` | Product config | Members, roles, council roster overrides, model assignments |
-| `/org/library` | Org Skill Library | Read-only for SME/product-admin; full control for org-admin |
-| `/org/library/[id]` | Library skill detail | Body + cited sources + change-request affordance |
-| `/org/library/[id]/requests/[reqId]` | Change-request detail | Agent verdict + org-approver approve/reject |
-| `/settings/org` | Org settings | Model defaults, billing placeholder, org admins, Curator entry point |
-| `/dashboard`, `/council`, etc. | Legacy routes | Server-side redirect to `/p/<currentProduct>/…` |
-
-### 3.3 Onboarding Wizard (3 Steps — sequential)
-
-```mermaid
-flowchart LR
-    S1["Step 1\nIdentity\nName, tagline, owner"] --> S2["Step 2\nConnect & Ingest\nPick connector · fill credentials\nclicking Continue commits:\ncreateProduct + addSource + syncSource"]
-    S2 --> S3["Step 3\nLive Ingestion Progress\nSSE log stream · delta summary\nCouncil CTA hidden until done"]
-    S3 --> |ingest success| COUNCIL["Council Kickoff\nTopic · roster preview\nStart council → createSession"]
-    S3 --> |ingest error| ERR["Error state\nBack to fix source config\nor Retry ingestion"]
-    COUNCIL --> SESSION["/p/product/council/sessionId\nMaster roster preset"]
-```
-
-The wizard is strictly sequential — the council form is only revealed after the
-ingestion SSE stream closes with a terminal success frame (`level: done` on the
-plain-data channel, or a named `delta` event). If ingestion fails, the council
-CTA is not shown; the user can go back to fix the source config or use an
-explicit escape-hatch to skip.
-
-**Transaction boundary:** Steps 1 and 2 collect state in the browser. On the
-Step 2 → 3 transition ("Connect & ingest" click) `createProduct`, `addSource`,
-and `syncSource` are called. The product row and source row are committed at
-that point. `createSession` fires only after the user clicks "Start council" in
-Step 3, which requires a successful ingest. If the user abandons after Step 2
-but before Step 3 completes, the product + source exist in the DB; the product
-id cannot be reused without first deleting it.
-
-After master skill approval, the product **auto-adopts** applicable Org Library
-skills (matched from stack detected during ingestion) — shown as a simple
-confirmation list, not a council run.
-
-### 3.4 Council Session UI
-
-The session page shows a 3-column layout:
-- **Left:** Deliberation messages stream (SSE). Each agent message carries a role badge and timestamp.
-- **Center:** Skill draft being built (live Markdown preview).
-- **Right:** Citations panel, Adversary critique (colour-coded by severity), confidence gauge.
-
-The **roster is dynamic**, read from `session.skillKind`:
-
-| Skill kind | Roster | ~$/session |
-|---|---|---|
-| **Master** | Archaeologist + Domain Expert + Synthesizer + Adversary (4 agents) | ~$0.012 |
-| **Product domain** | Archaeologist + Domain Expert + Adversary (3 agents) | ~$0.005 |
-
-A **cost meter** in the session header ticks up with real token usage events (SSE), not simulated increments.
-
-### 3.5 Skill Tree (Product Scope)
+The system is deliberately small. Anything that doesn't move the
+`recall@10` / `MRR` number on `tests/eval/queries.json` or fix a real
+ergonomic pain point should not be in the codebase.
 
 ```
-/p/forge/skills
-
-forge (Master)                    ← always pinned
-  ├── Domain
-  │     ├── payment-service-flow
-  │     └── pda-seed-validation
-  └── Adopted Standards  (read-only refs)
-        ├── SpringBoot [overlay: 1 rule relaxed — legacy XML config]
-        ├── Java
-        └── OWASP input-validation [no overlay]
+ingest                                              council
+─────────────                                       ─────────────
+chunker         tree-sitter / heading-aware         drafter
+enricher        HQE for code | Anthropic CR docs    critic   ← own retrieval
+embedder        Jina v4 (Metal)                     reviser  ← only on blocking
+indexer         Qdrant (dense + BM25)                  │
+repomap         tree-sitter symbol outline             ▼
+                                                    SkillProposal
+                                                       │
+retrieval       dense + BM25 → RRF → Jina rerank       ▼
+                                                    human approval
+mcp_server      find_skills, query_code_context,       │
+                hybrid_search_corpus                   ▼
+                                                    skill.md committed
+                                                       │
+                                                       ▼
+                                                    MCP serves it
 ```
 
-Skill detail for an adopted standard shows: library base (read-only) + this product's overlay (if any) + "Add/Edit overlay" action (product admin; justification required).
+## 1. Invariants
 
-### 3.6 Skill Detail — Markdown Rendering
+Two hard constraints. Code that violates them is a bug.
 
-Skill body is rendered, not displayed as raw text. Stack:
+1. **Product = root entity.** Every chunk, proposal, session, and skill
+   carries `product_id`; Qdrant shards on it. There is no cross-product
+   read path. Crossing the boundary is a tenancy bug.
+   Business units are optional product metadata (`owner.team`) in v1, not a
+   first-class entity or tenancy boundary.
+2. **Humans approve, agents draft.** The council emits `SkillProposal`s.
+   Nothing becomes a `.skill.md` on disk or in Git without
+   `approve_proposal()` being called by an authenticated actor.
 
-- **`react-markdown`** + **`rehype-highlight`** (syntax highlighting via Shiki) for the body
-- **Citation token parser** — a remark plugin scans body for `[file: path:line]` tokens and replaces them with `<CitationChip file="..." line="..." />` (clickable, opens source file in connector detail or external URL)
-- **Frontmatter panel** (right rail, not in body):
-  - `<ConfidenceBar value={confidence} />` with computed formula tooltip
-  - Provenance timeline: council session → validated by → validated at → revision count
-  - `composes_with` rendered as a small composition graph (static SVG, 3–4 nodes max)
-  - `applies_to.contexts` as badge chips
-- **Diff view** (proposal detail only): `react-diff-viewer` comparing previous approved version vs. new draft body
+## 2. Data Model
 
-No raw YAML or Markdown string is ever shown to the user. The frontmatter is fully parsed; the body is fully rendered.
+All cross-process boundary types are Pydantic. In-memory-only types use
+`@dataclass`. Tests may use plain dicts.
 
-### 3.6 RBAC
+### Skill (`nexus/skills/models.py`)
 
-| Role | Capabilities |
-|---|---|
-| **Org admin** | Create/ratify Org Library skills, resolve change requests, manage all products, see org overview |
-| **Product admin** | Run product council, adopt org standards, author overlays (with justification), file change requests |
-| **SME** | Read own product(s) + Org Library (read-only), file change requests |
+The unit of curated guidance Nexus serves to agents.
 
-**Demo mode:** persona debug widget in TopBar to flip personas for reviewers (visible only when `NEXUS_DATA=mock`).
+```python
+class Skill(BaseModel):
+    name: str
+    product: str
+    version: int = 1
+    confidence: float          # [0.0, 1.0]
+    applies_to: AppliesTo      # files: list[str], contexts: list[str]
+    provenance: Provenance
+    body: str                  # markdown body (no frontmatter)
 
----
-
-## 4. Ingestion Pipeline
-
-```mermaid
-flowchart TD
-    CMD["nexus ingest\nor UI: Sync All"] --> CM
-
-    subgraph CM["Connector Manager — MCP Client"]
-        CM1["resources/list → resource inventory"]
-        CM2["resources/read → fetch content"]
-        CM3["resources/subscribe → daemon hook"]
-    end
-
-    CM --> CK
-
-    subgraph CK["Chunker"]
-        CK1["tree-sitter / cAST\nfor code files .rs .ts .py etc"]
-        CK2["Docling\nfor docs .md .pdf"]
-    end
-
-    CK --> CE["Contextual Enricher\nlight LLM — prepend 1-2 sentence summary\nof enclosing file / class / doc section\nbefore embedding; skippable per source type"]
-    CE --> EM["Embedder — Jina v4 local\ndense_code vector for code (task LoRA)\ndense_text vector for docs (task LoRA)"]
-    CK --> RE["Relation Extractor\nlight LLM — Meta-Llama-3.1-8B\nEntities: service, module, symbol,\nticket, ADR, RFC, incident, person\nRelations: implements, references,\nsupersedes, owned_by, closes, caused_by"]
-
-    EM --> QD[("Qdrant\ndense_code + dense_text\n+ sparse BM25")]
-    RE --> N4[("Neo4j\nnodes: entity, chunk, source\nedges: cross-source relations")]
-
-    subgraph Daemon["Continuous Index Daemon"]
-        D1["resources/updated event"] --> D2["Re-chunk changed resource only"]
-        D2 --> D3["Qdrant: delete old vectors\nupsert new"]
-        D3 --> D4["Neo4j: update relation edges"]
-        D4 --> D5["Invalidate semantic cache\nfor affected queries"]
-    end
-
-    CM3 --> Daemon
+    @property
+    def id(self) -> str:
+        return f"{self.product}/{self.name}"
 ```
 
-**Cross-source correlation** is the key value of Neo4j: a commit `closes` a Jira ticket that is `justified_by` a Confluence ADR. This relation cannot be discovered by vector similarity alone.
+On disk: `<hierarchy_root>/<product>/<name>.skill.md` with YAML
+frontmatter for everything but `body`.
 
-**Contextual chunk enrichment:** The Contextual Enricher prepends a 1–2 sentence LLM-generated summary to each chunk before embedding — capturing the enclosing file path, class/function name, and document section. This is Anthropic's contextual retrieval technique; it costs ~$0.0001/chunk (light tier) and yields 8–15% retrieval precision improvement. Controlled per source type: `enrich_chunks: docs` (default on), `enrich_chunks: code` (default off — tree-sitter context is already structural). Batch embedding queue processes chunks in groups of 32 to keep GPU utilisation high and cut ingestion wall time by 30–40%.
-
-**Jina v4 dual-mode:** Code chunks are embedded using the `retrieval.passage.code` task LoRA; doc/text chunks use `retrieval.passage`. Query vectors use `retrieval.query.code` and `retrieval.query` respectively. These map directly to the `dense_code` and `dense_text` named vectors in Qdrant — no architecture change from Jina v3, just a model swap.
-
-### 4.1 Delta-only resync semantics
-
-Both the daemon's `resources/updated` path and the user-triggered `POST /products/{pid}/sources/{sid}/sync` endpoint compute a delta against the existing vector partition — they do **not** re-embed everything on each tick. This is the dominant cost-saver in production:
-
-- For each chunk pulled from the connector, compute a content hash (`path + anchor + content`).
-- Compare against the stored hash table for that source.
-- **Added** (hash not in store) → embed + insert.
-- **Updated** (path/anchor in store, hash differs) → re-embed + upsert.
-- **Removed** (in store, not in current pull) → delete from index.
-- **Untouched** → no-op (the dominant case, where the cost win comes from).
-
-**Contract:**
-
-- `POST /products/{pid}/sources/{sid}/sync` returns `{ ok: true, delta: { added, updated, removed, unchanged } }`.
-- The SSE sync-log stream at `/products/{pid}/sources/{sid}/log` emits a terminal `delta` event with the same shape, plus per-chunk lines (`added path:line`, `updated path:line`, `removed path:line`) so the UI can show progress live.
-- `Source.lastDelta` and `Source.nextSync` are persisted on the row and returned via `listSources` / `getSource` so the UI can show "+12 ~4 -1" cards and "next sync · HH:MM" hints without subscribing to the stream.
-
-The semantic cache is invalidated only for chunks in the delta — untouched chunks keep their cached query results.
-
----
-
-## 5. Retrieval Pipeline — GraphRAG
-
-```mermaid
-flowchart TD
-    Q["Query + context"] --> QC["Query Classifier\nSimple: exact symbol / file path\n→ Stage 1 dense_code only\nComplex: conceptual / cross-source\n→ full pipeline + HyDE"]
-
-    QC -->|complex| HY["HyDE\nlight LLM generates hypothetical\ncode snippet or doc passage\nembed → augmented search vector"]
-    QC -->|simple| SC
-    HY --> SC
-
-    SC{"Semantic cache\nQdrant ANN ≥ 0.92?"}
-    SC -->|HIT| RET["Return cached result\nskip all stages"]
-    SC -->|MISS| S1 & S2
-
-    S1["Stage 1: Dense search\nJina v3 text mode → query vector\nQdrant search dense_text, top-50"]
-    S2["Stage 2: Sparse BM25\nQdrant sparse vector, top-50"]
-
-    S1 & S2 --> S3["Stage 3: RRF merge\nReciprocal Rank Fusion\ndense-50 + BM25-50 → seed set top-20"]
-
-    S3 --> S4["Stage 4: GraphRAG expansion\nFor each seed chunk:\n  • resolve entity in Neo4j\n  • expand 1–2 hops\n  • pull cross-source neighbours\nRRF re-merge → top-30"]
-
-    S4 --> S5["Stage 5: Jina Reranker v3\ncross-encoder, local\nscores each candidate vs query\n→ top-k configurable"]
-
-    S5 --> OUT["Ordered list: CodeChunk / SkillRef\nwith scores\ngraph paths never rendered in UI"]
-    RET --> OUT
+```python
+class Provenance(BaseModel):
+    council_session: str | None
+    validated_by: str
+    validated_at: str          # ISO-8601
+    evidence_chunks: list[str]
+    adversary_critique: str | None  # short note from the Critic, if any
+    revision_count: Literal[0, 1]   # session-scoped, fed into the confidence formula
 ```
 
-**Code-specific queries** (Archaeologist pattern mining): Stage 1 uses `dense_code` named vector instead of `dense_text`; all other stages apply identically.
-
-**Retrieval quality gate:** After reranking, chunks with score < 0.3 are filtered before injection into any agent prompt. If all chunks fall below threshold, the pipeline re-queries once with expanded terms (HyDE forced). If the second pass also fails, the agent receives an explicit `no_context` signal and must not fabricate — it either asks for clarification or returns `confidence: 0`. This prevents the silent high-confidence hallucination failure mode.
-
-**Semantic cache schema:**
-```json
-{
-  "vector": "<Jina embedding of query+context>",
-  "payload": {
-    "query": "string",
-    "context": "string",
-    "result": "<serialised retrieval result>",
-    "created_at": "ISO-8601",
-    "product_id": "string"
-  }
-}
-```
-Cache entries are invalidated when a source sync touches chunks that were part of the cached result.
-
-### Resilience — Degradation Chain
-
-| Component failure | Fallback behaviour |
-|---|---|
-| Neo4j unreachable | Skip Stage 4; send Stage 3 RRF output directly to reranker |
-| Reranker unreachable | Skip Stage 5; return Stage 3/4 RRF-ranked results as-is |
-| Qdrant unreachable | Return semantic cache hit if available; else 503 — no silent empty results |
-| All three down | 503 immediately — never return empty result silently |
-
-Circuit breaker lives in `retrieval/circuit.py`: 3 consecutive failures → open for 30 s → probe → close on success. Every open event emits a Langfuse alert span tagged `circuit_open: true` so oncall has a clear signal. Degraded-mode responses include an `X-Nexus-Retrieval-Mode: degraded` header so clients can surface a warning.
-
----
-
-## 6. LLM Council — Multi-Agent Orchestration
-
-Framework: **LangGraph StateGraph** with **SqliteSaver** checkpointer. All agent I/O is Pydantic-typed. All spans are traced in Langfuse.
-
-### 6.1 Master Skill Council (4 agents)
-
-Triggered by onboarding Step 3 (after ingestion completes successfully) or an explicit "Draft Master Skill" action from the product dashboard.
-
-```mermaid
-sequenceDiagram
-    participant API as FastAPI
-    participant LG as LangGraph
-    participant Arch as Archaeologist
-    participant DE as Domain Expert
-    participant Syn as Synthesizer
-    participant Adv as Adversary
-    participant DB as SQLite
-
-    API->>LG: CouncilState{topic, skill_kind=master, product_id}
-
-    par Fan-out via Send API
-        LG->>Arch: hybrid_search(dense_code) + tree_sitter_query + file_read
-        LG->>DE: hybrid_search(product docs/tickets/ADRs, product-scoped only)
-    end
-
-    Arch-->>LG: CodePatterns{patterns[], evidence_chunks[]}
-    DE-->>LG: DomainContext{vocab[], entity_relationships[], evidence_chunks[]}
-
-    LG->>Syn: Aggregate CodePatterns + DomainContext → draft
-    Syn-->>LG: SkillProposal v1{name, body_md, citations[], confidence}
-
-    LG->>Adv: Red-team SkillProposal v1
-    Adv-->>LG: Critique{severity: blocking|major|minor, issues[], recommendation}
-
-    alt critique.severity == "blocking"
-        LG->>Syn: Re-draft embedding critique
-        Syn-->>LG: SkillProposal v2
-        LG->>Adv: Re-check v2
-        Adv-->>LG: Critique v2 — FINAL regardless of severity
-    end
-
-    LG->>DB: Save proposal + checkpoint (SqliteSaver)
-    Note over LG,DB: 4–5 Langfuse spans emitted
-    LG-->>API: SkillProposal{status: pending}
-```
-
-### 6.2 Product-Domain Skill Council (3 agents)
-
-Same graph topology but **no Synthesizer node**. Archaeologist + Domain Expert feed directly into Adversary, which also produces the draft (combined role). Max-1 revision applies.
-
-Agents: Archaeologist + Domain Expert + Adversary (~$0.002/session).
-
-### 6.3 Org Library Curator (1 agent, no council)
-
-```mermaid
-sequenceDiagram
-    participant OA as Org Admin
-    participant API as FastAPI
-    participant CUR as Curator Agent
-    participant WEB as Web Search Tool
-    participant QD as Qdrant
-
-    OA->>API: POST /org/skills {topic, kind}
-    API->>CUR: CuratorState{topic, skill_kind}
-    CUR->>WEB: web_search(topic + "best practices" + "conventions")
-    WEB-->>CUR: External sources + content
-    CUR->>QD: hybrid_search (validate against in-corpus evidence)
-    QD-->>CUR: Relevant existing chunks
-    CUR-->>API: OrgSkillProposal{body, external_sources[], quality_score}
-    API-->>OA: Pending proposal in Org Library queue
-    OA->>API: POST /org/skills/{id}/ratify (edit or accept as-is)
-    API->>QD: Embed org skill body
-    Note over API: Published to Org Library — versioned
-```
-
-Curator gets `web_search` tool. Domain Expert does **not** — product knowledge must stay in-corpus.
-
-### 6.4 Change-Request Review (1 auto-routed agent)
-
-```mermaid
-sequenceDiagram
-    participant U as Any User
-    participant API as FastAPI
-    participant Router as Kind Router
-    participant Agent as Routed Agent
-    participant OA as Org Approver
-
-    U->>API: POST /org/skills/{id}/change-requests{diff, rationale}
-    API->>Router: Route by skill.kind
-    Note over Router: security → Security Sentinel\ntech_stack or language → Archaeologist
-    Router->>Agent: current skill + diff + corpus evidence via hybrid_search
-    Agent-->>API: {verdict: low|medium|high risk, analysis, recommendation}
-    API-->>OA: status=awaiting_approver — notified
-
-    alt Approve
-        OA->>API: POST .../approve
-        API->>API: Publish new org skill version
-        API->>QD: Invalidate semantic cache for affected queries
-    else Reject
-        OA->>API: POST .../reject {reason: required}
-    end
-```
-
-### 6.5 Agent Capabilities Summary
-
-| Agent | Tools | Output type | Used in |
-|---|---|---|---|
-| **Archaeologist** | `hybrid_search(dense_code)`, `tree_sitter_query`, `file_read` | `CodePatterns` | Master, Domain councils; CR review for tech_stack/language |
-| **Domain Expert** | `hybrid_search` (product-scoped, no web search) | `DomainContext` | Master, Domain councils |
-| **Synthesizer** | reads CodePatterns + DomainContext | `SkillProposal` | Master council only |
-| **Adversary** | reads proposal + evidence, generates counter-examples | `Critique` | All product councils |
-| **Security Sentinel** | `hybrid_search`, static CVE rule pack | `SecurityConcerns` | CR review for security skills |
-| **Curator** | `web_search`, `hybrid_search` (validation only) | `OrgSkillProposal` | Org Library authoring |
-
-### 6.6 Cadence, priors, and compaction
-
-The cap inside a single session is `revision_count ∈ {0, 1}` (ADR-007). The three mechanisms below control what happens **across** sessions — they're what make the system sustainable over time as a product accumulates SME corrections and source churn.
-
-#### 6.6.1 Change-gated council cadence (ADR-015)
-
-Council does **not** fire on every resync. Three layers, all server-side:
-
-- **Gate** — after each ingestion delta (§4.1), intersect the changed-chunk IDs with each skill's `provenance.evidence_chunks`. If the overlap exceeds a configured threshold, enqueue a council run for that skill.
-- **Cap** — at most one council run per `(product_id, skill_id)` per 7 days. Multiple gate trips inside the window coalesce into one richer session that uses the union of changed chunks.
-- **Override** — `POST /products/{pid}/council/sessions` accepts `{ force: boolean, skill_id?: string }`. When `force: true`, the cap is bypassed. Admin perms required.
-
-The backend exposes `nextCouncilEligibleAt` per skill in the skill detail response. Activity rows for council events are suffixed `(gated)` or `(manual override)` so audit is clear.
-
-`createSession` response shape:
-
-```ts
-POST /products/{pid}/council/sessions  body: { topic, skill_kind?, force?, skill_id? }
-→ {
-    session_id: string,
-    status: string,
-    priors?: { revision: number, corrections: number, rejections: number }
-  }
-```
-
-#### 6.6.2 Council priors (ADR-016)
-
-Every council session is seeded with three priors derived from prior interactions on the same `(product, skill)` pair. Goal: SMEs see less of the council over time, not more.
-
-- **Starting revision** — if a current approved skill exists, the council is launched with that skill body as input, not a blank draft. Sections that re-derive identically to the prior carry `inherited: true` in the proposal payload and render with a subtle "inherited" pill in the UI.
-- **Corrections corpus** — every `POST /proposals/{id}/edit` call captures the (council-draft → SME-edit) diff against `(product_id, skill_kind)`. Recent corrections + a distilled summary of older ones (see §6.6.3) are rendered into the council's system prompt as house rules ("Past SMEs have said: …").
-- **Rejection log** — `POST /proposals/{id}/reject` accepts `{ reason: string, category?: 'factual' | 'out-of-scope' | 'duplicate' | 'other', actor: string }`. Reasons persist and are fed into the next session's prompt as anti-priors. Today the body is required (was previously a URL query parameter that was dropped on the floor).
-
-Two revision counters — easy to confuse, do not collapse:
-
-| Field | Scope | Bound | Purpose |
-|---|---|---|---|
-| `provenance.revision_count` | within a single council session | `0 \| 1` (ADR-007) | input to the confidence formula `adversary_passes = 1.0 if 0 \| 0.7 if 1` |
-| `provenance.cumulative_revisions` | across all sessions for this skill | monotonic, uncapped | the "rev N" shown in the Council session header's priors badge and on the skill provenance row |
-
-#### 6.6.3 Corrections compaction (ADR-017)
-
-Without compaction the corrections corpus becomes a token bomb: a master skill with 200 approved edits over 6 months would carry 50K+ tokens of "house rules" prepended to every council run, growing linearly with usage. We compact.
-
-`GET /skills/{skill_id}/corrections` returns:
-
-```ts
-{
-  corrections: Correction[],           // recent, raw; capped (default ~10)
-  distilled: {
-    rules: string,                     // condensed house-rules text actually injected into prompts
-    from_count: number,                // how many raw corrections were folded in
-    last_compacted_at: string,
-  } | null,                            // null until the first compaction happens
-  total: number,                       // total raw corrections ever recorded
-}
-```
-
-Compaction policy is backend-owned (e.g. "compact when raw count > 25, fold all but the most recent 10"). The UI surfaces both — a "Distilled rules" accent panel above a list of recent raw corrections, with "showing 10 of 47 (older folded into distilled rules)" subtitle. SMEs always have the raw audit trail; the *injected prompt context stays bounded*.
-
-#### 6.6.4 Evidence chunks per session cap (ADR-018)
-
-The synthesizer's prompt is also bounded on the citation side: `EVIDENCE_CHUNKS_PER_SESSION_CAP = 20` ([nexus-ui/lib/types.ts](../nexus-ui/lib/types.ts)).
-
-Above this, the reranker's top-K decides which chunks survive into the prompt; the rest are dropped for that session. The cap is enforced backend-side. The UI surfaces it on the skill provenance row as `N / 20 cap` so the budget is visible to SMEs.
-
-If a skill's stored `provenance.evidence_chunks` ever exceeds the cap, that's a historical artifact (the cap was raised, then lowered). Display the actual length; the cap is a constant the prompt assembler enforces, not a storage limit.
-
-#### 6.6.5 New endpoints
+`revision_count` is hard-capped at `0 | 1` because the council's revision
+loop fires at most once (see §5). The confidence formula:
 
 ```
-GET /skills/{skill_id}/corrections       → CorrectionsResponse (see §6.6.3)
-GET /skills/{skill_id}/rejections        → { rejections: SkillProposal[] }
-GET /skills/{skill_id}/council-history   → { sessions: CouncilSessionSummary[] }
+confidence = (citation_density * critic_passes) / 2
+  where citation_density = min(citations / paragraphs, 1.0)
+        critic_passes    = 1.0 if revision_count == 0 else 0.7
 ```
 
-These power the corresponding panels on the Skill detail screen.
+### SkillProposal (`nexus/skills/models.py`)
 
----
+Council output queued for human review. Persisted in the
+`proposals` SQLite table (`nexus/council/queue.py`).
 
-## 7. Skill Hierarchy — Git-Backed
-
-Skills are plain Markdown + YAML frontmatter files, but they **do not live on the Nexus instance disk**. Each product has a dedicated Git repo for its skills. Nexus clones that repo on boot and commits+pushes every approved skill. Instance goes down → restart → `git clone` → all skills restored. No data loss.
-
-### Repos
-
-```
-myorg/nexus-skills          ← one repo per org (product skills + shared standards)
-```
-
-**One repo per org.** Product skill hierarchies and cross-product shared standards (tech-stack, language, security) live together in a single Git repo. The repo root contains product directories alongside a `shared/` directory — no separate repo, no separate deploy key, no split git history.
-
-**First-run bootstrap.** On a fresh install `skills_repo` is unconfigured. The UI routes to `/setup`, which calls `POST /setup/skills-repo` (`nexus/api/routes/setup.py`). The orchestrator (`nexus/setup/bootstrap.py`) either creates a new GitHub repo via the REST API (`POST /user/repos` or `POST /orgs/{org}/repos`, `auto_init=true`) or attaches to an existing URL, then clones to a tempdir, copies `nexus/skills/starter/shared/` (13 curated skills) into `shared/`, commits + pushes, and persists the URL in the `setup_kv` table (`nexus/setup/kv.py`). Boot-time resolution order: runtime KV → `nexus.yaml` → empty (setup required).
-
-**Selective serving.** The MCP `find_skills` tool (`nexus/mcp_server/tools.py`) hard-filters by `applies_to.files` (glob match against the agent's `current_file`) and `applies_to.contexts` (exact tag match against the requested context), ranks the survivors lexically, then expands `composes_with` to pull in prerequisites — typical reductions are 50–88% of the worst-case token blob.
-
-### Lifecycle
-
-```mermaid
-flowchart LR
-    BOOT["Nexus boots"] -->|git clone skills_repo| LOCAL["Local clone\n./skills/ — ephemeral"]
-    APPROVE["Human approves skill in UI"] --> WRITE["Write .skill.md to local clone"]
-    WRITE --> COMMIT["git commit + git push → skills_repo"]
-    COMMIT --> QDRANT["Embed body → Qdrant"]
-    RESTART["Instance restarts"] -->|git clone skills_repo| LOCAL
+```python
+class SkillProposal(BaseModel):
+    id: str
+    name: str
+    body: str
+    citations: list[Citation]
+    confidence: float
+    adversary_critique: Critique | None
+    status: Literal["pending", "approved", "rejected", "edited"]
+    created_at: str
+    approved_by: str | None
+    approved_at: str | None
 ```
 
-On every approve: `store.py` writes the file → shells out `git add -A && git commit -m "skill: {name} approved by {user}" && git push`. The Git repo is the source of truth. `./skills/` is always a fresh clone, never the source.
+### Citation
 
-### Directory Layout (inside the skills repo)
-
-```
-nexus-skills/                      ← git repo root (one repo per org)
-├── forge/                         ← product: forge
-│   ├── master.skill.md
-│   ├── L2_domain/
-│   │   ├── pda-seed-validation.skill.md
-│   │   └── payment-service-flow.skill.md
-│   └── overlays/
-│       └── org_springboot.yaml
-├── atlas/                         ← product: atlas
-│   └── master.skill.md
-└── shared/                        ← cross-product standards (same level as product dirs)
-    ├── tech_stack/
-    │   ├── springboot.skill.md
-    │   └── angular.skill.md
-    ├── language/
-    │   ├── java.skill.md
-    │   └── typescript.skill.md
-    └── security/
-        ├── owasp-input-validation.skill.md
-        └── secrets-no-hardcoded.skill.md
+```python
+class Citation(BaseModel):
+    id: str | None             # chunk id when the citation maps to an indexed chunk
+    file: str
+    line: int
+    excerpt: str
 ```
 
-### Skill File Format
+Citations are post-hoc parsed from the proposal body by
+`nexus/council/skill_parser.py` (regex on `[file: path:line]` markers).
 
-```yaml
----
-name: pda-seed-validation
-kind: product_domain            # master | product_domain | tech_stack | language | security
-scope: product                  # product | org
-product: forge                  # org skills omit this field
-version: 1
-confidence: 0.87                # computed: (citation_density × adversary_passes) / 2
-applies_to:
-  files: ["**/*.rs"]
-  contexts: ["security-audit", "code-review"]
-composes_with:                  # skill IDs this builds on (empty for master)
-  - master
-  - org/owasp-input-validation
-provenance:
-  council_session: cs_2026_05_14_a1b2c3
-  validated_by: sudhanshuvshekhar@gmail.com
-  validated_at: 2026-05-14T10:23:00Z
-  evidence_chunks: [ck_abc123, ck_def456]
-  adversary_critique: "edge case on PDA bump seeds — see inline note"
-  revision_count: 1             # 0 = no machine revision; 1 = one Adversary cycle
----
+### Chunk (`nexus/ingest/models.py`)
 
-# PDA Seed Validation
+```python
+class Chunk(BaseModel):
+    product_id: str
+    resource: ResourceRef
+    content: str
+    start_line: int            # 1-indexed
+    end_line: int
+    kind: ChunkKind            # CODE | DOC
+    context_path: str = ""     # heading hierarchy for docs (e.g. "Auth / API Keys / Rotating")
+    context_summary: str = ""  # enricher output: HQE questions OR CR situating context
 
-[Body with inline citations: `[file: programs/swap/src/lib.rs:42]`]
+    @property
+    def id(self) -> str:       # deterministic UUID5 over product + uri + start:end
+        ...
+
+    def text_for_embedding(self) -> str:
+        if self.context_summary:
+            return f"{self.context_summary}\n\n{self.content}"
+        if self.context_path:
+            return f"{self.context_path}\n\n{self.content}"
+        return self.content
 ```
 
-**Confidence formula:**
-```
-citation_density = clamp(len(citations) / len(paragraphs), 0, 1)
-adversary_passes = 1.0 if revision_count == 0 else 0.7
-confidence       = (citation_density × adversary_passes) / 2
-```
+Chunks are content-addressed via UUID5 so re-ingest is idempotent — the same
+file at the same lines produces the same chunk id every time, and re-indexing
+overwrites the same Qdrant point.
 
-### Product Overlay Format
+## 3. Ingestion Pipeline
 
-```yaml
-# overlays/org_springboot.yaml
-org_skill_id: org_springboot
-product: forge
-justification: "Legacy XML config module pre-dates component scan; cannot enforce annotation-only config"
-added_rules: []
-relaxed_rules:
-  - id: rule_annotation_config_only
-    reason: legacy XML config module
-by: s.varma@org
-at: 2026-04-01T09:00:00Z
+`nexus/ingest/pipeline.py::run_ingest()` orchestrates the per-product flow.
+The connector hands us `(ResourceRef, content)` pairs; the pipeline does:
+
+```
+chunk_resource(content) ──► enricher.enrich(chunks, doc_contents) ──►
+  embedder.embed_chunks() ──► aencode_passages() (BM25) ──► indexer.upsert()
 ```
 
----
+Files batch in groups of `IngestionCfg.file_batch_size` (default 20 on M2/8GB,
+50 on 16GB+). Within a batch reads are concurrent at
+`IngestionCfg.read_concurrency` (5 / 10). The embedder is called once per
+batch — never per file.
 
-## 8. MCP Server — Serving Side
+### Chunker (`nexus/ingest/chunker.py`)
 
-Transport: `stdio` via MCP Python SDK. A single Python process.
+- **Code**: tree-sitter (Python, TS, TSX, JS, Rust, Go). Chunk boundaries
+  are function / class / impl / trait / interface / method nodes. Oversized
+  bodies fall through to a char splitter with overlap.
+- **Markdown**: heading-aware splitter. Each chunk's `context_path` carries
+  its heading hierarchy (e.g. `"Auth / API Keys / Rotating"`).
+- **Plain text**: char splitter with overlap.
 
-The MCP server is the single interface through which agents interact with Nexus. It exposes skills to **guide** agents and corpus query tools agents can call **on demand** when they need more context mid-task.
+Sizing (tuned for llama.cpp `--ubatch-size 512`):
 
-```mermaid
-flowchart TD
-    CLIENT["AI Agent\nClaude / Cursor / any MCP client"]
+```
+MAX_CHUNK_CHARS    = 1200   # ~300-400 tokens after enricher prefix
+CHAR_SPLIT_TARGET  = 700
+CHAR_SPLIT_OVERLAP = 70
+```
 
-    subgraph MCP["Nexus MCP Server — stdio"]
-        META["nexus://meta-skill\nbootstraps agent on connect"]
-        GUIDE["Guidance layer\nfind_skills · get_skill\n→ curated best practices"]
-        CONTEXT["Context layer  on-demand\nquery_code_context · hybrid_search_corpus\n→ raw corpus evidence"]
-    end
+Don't raise these without first checking that the embedder won't truncate.
 
-    subgraph SKILLS["Skills — curated, human-ratified"]
-        S1[Master + Domain skills]
-        S2[Org Library standards]
-    end
+### Enricher (`nexus/ingest/enricher.py`)
 
-    subgraph CORPUS["Vector DB — raw indexed corpus"]
-        C1["Qdrant\ncode + doc chunks\ndense + sparse vectors"]
-        C2["Neo4j\nentity/relation graph"]
-    end
+Two strategies, dispatched on `ChunkKind`:
 
-    CLIENT -->|1 connect + read meta-skill| META
-    CLIENT -->|2 get guidance for task| GUIDE
-    GUIDE --> SKILLS
-    CLIENT -->|3 need more context while working| CONTEXT
-    CONTEXT -->|GraphRAG pipeline| CORPUS
+**Code → HQE (Hypothetical Question Embeddings).** The LLM generates 3
+"questions a developer would type to find this code", prefixed `Q:`. Stored
+in `context_summary`, prepended at embed time. Closes the
+English↔identifier gap that bare code embeddings hit.
+
+**Docs → Anthropic Contextual Retrieval**
+(`anthropic.com/news/contextual-retrieval`, Sep 2024). The LLM sees the
+whole document + the chunk and writes a 50-100 token "situate this chunk
+within the document" blurb. Stored in `context_summary`. Anthropic's
+measured numbers on their internal eval: -35% top-20 failure rate vs. raw
+embeddings; -49% combined with BM25; -67% combined with BM25 + rerank.
+
+Per Anthropic: the whole-doc prefix is naturally amenable to server-side
+prompt caching. DeepInfra / OpenAI APIs auto-dedupe the prefix across
+multiple chunks of the same doc, so cost is ~$1/million chunks at Haiku
+rates.
+
+`_truncate_doc()` caps the prefix at 30 000 chars (~7.5k tokens) centred on
+the chunk when a doc is pathologically large; the chunk itself is always
+preserved.
+
+`doc_contents: dict[str, str]` (uri → full text) is threaded from
+`pipeline.flush()` and `incremental.reindex_resource()` so the enricher
+has the full doc, not just the chunk.
+
+### Embedder (`nexus/ingest/embedder.py`)
+
+OpenAI-compatible client against a llama.cpp server hosting
+**Jina Embeddings v4** (`jinaai/jina-embeddings-v4`, 2048-dim). The
+`text_for_embedding()` prefix (HQE or CR or `context_path`) is included in
+the input.
+
+### Indexer (`nexus/ingest/indexer.py`)
+
+Qdrant collections (per `nexus.yaml`):
+
+- `nexus_code` — code chunks, dense + sparse vectors
+- `nexus_text` — doc chunks, dense + sparse vectors
+
+Both collections shard payloads on `product_id`. Sparse vectors come from
+BM25 (`Qdrant/bm25` via fastembed). One upsert per batch carries both
+dense and sparse for every chunk.
+
+### Repo Map (`nexus/retrieval/repomap.py`)
+
+Built once at sync time (while the local clone still exists), persisted to
+`<state>/repomaps/<product_id>.json`. Tree-sitter walks the tree, extracting
+function / class / method / struct / trait / interface / type / enum / impl
+definitions with their start line and signature.
+
+Skipped: `node_modules`, `.venv`, `.git`, `dist`, `build`, `target`, `vendor`,
+`.next`, `.pytest_cache`, files > 250 KB.
+
+At council time the map is loaded, ranked against the session topic (lexical
+overlap on `name + path` plus a small structural weight: classes > functions
+> methods), and rendered into a token-bounded block of `file:\n  signature
+[Lline]` lines. The render is injected as the system-prompt prefix for the
+Drafter, Critic, and Reviser so they see the codebase structure before any
+retrieval call.
+
+We deliberately skip aider's personalized-PageRank step in v1. With < 5k
+files, lexical + structural ranking is within striking distance and avoids
+`networkx` as a dependency. Add PR back if `tests/eval/queries.json` proves
+the gap matters.
+
+### Incremental Ingest (`nexus/ingest/incremental.py`)
+
+`reindex_resource(product_id, resource, content)`:
+
+1. Delete every existing chunk for this `resource_uri` from Qdrant.
+2. `chunk_resource()` → `enricher.enrich(chunks, doc_contents={uri: content})`.
+3. Embed + sparse-encode → upsert.
+
+Resync is **delta-only** — only the changed resource is touched. Don't
+reintroduce a full re-ingest path.
+
+## 4. Retrieval Pipeline
+
+`nexus/retrieval/pipeline.py::retrieve()`. Three stages, no fallbacks beyond
+rerank-soft-fail:
+
+```
+embed(query) ──► dense top-50 ┐
+                              ├── RRF merge top-20 ──► Jina rerank top-K
+BM25(query) ──► sparse top-50 ┘
+```
+
+`mode="auto"` queries both `code` + `text` collections; `mode="code"` or
+`"text"` restricts. Reranker score gate (`IngestionCfg.quality_gate_threshold`,
+default 0.3) filters obviously-bad rerank results when the rerank succeeded.
+
+Nothing else. **No** classifier, **no** HyDE, **no** semantic cache, **no**
+circuit breakers, **no** graph expansion, **no** prompt-injection guard. The
+retrieval eval set (§10) is the floor; only add layers if it moves the
+number.
+
+## 5. Council — 3-node Reflexion
+
+`nexus/council/graph.py`. LangGraph state graph, three nodes:
+
+```
+START ──► Drafter ──► Critic ──► route(severity == "blocking" && rev == 0)
+                                  ├── true  ──► Reviser ──► END
+                                  └── false ────────────► END
+```
+
+State (`nexus/council/state.py::CouncilState`):
+
+```python
+class CouncilState(TypedDict, total=False):
+    session_id: str
+    product_id: str
+    topic: str
+    config_path: str
+    evidence: list[EvidenceChunk]   # reducer-merged: Drafter + Critic both append
+    proposal: SkillProposal | None
+    proposal_id: str | None
+    critique: Critique | None
+    revision_count: int             # capped at 1
+    deliberation: list[DeliberationMessage]  # append-only stream
+    costs: list[AgentCost]
+```
+
+### Drafter (`nexus/council/agents/drafter.py`)
+
+One retrieval call (top-20, mode=auto), one LLM call. Receives the repo map
+in the system prompt, the retrieved evidence in the user prompt. Emits
+**Markdown** (not JSON-wrapped — that wastes 30-40% of the token budget on
+escaping). Uses `chat_markdown()` (§5.4) for auto-continuation. Validates
+completeness; one targeted section-fill pass if a required section is
+missing.
+
+Required sections (`nexus/council/skill_parser.py::validate_completeness`):
+- `# Title` (H1)
+- `## Rules` with ≥ 3 list items, **each cited** `[file: path:line]`
+- `## Anti-patterns` with ≥ 1 list item
+
+Post-parse guardrail (`strip_uncited_rules`): any list item under `## Rules`
+that lacks a `[file: ...]` citation is stripped before the proposal is
+queued.
+
+### Critic (`nexus/council/agents/critic.py`)
+
+**Does its own fresh retrieval.** This is the load-bearing piece per
+Reflexion (Shinn et al. 2023) and Anthropic's Constitutional AI: without
+re-retrieval the critic devolves into sycophantic agreement.
+
+Critic's query is built from the proposal's name + cited files, so it pulls
+chunks the Drafter may have *missed*. Scores against a fixed 4-axis rubric
+(faithfulness / completeness / specificity / anti-patterns); emits a
+`Critique` with severity ∈ `{blocking, major, minor}`.
+
+Only `blocking` triggers the Reviser. `major` and `minor` are stamped on
+the proposal but don't loop.
+
+### Reviser (`nexus/council/agents/reviser.py`)
+
+Sees the merged evidence pool (Drafter's + Critic's fresh chunks via the
+state reducer), the prior draft, and the defect list. Produces v2 with the
+same proposal id (so the queue row updates in place). `revision_count: 1`.
+Same Markdown + continuation + completeness-gate mechanics as the Drafter.
+
+### LLM client (`nexus/llm/client.py`)
+
+OpenAI-compatible (`/chat/completions`) async client. Three methods:
+
+- `chat(messages, *, json_mode=False)` — single call.
+- `chat_json(messages)` — adds `response_format: json_object`.
+- `chat_markdown(messages, *, max_continuations=2)` — the aider/cursor
+  pattern. On `finish_reason == "length"` resends the partial as an
+  assistant message + `"Continue exactly where you stopped"` user message,
+  concatenates the chunks. Token usage is summed.
+
+`ChatResponse.finish_reason` and `.truncated` are exposed for callers who
+need them.
+
+### Runner (`nexus/council/runner.py`)
+
+Background asyncio task. Streams LangGraph node updates onto a per-session
+pub/sub hub (`HUB`) so SSE clients see live deliberation + cost + critique
++ proposal-preview events. On completion the proposal is enqueued and the
+session row is recorded.
+
+### Queue (`nexus/council/queue.py`)
+
+SQLite. Two tables:
+
+- `proposals` — one row per `SkillProposal`. Status transitions:
+  `pending → approved | rejected | edited`.
+- `sessions` — one row per council run. Carries `deliberation_js`,
+  `costs_js`, `proposal_id`, `started_at`, `completed_at`, `status`.
+
+The `org_proposals` + `change_requests` tables from the old org-library
+flow are gone.
+
+## 6. Approval flow
+
+`nexus/skills/approval.py::approve_proposal()` is the source of truth. Both
+the API (`POST /proposals/{id}/approve`) and the CLI call it. Idempotent
+within a session — re-approving a row already at `approved` is a no-op.
+
+Flow:
+
+1. Look up the queue row by `proposal_id`.
+2. Build a `Skill` from the row's fields (no `kind` / `scope` — Skill is
+   flat) with `Provenance(council_session, validated_by, validated_at,
+   evidence_chunks, adversary_critique, revision_count)`.
+3. `SkillStore.save(skill)` writes the `.skill.md` under
+   `<hierarchy_root>/<product>/<name>.skill.md`.
+4. `commit_and_push()` commits + pushes (skill repo is a Git repo).
+5. Embed the body as a doc chunk so the skill is itself retrievable.
+6. Flip the queue row to `approved`.
+
+## 7. MCP Server (`nexus/mcp_server/`)
+
+Stdio MCP server launched by an MCP client (Claude Desktop, Cursor) as a
+subprocess. One server instance per product:
+
+```bash
+uv run nexus-mcp-server --product <your-product-id>
 ```
 
 ### Tools
 
-**Guidance tools** — called upfront to tell the agent how to work:
-
-| Tool | Signature | Returns |
-|---|---|---|
-| `find_skills` | `query: str, context: str = "general"` | `list[SkillRef]` ranked by full GraphRAG retrieval pipeline |
-| `get_skill` | `name: str` | `Skill` — full Markdown body + parsed frontmatter |
-| `report_outcome` | `skill_name: str, succeeded: bool, notes: str` | `Ack` — feeds staleness tracking |
-
-**Context tools** — called on-demand when the agent needs to go deeper mid-task:
-
-| Tool | Signature | Returns |
-|---|---|---|
-| `query_code_context` | `symbol: str, file_glob: str` | `list[CodeChunk]` with `file:line` + surrounding source content — fast symbol lookup |
-| `hybrid_search_corpus` | `query: str, product_id: str, top_k: int = 5` | `list[CodeChunk \| DocChunk]` — full GraphRAG pipeline against raw corpus; use when symbol lookup is not specific enough |
-
-The corpus tools always run the full GraphRAG retrieval pipeline (dense + BM25 → graph expansion → rerank). Agents never query Qdrant or Neo4j directly — they always go through MCP.
+| Name | Purpose |
+|---|---|
+| `find_skills(query, context?, current_file?, top_k=5)` | Rank curated skills relevant to a query. Filters by `applies_to.files` (glob match against `current_file`) and `applies_to.contexts` (exact tag, `"general"` disables the filter). |
+| `get_skill(name)` | Return the full body + frontmatter for a named skill. |
+| `report_outcome(skill_name, succeeded, notes?)` | In-memory outcome log; surfaces in `state._outcomes`. |
+| `query_code_context(symbol, file_glob?)` | Retrieval pipeline in `mode="code"`. |
+| `hybrid_search_corpus(query, product_id?, top_k=5)` | Retrieval pipeline in `mode="auto"`. |
 
 ### Resources
 
-| URI | Content |
-|---|---|
-| `nexus://meta-skill` | Self-documenting skill; bootstraps any AI client on first connect |
-| `nexus://hierarchy` | Full product skill tree as JSON |
-| `nexus://skills/{name}` | Individual skill file |
-| `nexus://corpus/{product}` | Corpus index summary: source count, chunk count, last indexed, graph node count |
+- `nexus://meta-skill` — Jinja-rendered "how to use Nexus" doc.
+- `nexus://hierarchy` — flat list of all skills for the active product.
+- `nexus://skills/<name>` — markdown body for a named skill.
+- `nexus://corpus/<product>` — counts (chunks, sources) for the product.
 
-### Meta-Skill Template (`meta_skill.md.j2`)
+## 8. API Contracts (`nexus/api/routes/`)
 
-```markdown
----
-name: how-to-use-nexus
-type: meta-skill
-generated_at: {{ now_iso }}
----
+FastAPI. CORS allows `http://localhost:3000`. All routes are listed below
+with their backing logic.
 
-# How to Use Nexus
+### `/products`, `/me`
 
-You are connected to Nexus, an agentic RAG system for the **{{ product_name }}** codebase.
-
-## How to work with Nexus
-
-**Start with skills.** Before beginning any task, call `find_skills` to get curated guidance
-on the relevant capability or domain. Skills tell you the patterns to follow, the anti-patterns
-to avoid, and the conventions this codebase uses. They are human-validated.
-
-**Go deeper on demand.** While working, if you need to verify a specific implementation,
-find all usages of a symbol, or ground your reasoning in actual code, call `query_code_context`
-or `hybrid_search_corpus`. These query the full indexed corpus ({{ chunk_count }} chunks across
-{{ source_count }} sources) through the same GraphRAG pipeline that grounded the skills themselves.
-
-## Available skills
-
-{{ skill_hierarchy_summary }}
-
-## Corpus
-
-{{ corpus_summary }}
-
-## Citation rules
-
-- Cite every skill used: `[skill: name]`
-- Cite every code reference: `[file: path:line]`
-- Skill confidence < 0.7 → present as suggestion, not fact
-- No applicable skill → query the corpus for evidence; never fabricate
-```
-
----
-
-## 9. Task Runners
-
-### PR Review Agent
-
-```mermaid
-sequenceDiagram
-    participant GH as GitHub
-    participant API as FastAPI /webhooks/github
-    participant PR as PR Review Agent
-    participant QD as Qdrant
-
-    GH->>API: POST pull_request.opened event
-    API->>PR: {pr_files[], diffs[], commit_messages[]}
-    PR->>QD: find_skills(context="code-review") per changed file
-    PR->>QD: query_code_context(symbol) for referenced symbols
-    QD-->>PR: ranked skills + code chunks
-    PR-->>API: StructuredReview{findings[], severity, citations[]}
-    API->>GH: POST /repos/{owner}/{repo}/pulls/{id}/reviews
-```
-
-Output posted to GitHub as a structured PR review comment: findings list, severity badge per finding, `[skill: name]` citations.
-
-### Changelog Generator
-
-```mermaid
-sequenceDiagram
-    participant GH as GitHub
-    participant API as FastAPI /webhooks/github
-    participant CL as Changelog Agent
-    participant QD as Qdrant
-
-    GH->>API: POST create tag / release event
-    API->>CL: {tag, prev_tag, commits[], diffs[]}
-    CL->>CL: Walk git log since prev_tag
-    CL->>QD: find_skills(context="code-review") for categorisation
-    QD-->>CL: doc / release skills
-    CL-->>API: Changelog{feat[], fix[], breaking[], other[]}
-    API->>GH: PATCH /repos/{owner}/{repo}/releases/{id}\nbody = formatted markdown
-```
-
----
-
-## 10. Integration Roadmap
-
-The frontend mockup is built and design-locked. The job is to wire the backend without re-touching the UX.
-
-### Strategy — Contract-First Migration
-
-```mermaid
-flowchart LR
-    MOCK["lib/data.ts\nMock data source"] -->|NEXUS_DATA=mock| API_LAYER["lib/api/\nData layer"]
-    LIVE["FastAPI\nLive backend"] -->|NEXUS_DATA=live| API_LAYER
-    API_LAYER --> SCREENS["React screens\nimport only from lib/api"]
-    TYPES["lib/types.ts\nPure TypeScript types\nno data"] -.->|shared contract| MOCK & LIVE & API_LAYER
-```
-
-**Rules:**
-1. Every `NEXUS_*` array and type in `lib/data.ts` becomes a typed FastAPI response schema. Lift into `lib/types.ts` first.
-2. Screens never import from `lib/data.ts` directly — only from `lib/api/`.
-3. `NEXUS_DATA=mock` keeps mock backing everywhere; `NEXUS_DATA=live` hits FastAPI. Switching is one env var.
-4. Migrate screen-by-screen; the demo never breaks.
-
-### Build Sequence — 7 Vertical Slices
-
-Each slice is independently demoable before the next begins.
-
-#### Slice 1 — Ingestion via MCP (1 week)
-
-| Task | Done when |
-|---|---|
-| `nexus init`, `nexus.yaml` config parsing (Pydantic settings) | Config loads cleanly from YAML + env vars |
-| MCP Connector Manager: spawn subprocess, connect via stdio, `resources/list`, `resources/read` | Manager can list and fetch resources from a real GitHub MCP server |
-| Chunker: tree-sitter/cAST for `.rs`, `.ts`, `.py`; Docling for `.md`, `.pdf` | Chunks have `file:line` anchors and semantic boundaries |
-| Embedder: Jina v3 local service, dual mode (`dense_code`, `dense_text`) | Embeddings generated without API calls |
-| Qdrant upsert: named vectors `dense_code`, `dense_text`, sparse BM25 | `nexus query "swap authority check"` returns relevant chunks with file:line |
-
-#### Slice 2 — Retrieval + Skill Hierarchy + MCP Server (1 week)
-
-| Task | Done when |
-|---|---|
-| 4-stage retrieval: dense + BM25 → RRF → Jina Reranker v2 | Top-k results score higher than baseline vector-only |
-| Semantic cache: Qdrant collection, 0.92 threshold, invalidation logic | Second identical query returns from cache; cache miss logs to Langfuse |
-| Filesystem skill hierarchy: Pydantic models, store.py read/write | `Skill.load(path)` and `Skill.save(path)` work with full frontmatter |
-| 5 hand-crafted seed skills in `skills/` | Seed skills score ≥ 0.8 faithfulness on 5 golden Q/A pairs |
-| MCP server: all 4 tools + 3 resources + meta-skill | Claude Desktop connects, reads `nexus://meta-skill`, calls `find_skills`, gets reranked results with citations |
-
-#### Slice 3 — LLM Council MVP — 3 agents (1 week)
-
-| Task | Done when |
-|---|---|
-| LangGraph StateGraph: fan-out via Send API, SqliteSaver checkpoint | Graph serialises/deserialises state cleanly across restarts |
-| Archaeologist + Domain Expert (parallel) + Synthesizer (sequential) | 3-agent run produces a `SkillProposal` with `citations[]` |
-| Confidence computed from citation_density and adversary_passes | Confidence ∈ [0, 1]; proposals without citations score < 0.5 |
-| Langfuse: one trace per council session, one span per agent | Cost and latency visible per agent in Langfuse dashboard |
-| Proposal stored in SQLite pending queue | `nexus council draft --topic "..." --capability security` ends with "proposal pending at localhost:3000" |
-
-#### Slice 4 — Adversary + Validation UI (1 week)
-
-| Task | Done when |
-|---|---|
-| Adversary agent: max-1 revision cycle, severity-gated re-loop | Blocking critiques trigger exactly one redraft; non-blocking critiques are attached without redraft |
-| FastAPI skeleton: all §11 endpoints returning seeded mock payloads | `NEXUS_DATA=live` === `NEXUS_DATA=mock` visually — pixel-level parity |
-| Next.js `lib/types.ts` + `lib/api/` data layer with env flag | Screens compile; no imports from `lib/data.ts` directly |
-| Connect Sources + council + proposal screens to live API | Human approves council draft in UI → `.skill.md` written, embedded in Qdrant, provenance stamped |
-| Connector management: wizard + detail + sync log via SSE | Adding a new connector without touching `nexus.yaml` works end-to-end |
-
-#### Slice 5 — Continuous Index Daemon + Task Runners (1 week)
-
-| Task | Done when |
-|---|---|
-| MCP `resources/subscribe` loop in Connector Manager | Manager reconnects on drop; backpressure handled |
-| Incremental re-chunk + re-embed on `resources/updated` events | Edit a file → Qdrant updated within 5 s; UI status bar reads "Last synced: Xs ago" |
-| `useEventStream(url)` hook in frontend (reused by council + sync log) | No `setTimeout` fakes remain in either CouncilSession or IngestionProgress |
-| PR Review Agent + GitHub webhook | Open a PR → structured review comment with skill citations within 30 s |
-| Changelog Generator + tag webhook | Push a tag → GitHub release notes populated with categorised markdown changelog |
-
-#### Slice 6 — Neo4j GraphRAG + Org Library + Curator (1 week)
-
-| Task | Done when |
-|---|---|
-| Relation extractor (light LLM) running after chunker in ingestion | Entity and relation nodes appear in Neo4j for a real repo |
-| GraphRAG expansion integrated into retrieval (Stage 4, see §5) | Cross-source query (commit + ticket + ADR) returns graph-path-backed chunks not returned by vector-only baseline |
-| RAGAS golden set: add 10 cross-source Q/A pairs | GraphRAG retrieval scores ≥ 10% higher faithfulness than vector-only on cross-source pairs |
-| Curator agent: `web_search` + `hybrid_search` + `OrgSkillProposal` | Org admin kicks off Curator → proposal appears in `/org/library` queue within 60 s |
-| Change-request workflow: router + single agent + org-approver UI | Filing a change request → agent verdict appears → org approver can approve/reject |
-| Org Library UI (`/org/library` screens) live behind `NEXUS_DATA=live` | Org Library CRUD fully functional end-to-end |
-
-#### Slice 7 — Evals + CI + Polish (1 week)
-
-| Task | Done when |
-|---|---|
-| RAGAS golden dataset: 30–50 Q/A pairs covering all skill kinds | Dataset covers ingestion, retrieval, council output quality |
-| GitHub Actions: RAGAS on PR, fail if faithfulness drops > 5% from baseline | CI gate is green on main; a deliberate degradation triggers failure |
-| Langfuse cost dashboard: per-agent token usage + USD breakdown | 100 master sessions = ~$0.60 visible in Langfuse |
-| Prompt-injection regex on retrieved chunks before agent use | Injected payloads in test chunks are caught and redacted |
-| Synthesizer faithfulness check: strip claims without `file:line` or CVE citation | Zero unsupported assertions pass through in golden-set eval |
-| Docker Compose: single `docker-compose up` brings up full stack | Stranger can clone → `docker-compose up` → ingest → draft → approve → use in Claude Desktop |
-| README: architecture diagram + decisions log + quickstart | P99 setup time < 15 min following only README |
-
-### SSE / Streaming Seams (Highest Risk — Do First Within Slice 4/5)
-
-Two screens currently simulate real-time with `setTimeout`:
-- **Council deliberation** (`CouncilSession.tsx`): replace with `useEventStream` consuming LangGraph run SSE. Cost meter ticks from real token usage events.
-- **Ingestion sync log** (`IngestionProgress.tsx`): replace with `useEventStream` consuming Connector Manager `resources/updated` loop. Progress % is real `chunk_count / total`.
-
-Build `useEventStream(url: string): Event[]` once in `lib/hooks/useEventStream.ts`; both consumers use it identically.
-
----
-
-## 11. API Contracts — FastAPI
-
-All response shapes are derived directly from the mock types in `nexus-ui/lib/data.ts`. The mock is the ground truth for the API contract.
-
-### Auth + Products
-
-```
-GET  /me                                           → {user: User, permissions: ProductPerms}
-GET  /products                                     → {products: Product[]}
-POST /products                                     → {product: Product}
-```
-
-### Sources (Ingestion)
-
-```
-GET    /products/{product_id}/sources              → {sources: Source[]}
-POST   /products/{product_id}/sources              → {source: Source}
-DELETE /products/{product_id}/sources/{source_id}  → {ok: bool}
-POST   /products/{product_id}/sources/{source_id}/sync
-                                                   → {ok: bool, delta: SyncDelta}
-                                                     // delta is the {added, updated, removed, unchanged}
-                                                     // chunk counts; see §4.1.
-GET    /products/{product_id}/sources/{source_id}/log
-                                                   → SSE stream; terminal `delta` event
-                                                     carries the same SyncDelta shape.
-```
-
-### Council + Proposals
-
-```
-GET  /products/{product_id}/council/sessions       → {sessions: CouncilSession[]}
-POST /products/{product_id}/council/sessions       → {session_id, status, priors?}
-                                                     body: { topic, skill_kind?, force?, skill_id? }
-                                                     // force=true bypasses the 7-day cap (§6.6.1).
-                                                     // priors = {revision, corrections, rejections}.
-GET  /council/sessions/{session_id}               → {session: CouncilSession}
-GET  /council/sessions/{session_id}/stream        → SSE stream of DeliberationMessage[]
-
-GET  /proposals                                    → {proposals: SkillProposal[]}
-POST /proposals/{proposal_id}/approve             → {skill: Skill}
-POST /proposals/{proposal_id}/edit                → {proposal: SkillProposal}
-                                                     body: { body, actor }
-                                                     // captures (council-draft → SME-edit) diff
-                                                     // into the corrections corpus (§6.6.2).
-POST /proposals/{proposal_id}/reject              → {ok: bool}
-                                                     body: { reason: string, category?, actor }
-                                                     // body-encoded; reason persists into the
-                                                     // rejection log (§6.6.2).
-```
-
-### Skills
-
-```
-GET /products/{product_id}/skills                 → {skills: Skill[]}
-GET /skills/{skill_id}                            → {skill: Skill}
-GET /skills/{skill_id}/corrections                → CorrectionsResponse (§6.6.3)
-GET /skills/{skill_id}/rejections                 → {rejections: SkillProposal[]}
-GET /skills/{skill_id}/council-history            → {sessions: CouncilSessionSummary[]}
-```
-
-### Org Library
-
-```
-GET  /org/skills                                  → {skills: OrgSkill[]}
-GET  /org/skills/{skill_id}                       → {skill: OrgSkill, changeRequests: ChangeRequest[]}
-POST /org/skills                                  → (Curator kickoff) {proposal: OrgSkillProposal}
-POST /org/skills/{skill_id}/ratify                → {skill: OrgSkill}
-POST /org/skills/{skill_id}/change-requests       → {request: ChangeRequest}
-POST /org/skills/{skill_id}/change-requests/{rid}/approve
-                                                  → {ok: bool}
-POST /org/skills/{skill_id}/change-requests/{rid}/reject
-                                                  → {ok: bool}  ← reason required
-```
-
-### Activity + Webhooks
-
-```
-GET  /products/{product_id}/activity              → {activity: Activity[]}
-POST /webhooks/github                             → {ok: bool}  ← GitHub HMAC-verified
-```
-
----
-
-## 12. Data Model
-
-```mermaid
-classDiagram
-    class Product {
-        +String id
-        +String name
-        +String tagline
-        +Owner owner
-        +String onboardedAt
-        +String masterSkillId
-        +Int sources
-        +Int skills
-    }
-
-    class User {
-        +String id
-        +String name
-        +UserRole role
-        +String[] products
-    }
-
-    class Skill {
-        +String id
-        +String name
-        +SkillKind kind
-        +SkillScope scope
-        +String product
-        +String body
-        +Float confidence
-        +Provenance provenance
-        +String[] composesWith
-    }
-
-    class OrgSkill {
-        +OrgSkillKind kind
-        +Float qualityScore
-        +String[] externalSources
-        +String ratifiedBy
-        +String ratifiedAt
-    }
-
-    class OrgSkillOverlay {
-        +String productId
-        +String orgSkillId
-        +String justification
-        +String[] addedRules
-        +String[] relaxedRules
-    }
-
-    class CouncilSession {
-        +String id
-        +String product
-        +SkillKind skillKind
-        +SessionStatus status
-        +AgentRole[] roster
-        +SessionCost cost
-    }
-
-    class SkillProposal {
-        +String name
-        +String body
-        +Citation[] citations
-        +Float confidence
-        +Critique adversaryCritique
-        +ProposalStatus status
-    }
-
-    class ChangeRequest {
-        +String orgSkillId
-        +String proposedDiff
-        +String requesterRationale
-        +ChangeRequestStatus status
-        +AgentAnalysis agentAnalysis
-    }
-
-    class Source {
-        +String product
-        +SourceType type
-        +SourceStatus status
-        +String lastSync
-        +Int resourceCount
-    }
-
-    Skill <|-- OrgSkill
-    Product "1" --> "*" Skill : owns
-    Product "1" --> "*" Source : has
-    CouncilSession "1" --> "1" SkillProposal : produces
-    SkillProposal ..> Skill : approves into
-    OrgSkill "1" --> "*" ChangeRequest : subject of
-    OrgSkill "1" --> "*" OrgSkillOverlay : customised by
-    User --> Product : member of
-```
-
-### TypeScript Types (canonical — used by both frontend and API contract)
-
-```typescript
-type ProductId   = string
-type UserId      = string
-type UserRole    = "org_admin" | "product_admin" | "sme"
-type SkillKind   = "master" | "product_domain"
-type OrgSkillKind = "tech_stack" | "language" | "security"
-type SkillScope  = "product" | "org"
-type SessionStatus = "drafting" | "awaiting_approval" | "approved" | "rejected"
-type ProposalStatus = "pending" | "approved" | "rejected" | "edited"
-type SourceStatus = "connected" | "watching" | "syncing" | "error"
-type AgentRole   = "archaeologist" | "domain_expert" | "synthesizer" | "adversary" |
-                   "security_sentinel" | "curator"
-type ActivityType = "ingest" | "council" | "pr-review" | "changelog" | "index"
-
-interface Product {
-  id: ProductId
-  name: string
-  tagline: string
-  owner: { team: string; lead: UserId }
-  onboardedAt: string           // ISO-8601
-  masterSkillId: string
-  sources: number
-  skills: number
-  lastCouncil: string
-}
-
-interface Skill {
-  id: string
-  name: string
-  kind: SkillKind | OrgSkillKind
-  scope: SkillScope
-  product?: ProductId           // present only for scope=product
-  body: string                  // Markdown
-  confidence: number            // [0, 1]
-  provenance: {
-    council_session?: string
-    validated_by: string
-    validated_at: string             // ISO-8601
-    evidence_chunks: string[]        // length bounded by EVIDENCE_CHUNKS_PER_SESSION_CAP (§6.6.4)
-    adversary_critique?: string
-    revision_count: 0 | 1            // per-session adversary loop cap (ADR-007)
-    cumulative_revisions: number     // across all sessions for this skill (§6.6.2)
-  }
-  composesWith: string[]        // skill IDs
-}
-
-interface OrgSkill extends Skill {
-  scope: "org"
-  kind: OrgSkillKind
-  qualityScore: number          // [0, 1] — Curator quality signal
-  externalSources: string[]     // URLs cited by Curator
-  ratifiedBy: UserId
-  ratifiedAt: string
-}
-
-interface OrgSkillOverlay {
-  id: string
-  productId: ProductId
-  orgSkillId: string
-  addedRules: string[]
-  relaxedRules: Array<{ id: string; reason: string }>
-  justification: string
-  by: UserId
-  at: string
-}
-
-interface CouncilSession {
-  id: string
-  product: ProductId
-  skillKind: SkillKind
-  status: SessionStatus
-  roster: AgentRole[]
-  proposalId?: string
-  priors?: CouncilPriors             // populated on creation; see §6.6.2
-  trigger?: "manual" | "gated" | "override"
-  startedAt: string
-  completedAt?: string
-  cost: { tokens: number; usd: number }
-}
-
-interface CouncilPriors {            // §6.6.2
-  revision: number                   // cumulative_revisions of the seeded skill
-  corrections: number                // raw count, before compaction
-  rejections: number                 // count of historical rejections fed as anti-priors
-}
-
-interface ProposalSection {          // §6.6.2 — "inherited" pill rendering
-  heading: string
-  body: string
-  inherited?: boolean                // true when this section re-derives identically
-                                     //   to the prior revision and was not changed
-}
-
-interface SkillProposal {
-  id: string
-  name: string
-  body: string
-  sections?: ProposalSection[]       // optional; falls back to flat body when absent
-  citations: Array<{ id: string; file: string; line: number; excerpt: string }>
-  confidence: number
-  adversaryCritique: {
-    severity: "blocking" | "major" | "minor"
-    issues: Array<{ description: string; counter_example?: string }>
-    recommendation: string
-  }
-  status: ProposalStatus
-  createdAt: string
-  approvedBy?: UserId
-  approvedAt?: string
-  rejectReason?: RejectReason | null // §6.6.2 — persisted, fed forward as anti-prior
-}
-
-interface RejectReason {             // §6.6.2
-  reason: string
-  category?: "factual" | "out-of-scope" | "duplicate" | "other"
-}
-
-interface Correction {               // §6.6.2 / 6.6.3
-  id: string
-  skillId: string
-  fromRevision: number
-  editedBy: UserId
-  editedAt: string
-  diff: string
-  appliedAsRule?: string | null      // when the backend has condensed this into a rule
-}
-
-interface DistilledRules {           // §6.6.3
-  rules: string                      // the condensed text actually injected into prompts
-  fromCount: number                  // raw corrections folded in
-  lastCompactedAt: string
-}
-
-interface CorrectionsResponse {      // GET /skills/{id}/corrections
-  corrections: Correction[]          // recent raw, capped (default ~10)
-  distilled: DistilledRules | null   // null until the first compaction happens
-  total: number                      // total raw corrections ever recorded
-}
-
-interface ChangeRequest {
-  id: string
-  orgSkillId: string
-  title: string
-  proposedDiff: string
-  requestedBy: UserId
-  status: "filed" | "awaiting_approver" | "approved" | "rejected"
-  agentAnalysis?: {
-    agent: AgentRole
-    verdict: "low_risk" | "medium_risk" | "high_risk"
-    analysis: string
-    recommendation: string
-  }
-  decidedBy?: UserId
-  decidedAt?: string
-  rejectionReason?: string
-}
-
-interface Source {
-  id: string
-  product: ProductId
-  name: string
-  type: "github" | "gitlab" | "jira" | "confluence" | "notion" |
-        "slack" | "gitbook" | "linear" | "custom"
-  status: SourceStatus
-  lastSync: string | null
-  nextSync: string | null            // §4.1 — daemon's next scheduled tick
-  lastDelta: SyncDelta | null        // §4.1 — last computed delta summary
-  resourceCount: number
-  config: Record<string, unknown>    // connector-specific, never exposed to non-admins
-}
-
-interface SyncDelta {                // §4.1
-  added: number
-  updated: number
-  removed: number
-  unchanged?: number
-}
-
-interface Activity {
-  id: string
-  product: ProductId
-  type: ActivityType
-  title: string
-  status: "running" | "completed" | "failed"
-  startedAt: string
-  completedAt?: string
-  durationMs?: number
-  result?: unknown
-}
-```
-
-### Data Isolation Contracts
-
-**Qdrant — tiered multi-tenancy (v1.16+):**
-Single collection per vector type (`nexus_code`, `nexus_text`, `nexus_cache`). Every point carries `product_id` as a payload field and as a shard key for routing. All searches include a mandatory `must` filter on `product_id` — enforced at the repository layer, never left to callers. Cross-product similarity is structurally impossible through normal query paths.
-
-```python
-# retrieval/qdrant_repo.py — mandatory filter pattern
-def search(self, vector, product_id: str, top_k: int):
-    return self.client.search(
-        collection_name=self.collection,
-        query_vector=vector,
-        query_filter=Filter(must=[FieldCondition(key="product_id", match=MatchValue(value=product_id))]),
-        limit=top_k,
-    )
-```
-
-**Neo4j — label-prefix isolation:**
-All product-scoped nodes carry a `Product_{product_id}` label in addition to their type label. All Cypher queries include `WHERE n.product_id = $product_id`. Org Library nodes use the `OrgLibrary` label (readable by all products; no product prefix). Retrieval access patterns are audit-logged via a Neo4j query interceptor.
-
----
-
-## 13. Tech Stack
-
-| Layer | Choice | Rationale |
+| Method + path | Purpose | Returns |
 |---|---|---|
-| **Backend language** | Python 3.11+ | LangGraph, Jina, mcp SDK all Python-native |
-| **Package manager** | uv | Fast resolver, reproducible lock file |
-| **Agent orchestration** | LangGraph | Send API fan-out, SqliteSaver checkpoint, Langfuse integration |
-| **Schema validation** | Pydantic v2 | Every agent I/O strictly typed; FastAPI uses same models |
-| **LLM inference** | OpenAI-compatible HTTP | Role-based model assignment; swap provider with one config change |
-| **Primary LLM provider** | DeepInfra | DeepSeek-V4-Flash (context assembly), Qwen3-Max-Thinking (synthesis/critique), MiniMax-M2.5 (code); cheapest quality/$ |
-| **Dev LLM provider** | Ollama (local) | `qwen2.5:14b` — offline dev, zero cost |
-| **Vector DB** | Qdrant (Docker) | Named vectors (`dense_code`, `dense_text`) + sparse BM25 + separate cache collection |
-| **Knowledge graph** | Neo4j (Docker) | Cypher queries for 1–2 hop expansion; partitioned per product |
-| **Embeddings** | Jina Embeddings v4 (local service) | 3.8B / ~3.1GB VRAM; task LoRA for code + text modes; 71.59 CoIR; multi-vector; no API cost |
-| **Reranker** | Jina Reranker v3 (local) | Cross-encoder; +4.88% BEIR over v2; 64-doc batch; multilingual; no API cost |
-| **Code chunking** | tree-sitter / py-tree-sitter | cAST-based; preserves function/class boundaries |
-| **Doc chunking** | Docling | Markdown + PDF; heading-aware |
-| **MCP (server)** | `mcp` Python SDK | stdio transport; tools + resources + meta-skill |
-| **MCP (client)** | `mcp` Python SDK | Same SDK, client mode; spawn subprocess or connect SSE |
-| **HTTP backend** | FastAPI | Async; SSE via `EventSourceResponse`; GitHub webhook HMAC |
-| **CLI** | Typer | `nexus init`, `nexus ingest`, `nexus council`, `nexus daemon` |
-| **Frontend** | Next.js 16 + React 19 | App Router; Server Components for skill/source pages |
-| **Frontend styling** | Tailwind v4 + shadcn/ui | Design locked in `DESIGN.md` |
-| **Observability** | Langfuse (Docker) | Traces, cost per agent, session-level aggregations |
-| **Tracing transport** | OpenTelemetry (OTel) | Per-stage spans (embed / search / rerank / graph-expand); Langfuse consumes OTel natively |
-| **Evals** | RAGAS + CoQuIR-style code metrics | RAGAS: faithfulness, answer_relevancy, context_recall; code: nDCG@10, Recall@10, pairwise preference accuracy |
-| **Testing** | pytest + pytest-asyncio | Unit + integration (integration gate requires Docker infra) |
-| **CI** | GitHub Actions | RAGAS regression gate; fail if faithfulness drops > 5% |
-| **Containers** | Docker Compose | Qdrant + Neo4j + Jina service + Langfuse + Nexus API + Next.js |
+| `GET /me` | Static dev user + permission flags. | `{user, permissions}` |
+| `GET /products` | List products with `lastCouncil`, skill counts. | `{products: Product[]}` |
+| `GET /products/{id}` | Single product. | `Product` |
+| `GET /products/{id}/status` | Drives dashboard card state. | `{hasEmbeddings, hasSkill, councilInProgress, currentSessionId, currentStage}` |
+| `POST /products` | Create product. | `Product` |
 
-### Model Tier Strategy
+Product onboarding in the UI creates product metadata plus a required GitHub
+runtime source. The GitHub credential is a product service-account PAT stored
+as encrypted source config, and `repos` may contain multiple GitHub HTTPS/SSH
+URLs. Credentials are scoped per source; there is no product-level credential
+bundle in v1.
 
-Two tiers govern all LLM assignments. **Context assembly** (query formulation, retrieval coordination, structured extraction) uses a fast MoE model — these tasks follow clear patterns and don't require deep reasoning. **Reasoning/synthesis** (skill draft generation, adversarial critique, code review) uses a reasoning model with test-time compute — these produce the actual product output and quality here directly impacts what human reviewers see.
+`currentStage` precedence (highest wins): `skill > review > council >
+ingesting > none`. `councilInProgress` is independent so the UI can render
+"Run Council" vs "Council in progress" at the same stage.
 
-| Role | Tier | Model | Provider | ~Cost |
-|---|---|---|---|---|
-| Archaeologist, Domain Expert | Context assembly | `deepseek-ai/DeepSeek-V4-Flash` | DeepInfra | ~$0.001/session |
-| Synthesizer | Reasoning/synthesis | `Qwen/Qwen3-Max-Thinking` | DeepInfra | ~$0.005/session |
-| Adversary | Reasoning/synthesis | `Qwen/Qwen3-Max-Thinking` | DeepInfra | ~$0.004/session |
-| PR Review Agent | Code/agentic | `MiniMaxAI/MiniMax-M2.5` | DeepInfra | ~$0.004/run |
-| Changelog Generator | Mid-size efficient | `Qwen/Qwen3.6-35B-A3B` | DeepInfra | ~$0.001/run |
-| Curator | Agentic + web search | `zai-org/GLM-5` | DeepInfra | ~$0.002/pass |
-| Relation extractor, light routing | Light/flash | `zai-org/GLM-4.7-Flash` | DeepInfra | ~$0.0001/call |
-| Embeddings | Local | `jinaai/jina-embeddings-v4` | Local service | $0 |
-| Reranker | Local | `jinaai/jina-reranker-v3` | Local service | $0 |
+### `/products/{id}/sources`
 
-All providers use the OpenAI-compatible API. Switching to Ollama (offline dev) or Claude Sonnet 4.6 (showcase) is one config change per role.
+| Method + path | Purpose |
+|---|---|
+| `GET ""` | List config-defined + registry-defined sources. |
+| `GET /{source_id}` | One source. |
+| `POST ""` | Add a runtime source to the registry. |
+| `DELETE /{source_id}` | Remove from registry. |
+| `POST /{source_id}/sync` | Kick off ingest as a background task. Returns `{queued: true}`. |
+| `GET /{source_id}/log` | SSE stream of structured ingest events: `info`, `progress` (with `done/total/pct`), `started`, `warn`, `success`, `done`, `error`. |
 
----
+GitHub sync validates all repo URLs before cloning, shallow-clones every repo
+listed in `config.repos`, ingests each clone under the same product/source, and
+stores an aggregate `resourceCount`. Sync emits one combined repo map after a
+successful ingest (warn on failure — the council still runs without one).
 
-## 14. Critical Files
+Confluence and Jira are reserved for later source config screens, not product
+onboarding. When added, Confluence must collect `base_url`, service-account
+identity, token, and `space_keys`; Jira must collect equivalent Atlassian
+credentials plus product-scope project keys.
 
-```
-nexus/
-├── docker-compose.yml
-├── nexus.yaml.example
-├── pyproject.toml                    (uv)
-│
-├── nexus/
-│   ├── cli.py                        (Typer: init, ingest, council, daemon)
-│   ├── config.py                     (Pydantic settings from nexus.yaml + env)
-│   │
-│   ├── connectors/
-│   │   ├── manager.py                (spawn MCP servers, subscribe loop, backpressure)
-│   │   └── mcp_client.py             (mcp SDK wrapper: list/read/subscribe)
-│   │
-│   ├── ingest/
-│   │   ├── chunker.py                (tree-sitter + Docling routing; file:line anchors)
-│   │   ├── enricher.py               (contextual prepend: light LLM summary before embedding; batch queue)
-│   │   ├── embedder.py               (Jina v4 client, task-LoRA dual mode: dense_code + dense_text)
-│   │   ├── relation_extractor.py     (light LLM → entity/relation extraction → Neo4j)
-│   │   └── indexer.py                (Qdrant named-vector upsert + Neo4j upsert)
-│   │
-│   ├── retrieval/
-│   │   ├── hybrid.py                 (dense + BM25 → RRF → GraphRAG expand → reranker)
-│   │   ├── classifier.py             (query complexity signal: simple → Stage 1; complex → full + HyDE)
-│   │   ├── hyde.py                   (HyDE: light LLM generates hypothetical snippet; embed → augmented vector)
-│   │   ├── graph.py                  (Neo4j 1–2 hop expansion, Cypher queries)
-│   │   ├── reranker.py               (Jina Reranker v3 client)
-│   │   ├── circuit.py                (per-component circuit breaker; degradation chain; OTel alert spans)
-│   │   └── cache.py                  (semantic cache: Qdrant ANN, 0.92 threshold, invalidation)
-│   │
-│   ├── skills/
-│   │   ├── models.py                 (Pydantic: Skill, OrgSkill, SkillProposal, Provenance)
-│   │   ├── store.py                  (read/write skill files + git add/commit/push on approve)
-│   │   ├── git.py                    (clone on boot, pull on sync, push on approve — wraps gitpython)
-│   │   └── seed/                     (5 hand-crafted seed skills — committed to skills repo)
-│   │
-│   ├── council/
-│   │   ├── graph.py                  (LangGraph StateGraph: Master, Domain, Curator, CR graphs)
-│   │   ├── state.py                  (CouncilState, CuratorState, ChangeRequestState)
-│   │   └── agents/
-│   │       ├── archaeologist.py
-│   │       ├── domain_expert.py
-│   │       ├── synthesizer.py
-│   │       ├── adversary.py
-│   │       ├── security_sentinel.py
-│   │       └── curator.py
-│   │
-│   ├── mcp_server/
-│   │   ├── server.py                 (MCP SDK, stdio transport)
-│   │   ├── tools.py                  (Skill KB: find_skills, get_skill, report_outcome)
-│   │   │                             (RAG KB: query_code_context, hybrid_search_corpus)
-│   │   └── meta_skill.md.j2          (Jinja2 template — references both KBs)
-│   │
-│   ├── tasks/
-│   │   ├── pr_review.py              (GitHub PR webhook → structured review comment)
-│   │   └── changelog.py              (tag webhook → categorised release notes)
-│   │
-│   └── api/
-│       ├── app.py                    (FastAPI root, CORS, HMAC middleware)
-│       ├── routes/
-│       │   ├── products.py
-│       │   ├── sources.py
-│       │   ├── council.py            (sessions + SSE stream endpoint)
-│       │   ├── skills.py
-│       │   ├── proposals.py
-│       │   ├── org_library.py
-│       │   ├── activity.py
-│       │   └── webhooks.py
-│       └── deps.py                   (current_user, product_context, permissions)
-│
-├── ui/                               (Next.js 16 — already built)
-│   ├── app/
-│   │   ├── onboarding/page.tsx
-│   │   ├── p/[product]/
-│   │   │   ├── layout.tsx            (product gate + context provider)
-│   │   │   ├── dashboard/page.tsx
-│   │   │   ├── sources/[...]/
-│   │   │   ├── council/[...]/
-│   │   │   ├── skills/[...]/
-│   │   │   ├── activity/page.tsx
-│   │   │   └── settings/page.tsx
-│   │   ├── org/library/[...]/
-│   │   └── settings/org/page.tsx
-│   │
-│   ├── components/
-│   │   ├── shell/Shell.tsx, TopBar.tsx, SideNav.tsx
-│   │   ├── screens/                  (one file per major screen)
-│   │   ├── organisms/                (ConnectorWizard, CouncilModal, SyncLog, SkillTree …)
-│   │   └── atoms/                    (GlowCard, StatusDot, ConfidenceBar, AgentDot, CitationChip)
-│   │
-│   └── lib/
-│       ├── types.ts                  (canonical shared types — no data)
-│       ├── api/                      (data layer: getProducts, getSources, getSessions …)
-│       ├── data.ts                   (mock data — only read through lib/api when NEXUS_DATA=mock)
-│       ├── product-context.ts
-│       ├── skill-renderer.ts         (remark plugin: parse [file:line] tokens → CitationChip props)
-│       └── hooks/useEventStream.ts, useProduct.ts
-│
-│   Key frontend deps (add to package.json):
-│     react-markdown, rehype-highlight, shiki   ← skill body rendering
-│     react-diff-viewer                          ← proposal diff pane
-│     remark (custom plugin)                     ← citation token → CitationChip
-│
-├── evals/
-│   ├── golden.jsonl                  (30–50 Q/A pairs, all skill kinds + cross-source)
-│   └── run_ragas.py
-│
-├── skills/                           (generated — gitignored in dev, tracked in prod)
-│   ├── org-library/
-│   └── L0_domain/
-│
-└── .github/workflows/ragas-regression.yml
-```
+### `/products/{id}/council/sessions` + `/council/sessions`
 
----
+| Method + path | Purpose |
+|---|---|
+| `GET /products/{id}/council/sessions` | List sessions for a product. |
+| `POST /products/{id}/council/sessions` | Body: `{topic: str}`. Schedules the 3-node council as a background task. Returns `{session_id}`. |
+| `GET /council/sessions/{sid}` | Persisted session row. |
+| `GET /council/sessions/{sid}/stream` | SSE: live deliberation if running; deterministic replay if completed. |
 
-## 15. Configuration — `nexus.yaml`
+### `/proposals`
+
+| Method + path | Purpose |
+|---|---|
+| `GET ""` | List pending (or filtered) proposals. |
+| `GET /{id}` | One proposal. |
+| `POST /{id}/approve` | Calls `approve_proposal()`. |
+| `POST /{id}/reject` | Body: `{reason, category}`. Persists rejection. |
+| `POST /{id}/edit` | Body: `{body, actor}`. Persists edit (counts as a correction). |
+
+### `/skills`
+
+| Method + path | Purpose |
+|---|---|
+| `GET /products/{id}/skills` | Flat list of approved skills for a product. |
+| `GET /skills/{skill_id}` | Full skill body + frontmatter. |
+| `GET /skills/{skill_id}/corrections` | Critic notes from approved proposals + the built-in `provenance.adversary_critique`. |
+| `GET /skills/{skill_id}/rejections` | Rejected proposals for this skill's product. |
+| `GET /skills/{skill_id}/council-history` | Sessions for this skill's product. |
+
+### `/setup`
+
+| Method + path | Purpose |
+|---|---|
+| `GET /setup/status` | `{configured, skills_repo_url, source}`. |
+| `POST /setup/skills-repo` | Body: `{mode: "create"|"existing", github_org?, repo_name?, existing_repo_url?}`. Mints or attaches the org-wide skills repo. |
+
+### `/products/{id}/dashboard`
+
+Aggregate snapshot for the dashboard screen:
+`{daemon, pipeline, pending, recentActivity}`.
+
+## 9. Configuration (`nexus.yaml`)
 
 ```yaml
-skills_repo: git@github.com:myorg/nexus-skills.git  # one repo per org — cloned on boot
-hierarchy_root: ./skills                             # local clone path (ephemeral)
+skills_repo: git@github.com:org/nexus-skills.git
+hierarchy_root: ./skills
 
 connectors:
   - name: github
     type: github
     token: ${GITHUB_TOKEN}
-    repos: ["myorg/my-repo"]
-    index: [code, pull_requests, issues, discussions]
-    watch: true                       # enables subscribe loop / daemon
-
-  - name: confluence
-    type: confluence
-    base_url: https://myorg.atlassian.net
-    token: ${CONFLUENCE_TOKEN}
-    spaces: ["ENG", "ARCH"]
-    watch: false
-
-  - name: slack
-    type: slack
-    token: ${SLACK_TOKEN}
-    channels: ["#eng-decisions", "#incidents"]
-    watch: false
-
-  - name: internal-wiki
-    type: custom
-    command: ["python", "-m", "my_wiki_mcp_server"]
-    watch: false
+    repos:
+      - https://github.com/myorg/api
+      - https://github.com/myorg/web
 
 vector_store:
   url: http://localhost:6333
   collections:
     code: nexus_code
     text: nexus_text
-    cache: nexus_cache
-
-graph:
-  url: bolt://localhost:7687
-  user: ${NEO4J_USER}
-  password: ${NEO4J_PASSWORD}
 
 models:
-  council_agents:                     # Archaeologist, Domain Expert — context assembly tier
-    provider: deepinfra
-    model: deepseek-ai/DeepSeek-V4-Flash
-    api_key: ${DEEPINFRA_API_KEY}
-  synthesizer:                        # reasoning tier — final skill synthesis
+  council:                     # drafter + critic + reviser
     provider: deepinfra
     model: Qwen/Qwen3-Max-Thinking
     api_key: ${DEEPINFRA_API_KEY}
-  adversary:                          # reasoning tier — adversarial red-team critique
+    base_url: https://api.deepinfra.com/v1/openai
+  light:                       # enricher (HQE + Anthropic CR)
     provider: deepinfra
-    model: Qwen/Qwen3-Max-Thinking
+    model: google/gemma-3-4b-it
     api_key: ${DEEPINFRA_API_KEY}
-  pr_review:                          # code/agentic tier — SOTA SWE-Bench coding model
-    provider: deepinfra
-    model: MiniMaxAI/MiniMax-M2.5
-    api_key: ${DEEPINFRA_API_KEY}
-  changelog:                          # mid-size efficient — structured summarization only
-    provider: deepinfra
-    model: Qwen/Qwen3.6-35B-A3B
-    api_key: ${DEEPINFRA_API_KEY}
-  curator:                            # agentic — multi-step tool orchestration + web search
-    provider: deepinfra
-    model: zai-org/GLM-5
-    api_key: ${DEEPINFRA_API_KEY}
-  light:                              # light/flash — relation extractor, routing (schema-constrained)
-    provider: deepinfra
-    model: zai-org/GLM-4.7-Flash
-    api_key: ${DEEPINFRA_API_KEY}
-  embedding:
+    base_url: https://api.deepinfra.com/v1/openai
+  embedding:                   # local llama.cpp on Metal
     provider: jina-local
     model: jinaai/jina-embeddings-v4
     url: http://localhost:8080
@@ -1608,588 +558,115 @@ models:
     model: jinaai/jina-reranker-v3
     url: http://localhost:8081
 
-  # Offline dev (zero cost):
-  # council_agents: { provider: ollama, model: qwen2.5:14b, base_url: http://localhost:11434 }
-
-  # Showcase (high quality):
-  # council_agents: { provider: anthropic, model: claude-sonnet-4-6, api_key: ${ANTHROPIC_API_KEY} }
-
-observability:
-  langfuse:
-    enabled: true
-    host: http://localhost:3001
-    public_key: ${LANGFUSE_PUBLIC_KEY}
-    secret_key: ${LANGFUSE_SECRET_KEY}
-
-cache:
-  semantic_threshold: 0.92          # cosine similarity cutoff for cache hit
-  ttl_hours: 24                     # cache entry TTL
-
 ingestion:
   enrich_chunks:
-    docs: true                      # prepend LLM context summary before embedding (+8–15% precision)
-    code: false                     # tree-sitter structure is sufficient; instruction prefix handles code mode
-  embed_batch_size: 32              # GPU batch size for embedding calls
-  quality_gate_threshold: 0.3      # reranker score below this → chunk filtered before agent injection
-
-retrieval:
-  hyde_enabled: true                # generate hypothetical snippet/passage for complex queries
-  simple_query_threshold: 0.8      # classifier confidence above this → simple path (Stage 1 only)
-  circuit_breaker:
-    failure_threshold: 3            # consecutive failures before opening
-    recovery_timeout_s: 30          # seconds before probing closed
+    docs: true                 # Anthropic Contextual Retrieval
+    code: true                 # HQE
+  embed_batch_size: 16
+  quality_gate_threshold: 0.3
+  file_batch_size: 20          # M2/8GB; bump to 50 on 16GB+
+  read_concurrency: 5          # M2/8GB; bump to 10 on 16GB+
+  enricher_concurrency: 4
 
 server:
   host: 0.0.0.0
   port: 8000
-  webhook_secret: ${GITHUB_WEBHOOK_SECRET}
+
+storage:
+  proposal_queue: ./data/proposals.db
+  council_checkpoint: ./data/council.sqlite
 ```
 
----
+`<state_dir>` is `storage.proposal_queue.parent` — also holds
+`repomaps/<product_id>.json` and `registry.db`.
 
-## 16. Architecture Decision Records
+`${VAR}` substitution is performed at load time
+(`nexus/config.py::_expand_env`).
 
-### ADR-001: MCP as the Universal Connector Protocol
+## 10. Eval Set (`tests/eval/`)
 
-**Status:** Accepted  
-**Date:** 2026-04-01
+`tests/eval/queries.json` is the authoritative measure of retrieval
+quality. 40 hand-curated queries against this codebase itself, one per
+major module. Each entry:
 
-**Context:** Nexus needs to ingest from many heterogeneous sources (GitHub, Jira, Confluence, Slack, custom internal tools) and serve skills to AI clients. We need a transport/protocol that works on both sides without maintaining two separate integration strategies.
-
-**Decision:** Use MCP (Model Context Protocol) on both the ingestion side (Nexus as MCP client) and the serving side (Nexus as MCP server).
-
-**Rationale:**
-- MCP servers already exist for every major SaaS tool where code and docs live (GitHub, Jira, Confluence, Notion, Slack, GitBook).
-- `resources/subscribe` primitive enables the Continuous Index Daemon with zero extra protocol work.
-- For niche or internal sources, a custom MCP server is ~100 lines of Python.
-- Coherent story for interviews and demos: Nexus is MCP-native all the way through.
-
-**Consequences:** Nexus is constrained to MCP-compatible sources. Non-MCP sources require a thin wrapper. The wrapper is standardised and small, making this a negligible constraint in practice.
-
----
-
-### ADR-002: LangGraph for Council Orchestration
-
-**Status:** Accepted  
-**Date:** 2026-04-15
-
-**Context:** The LLM Council requires parallel fan-out (Archaeologist + Domain Expert run concurrently), sequential aggregation (Synthesizer reads both outputs), conditional re-loops (Adversary may trigger one redraft), and durable checkpointing (proposals survive process restarts).
-
-**Decision:** Use LangGraph StateGraph with the Send API for fan-out and SqliteSaver for checkpointing.
-
-**Rationale:**
-- `Send` API is the idiomatic LangGraph primitive for conditional fan-out.
-- `SqliteSaver` gives SQLite-backed durability with zero additional infrastructure beyond what the proposal queue already uses.
-- Native Langfuse integration emits one trace per session with per-agent spans.
-
-**Consequences:** LangGraph-specific API surface. Migrating to another orchestration framework would require rewriting `council/graph.py` but leaves all agent logic intact (agents are pure functions of state).
-
----
-
-### ADR-003: GraphRAG with Neo4j — Core, Not Deferred
-
-**Status:** Accepted (supersedes earlier "Neo4j deferred" decision)  
-**Date:** 2026-05-16
-
-**Context:** The original design deferred Neo4j, assuming that skill frontmatter prereqs and vector similarity would cover 95% of queries. After reviewing retrieval patterns, we found this held for *skill→skill* composition links but failed for *cross-source knowledge correlation* — the central value proposition of Nexus.
-
-**Decision:** Neo4j is core infrastructure. Relation extraction runs as part of the ingestion pipeline. Retrieval expands the vector seed set by 1–2 hops in the knowledge graph before reranking.
-
-**Rationale:** A commit that `closes` a Jira ticket that is `justified_by` a Confluence ADR is a first-class knowledge unit that pure vector search cannot reconstruct. The cross-source correlation is why Nexus is more than a vector search wrapper.
-
-**Consequences:**
-- Added Neo4j container in Docker Compose.
-- Relation extraction LLM cost (light tier, ~$0.0001/call) added to ingestion.
-- GraphRAG expansion adds ~50–100 ms to retrieval; acceptable given reranker latency is already dominant.
-- No UI rendering of the graph — citation chips remain flat. The graph is a backend-only concern (explicit user direction).
-
----
-
-### ADR-004: Two-Tier Skill Model (Org Library vs. Product)
-
-**Status:** Accepted  
-**Date:** 2026-05-16
-
-**Context:** The original design had tech-stack, language, and security skills authored per-product via the full LLM Council. This meant running a 3–4 agent council for "Java conventions" for every product that uses Java, which is expensive and produces redundant, inconsistent org-wide standards.
-
-**Decision:** Tech-stack, language, and security skills are organisational standards in the Org Library. They are authored once by a single Curator agent (+ web search) and ratified by an org admin. Products adopt them (automatically on onboarding) and can add justified overlays without running a council.
-
-**Rationale:**
-- Cost win: per-product council runs collapse from `Master + N tech-stack + M language + K security` down to `Master + occasional product-domain`. 100 products × 10 org-standard skills = 1 Curator pass vs. 1,000 council sessions.
-- Consistency: org standards evolve through a controlled change-request workflow, not ad-hoc per-product council sessions.
-- Correctness: tech-stack conventions are genuinely organisational knowledge, not product-specific.
-
-**Consequences:**
-- Change-request workflow required for org standard evolution.
-- Org admin role required to ratify and manage org skills.
-- "Start council" modal reduced to two kinds (Master, Product-domain), simplifying the UX.
-
----
-
-### ADR-005: Git-Repo-Backed Skill Storage
-
-**Status:** Accepted  
-**Date:** 2026-05-17
-
-**Context:** Skills cannot live on the Nexus instance disk. A cloud instance restart wipes ephemeral storage. Skills are the primary value Nexus produces — losing them on a restart is unacceptable. Additionally, skill files should be human-readable, versionable, and portable.
-
-**Decision:** Skills are plain Markdown + YAML frontmatter files stored in a single Git repo per org (`myorg/nexus-skills`). The repo root contains one directory per product alongside a `shared/` directory for cross-product standards (tech-stack, language, security). Nexus clones the repo on boot into an ephemeral local path (`./skills/`). On every human-approved skill, `store.py` writes the file and immediately commits + pushes. The Git repo is the source of truth; the local clone is always disposable.
-
-**Rationale:**
-- One repo, one deploy key, one clone, one git log — operational simplicity over multi-repo sprawl.
-- Instance restart → `git clone` → all skills (product + shared) restored. Zero data loss.
-- Git history is the full provenance record — who approved what, when, across all products and shared standards in one place.
-- Any developer can browse the full org skill set without Nexus running.
-- Skills can be reviewed as PRs, forked, and diffed in standard Git tooling.
-
-**Consequences:**
-- Nexus instance needs Git credentials (deploy key or PAT) for the skills repos.
-- `git push` on every approve adds ~100–200 ms to the approval flow — acceptable.
-- Concurrent approvals (two admins approving simultaneously) could cause a push conflict; mitigated by serialising approvals through the proposal queue (one pending approval at a time per product).
-- Read performance at scale mitigated by Qdrant indexing — skills are embedded and searchable without filesystem scanning.
-
----
-
-### ADR-006: Semantic Cache at 0.92 Cosine Threshold
-
-**Status:** Accepted  
-**Date:** 2026-04-20
-
-**Context:** Repeated similar queries (same question phrased differently) re-run the full 5-stage retrieval pipeline, wasting Qdrant queries and reranker compute.
-
-**Decision:** Before running retrieval, embed the query+context and check a dedicated Qdrant cache collection. If any stored result has cosine similarity ≥ 0.92, return it immediately.
-
-**Rationale:**
-- 0.92 empirically separates semantically equivalent queries from distinct ones in our test set (50 golden Q/A pairs). At 0.90, false positive rate was unacceptable; at 0.94, cache hit rate dropped below useful.
-- Cache is invalidated per chunk when a source sync updates relevant chunks, preventing stale answers.
-- Threshold is configurable in `nexus.yaml` (`cache.semantic_threshold`).
-
-**Consequences:** False-positive cache hits (wrong answer returned for a superficially similar but distinct query) are possible. If observed in production, raise the threshold. A cache hit is logged to Langfuse for debugging.
-
----
-
-### ADR-007: Max-1 Adversary Revision Cycle
-
-**Status:** Accepted  
-**Date:** 2026-04-15
-
-**Context:** Unbounded Adversary→Synthesizer revision loops risk infinite recursion and unbounded LLM cost. The Adversary will always find something to critique.
-
-**Decision:** The Synthesizer re-drafts at most once per council session in response to a `blocking` Adversary critique. After one redraft, the second Adversary output is attached to the proposal as-is and the session ends. Non-blocking critiques (`major`, `minor`) are attached without triggering any redraft.
-
-**Rationale:** The human reviewer is the final quality oracle. One machine revision adds meaningful signal (the Adversary has seen the draft; the Synthesizer can address specific blocking issues). A second machine revision would add marginal signal at cost that grows quadratically with session count. The critique is always visible to the human, who can edit the draft in the UI before approving.
-
-**Consequences:** Some proposals may reach human review with a critique that was not fully resolved. This is by design — the critique is clearly displayed in the 3-pane validation UI.
-
----
-
-### ADR-008: Contract-First Frontend Integration
-
-**Status:** Accepted  
-**Date:** 2026-05-16
-
-**Context:** The frontend mockup is built and design-locked. We need to wire the backend without re-touching any screens, without breaking the offline demo, and without a big-bang cutover.
-
-**Decision:** Introduce a `lib/api/` data layer with an env-flag-backed seam (`NEXUS_DATA=mock|live`). Screens import exclusively from `lib/api/`. The mock remains as offline fallback and frontend test fixture. Migrate screens to live data one at a time.
-
-**Rationale:** The mock is the ground truth for the API contract — every `NEXUS_*` type in `lib/data.ts` becomes a typed FastAPI response schema. Lifting those types into `lib/types.ts` first makes the contract explicit before any backend code is written. This prevents mock-vs-live schema drift.
-
-**Consequences:** Extra indirection (`lib/api/`) in the frontend. Worth it: a clean checkout with no backend running still demos end-to-end via `NEXUS_DATA=mock`.
-
----
-
-### ADR-009: Two-Tier Model Architecture — Context Assembly vs. Reasoning Synthesis
-
-**Status:** Accepted  
-**Date:** 2026-05-18
-
-**Context:** The original model tier strategy assigned DeepSeek-V3 uniformly to Archaeologist, Domain Expert, and Synthesizer, and Qwen2.5-72B to the Adversary. This treated all LLM tasks in the council as equivalent workloads, which is incorrect — query formulation and skill synthesis are fundamentally different task types.
-
-**Decision:** Split all council LLM roles into two tiers based on task nature:
-
-1. **Context assembly tier** (Archaeologist, Domain Expert): fast MoE model (`DeepSeek-V4-Flash`). These agents formulate hybrid-search queries, interpret retrieved context, and produce structured `CodePatterns` / `DomainContext` outputs. The task is pattern identification and query coordination — well-suited to a fast, efficient model.
-
-2. **Reasoning/synthesis tier** (Synthesizer, Adversary): reasoning model with test-time compute (`Qwen3-Max-Thinking`). Synthesizer aggregates heterogeneous retrieved context into a coherent skill draft; Adversary constructs specific counter-examples and failure cases. Both require multi-step reasoning, not instruction following.
-
-Additional changes:
-- `task_runners` split into `pr_review` (`MiniMaxAI/MiniMax-M2.5`, SOTA SWE-Bench coding) and `changelog` (`Qwen/Qwen3.6-35B-A3B`, efficient MoE summarization) — these are distinct workloads and previously shared a config key unnecessarily.
-- `curator` promoted from light tier to `zai-org/GLM-5`, which is purpose-built for multi-step tool orchestration — the Curator's web-search + validation loop benefits from this.
-- `light` tier updated to `zai-org/GLM-4.7-Flash` for schema-constrained extraction and routing tasks.
-
-**Rationale:**
-- The retrieval pipeline (Qdrant, Neo4j, Jina reranker) is entirely model-free. The Archaeologist/Domain Expert LLM usage is query formulation — not retrieval itself. The correct split is "context assembly vs. synthesis", not "retrieval vs. synthesis" as commonly stated.
-- Synthesizer and Adversary produce the actual product — skill drafts and critiques that human reviewers act on. A reasoning model quality increase here reduces human correction burden and produces higher-confidence proposals (higher `citation_density`, fewer unsupported assertions caught by the faithfulness check).
-- Reasoning models have higher per-token cost but are applied only at the two lowest-volume steps per session. The session cost increase ($0.006 → $0.012 Master, $0.002 → $0.005 Domain) is acceptable given the quality delta.
-
-**Consequences:**
-- Synthesizer and Adversary incur thinking token costs (billed in addition to standard output tokens). Council session wall time increases from ~4 min to ~6–8 min.
-- `nexus.yaml` splits `task_runners` into `pr_review` and `changelog` — update required on existing deployments.
-- Langfuse cost dashboard will show a distinct cost spike at Synthesizer and Adversary spans — expected and correct.
-- All providers remain OpenAI-compatible; no SDK changes required.
-
----
-
-### ADR-010: Contextual Chunk Enrichment
-
-**Status:** Accepted  
-**Date:** 2026-05-18
-
-**Context:** Vector embeddings of raw code/doc chunks lose surrounding context — a function body without its enclosing class name or file path retrieves poorly for queries that reference the surrounding structure. Jina v3's task LoRA partially compensated; with Qwen3-Embedding-8B (instruction-following, no LoRA), we need an explicit context strategy.
-
-**Decision:** A Contextual Enricher step runs after chunking and before embedding. A light LLM prepends a 1–2 sentence summary to each chunk describing its enclosing file path, class/function/section name, and document context. The chunk text is not modified — only the string passed to the embedder is prepended. The raw chunk text is stored in Qdrant as-is; only the embedding reflects the enriched string.
-
-**Configuration:** `enrich_chunks: docs` on by default (8–15% precision gain is clear for prose). `enrich_chunks: code` off by default — tree-sitter already produces structural boundaries, and the instruction prefix on Qwen3-Embedding-8B covers code mode adequately. Togglable per source type in `nexus.yaml`.
-
-**Rationale:** Anthropic's contextual retrieval paper showed consistent 8–15% precision improvement on mixed corpora. At ~$0.0001/chunk (light tier), enriching a 50K-chunk corpus costs ~$5 — negligible against total ingestion cost.
-
-**Consequences:** Ingestion adds one LLM call per chunk for enriched source types. Batch processing (groups of 32) keeps this from becoming a bottleneck. A fresh re-index is required when toggling `enrich_chunks` — vectors must match the embedding strategy.
-
----
-
-### ADR-011: Retrieval Resilience — Circuit Breaker + Degradation Chain
-
-**Status:** Accepted  
-**Date:** 2026-05-18
-
-**Context:** The retrieval pipeline depends on three external components: Qdrant, Neo4j, and the Jina Reranker. In production, any of these can fail independently. The original spec had no fallback behaviour — a Neo4j outage would crash all retrieval, silently returning empty results to agents (which then hallucinate with high confidence).
-
-**Decision:** A degradation chain with well-defined fallbacks for each component:
-- Neo4j down → skip GraphRAG expansion (Stage 4); pipeline continues with RRF output
-- Reranker down → skip reranking (Stage 5); return RRF-ranked results
-- Qdrant down → return cache hit if available; else 503 immediately
-
-A circuit breaker (`retrieval/circuit.py`) opens after 3 consecutive failures per component, waits 30 s, then probes. Every open event emits a Langfuse alert span and an `X-Nexus-Retrieval-Mode: degraded` response header.
-
-**Rationale:** Silent empty results are more dangerous than a 503 — an agent receiving no context hallucinates with full confidence rather than signalling uncertainty. Fail loudly when Qdrant is down; degrade gracefully when graph or reranker are down (quality drops but the system stays functional).
-
-**Consequences:** `retrieval/circuit.py` is a new module. All retrieval callers must check the `retrieval_mode` return field and surface degraded-mode warnings where relevant (e.g., council session header, MCP tool response metadata).
-
----
-
-### ADR-012: Curate, Don't Proxy, Downstream MCP Tools
-
-**Status:** Accepted  
-**Date:** 2026-05-21
-
-**Context:** The Assistant layer (Slice 8) consumes the Atlassian Rovo MCP Server, which exposes 30-40 raw tools. Passing that whole catalogue to the assistant's agent LLM degrades tool-selection accuracy, inflates token cost on every turn, and widens the security surface.
-
-**Decision:** A three-tier tool model. The agent LLM only ever sees a hand-curated facade of ~8 intent-shaped tools (`nexus/assistant/capabilities.py`). The raw downstream catalogue stays behind the connector boundary — `nexus/assistant/atlassian.py` is the single place that maps a curated capability onto concrete Atlassian tools. Broad write coverage (transitions, comments, assignments, page creation) lives as typed steps inside an `ActionProposal.plan`, **not** as extra agent tools.
-
-**Rationale:** Tool-selection accuracy collapses past ~15-20 tools; the curated facade keeps it small and stable. Intent-shaped names (`propose_jira_changes`) are better LLM affordances than API-shaped ones. The connector boundary doubles as a security/visibility filter.
-
-**Consequences:** The agent's tool surface stays constant (~8) regardless of how much downstream coverage is added. The MCP server's assistant tools (the coding-agent channel) follow the same discipline — 5 curated tools, not a proxy.
-
----
-
-### ADR-013: Per-User OAuth for Assistant Write Actions
-
-**Status:** Accepted  
-**Date:** 2026-05-21
-
-**Context:** The Assistant can mutate Jira/Confluence (create subtasks, transition issues, edit pages). Those writes need an identity.
-
-**Decision:** Writes run as the **real user** via per-user OAuth 2.1 (PKCE) — never a shared service account. Tokens are encrypted at rest (Fernet, key from `NEXUS_TOKEN_KEY`) and refreshed silently. Without a token key configured, the feature cleanly disables itself and the Assistant falls back to a stub connector.
-
-**Rationale:** Correct attribution and permission enforcement come for free — the Atlassian Rovo MCP Server already acts within the signed-in user's permissions. A service account would over-grant and mis-attribute.
-
-**Consequences:** New `nexus/auth/` package (OAuth flow + token cipher); `assistant_identities` table; OAuth routes (`/auth/atlassian/*`). The MCP server gains a `--user` arg for per-user attribution.
-
----
-
-### ADR-014: Action Proposals Reuse the Proposal/Approval Pattern
-
-**Status:** Accepted  
-**Date:** 2026-05-21
-
-**Context:** Invariant 3 — humans approve, agents draft — must hold for Assistant write actions, exactly as it does for council-authored skills.
-
-**Decision:** `ActionProposal` is a deliberate sibling of `SkillProposal`. The agent loop can only *draft* a proposal (`propose_*` tools); nothing is written until an explicit `POST /assistant/actions/{id}/confirm`. `confirm_action` is never an autonomous agent tool — it is a human-facing API route (and, on the MCP channel, a deliberate separate tool call the calling agent makes only on its user's approval).
-
-**Rationale:** Consistency with the existing council approval flow; a single mental model for "AI drafts, human ratifies" across the product.
-
-**Consequences:** `nexus/assistant/{models,store,executor}.py`; the proposal review surface in the UI is shared between skill proposals and action proposals.
-
----
-
-### ADR-015: Change-Gated Council Cadence with Weekly Cap and Manual Override
-
-**Status:** Accepted
-**Date:** 2026-05-23
-
-**Context:** The ingest daemon ticks every ~30 minutes. If a council session fired on every tick that changed *any* file, costs and SME-review burden would scale linearly with commit activity — at 6 skills × 48 ticks/day × 7 days that's ~2,000 sessions/week per product, indefensible. The opposite extreme — only running council on manual request — leaves skills stale.
-
-**Decision:** Three layers.
-
-1. **Gate** — after each ingestion delta (§4.1), intersect the changed-chunk IDs with each skill's `provenance.evidence_chunks`. If the overlap exceeds a configured threshold, enqueue a council run for that skill. Resyncs that don't touch any cited region trigger no council activity.
-2. **Cap** — at most one council run per `(product_id, skill_id)` per 7 days. Multiple gate trips inside the window coalesce into one richer session that consumes the union of changed chunks.
-3. **Override** — `POST /products/{pid}/council/sessions { force: true, skill_id }` bypasses the cap. Requires admin perms; surfaced in the UI as a "Re-run council" button on the skill detail page, with a cost-estimate confirm dialog.
-
-**Rationale:** The gate filters out resync ticks that do not affect any skill — the dominant case. The cap prevents thrashing when a single commit touches many cited regions. The override gives SMEs an escape hatch for known-important changes without needing to wait for the next gate trip. Together they cap upper-bound council cost per product to ~`(skill_count × cost_per_run)` per week, which is bounded and predictable.
-
-**Consequences:** Activity rows for council events are suffixed `(gated)` or `(manual override)`. The Dashboard surfaces "next sync · HH:MM · next council eligible · HH:MM (skill X)" as a quiet hint. Skills that have no `evidence_chunks` overlap will never be re-drafted automatically — by design.
-
----
-
-### ADR-016: Council Priors — Skills Should Not Re-Litigate
-
-**Status:** Accepted
-**Date:** 2026-05-23
-
-**Context:** Today (and historically) every council session begins from a blank draft. The Adversary often re-raises the same critiques across sessions; SMEs re-edit the same sentence in the same way; rejected proposals' rationale is discarded and not learned from. The marginal cost of council to SMEs grows linearly with corpus churn.
-
-**Decision:** Every council session is seeded with three priors derived from prior interactions on the same `(product_id, skill_id)`:
-
-1. **Starting revision** — when a current approved skill exists, the session is launched with that body as input. The Synthesizer edits in place; sections that re-derive identically carry `inherited: true` in the proposal payload (UI shows an "inherited" pill so SMEs skip them).
-2. **Corrections corpus** — every `POST /proposals/{id}/edit` captures the (council-draft → SME-edit) diff. Recent corrections plus a distilled summary of older ones (see ADR-017) are rendered into the system prompt as "Past SMEs have said: …".
-3. **Rejection log** — `POST /proposals/{id}/reject` now requires `{ reason, category? }` in the body (previously sent as a URL query and dropped). Reasons persist and are injected as anti-priors on the next session.
-
-`createSession` returns `priors = { revision, corrections, rejections }` so the UI can render a "Priors loaded · rev N · M corr · K rej" badge in the session header.
-
-`Skill.provenance` gains a `cumulative_revisions: number` field for the cross-session counter the priors badge displays. The existing `revision_count: 0 | 1` (per-session adversary cap, ADR-007) is **not** changed — they are different counters and must not be collapsed.
-
-**Rationale:** Every SME edit is the highest-signal training data we have for this product. Throwing it away is the largest leak in the system. Feeding it forward as deterministic prompt content turns each correction into a permanent house rule with no model training required.
-
-**Consequences:** Over time, SME approvals should drift toward rubber stamps for stable sections, with edits concentrating on genuinely new content. New endpoints: `GET /skills/{id}/corrections`, `GET /skills/{id}/rejections`, `GET /skills/{id}/council-history`. The reject UI is now a Dialog with required reason + optional category, replacing the previous `window.prompt`.
-
----
-
-### ADR-017: Corrections Corpus Compaction
-
-**Status:** Accepted
-**Date:** 2026-05-23
-
-**Context:** ADR-016 introduces the corrections corpus, where every SME edit becomes a permanent house rule fed into future council prompts. Without bounds this is a linear-growth token bomb: at 200 edits × ~250 tokens each = 50K tokens prepended to every council session for that skill, forever. Master skills on long-lived products would silently blow the model context window after ~12–18 months.
-
-**Decision:** The backend compacts older corrections into a single distilled summary. `GET /skills/{id}/corrections` returns:
-
-```ts
+```json
 {
-  corrections: Correction[],       // recent, raw; capped (default ~10)
-  distilled: DistilledRules | null,// older corrections, folded; null until first compaction
-  total: number,                   // total raw corrections ever recorded
+  "query": "Anthropic contextual retrieval prompt for doc chunks",
+  "expected": [{"file": "nexus/ingest/enricher.py"}],
+  "tags": ["ingest", "enricher"]
 }
 ```
 
-Compaction policy is backend-owned (proposed: compact when raw count > 25, fold all but the most recent 10 into a new distilled summary; on subsequent compactions, the previous distillation is re-summarized together with the new entries to prevent slow drift).
+A retrieved chunk matches an expected entry if its `resource_uri` ends with
+the file path (and optionally overlaps a `line_start..line_end` range).
 
-The UI surfaces both — a "Distilled rules" accent panel above the list of recent raw corrections, with "showing 10 of 47 (older folded into distilled rules)" subtitle. The raw audit trail remains available for SMEs; the *injected prompt context stays bounded*.
+Two metrics, both reported by `EvalReport.render()`:
 
-**Rationale:** Compaction is necessary, not optional. The alternative — letting the corpus grow without bound — is a known failure mode at 12–18 months on active products. A bounded prompt with periodic re-distillation preserves the operational signal of corrections while keeping per-session cost flat.
+- **recall@K** — fraction of queries with ≥ 1 match in the top-K.
+- **MRR** — mean reciprocal rank of the first match per query.
 
-**Consequences:** A second-order LLM call is needed at compaction time (low frequency; light tier model). The distillation step itself should be evaluable on a golden set: does the new distilled summary still cause the council to respect rules that were folded in?
-
----
-
-### ADR-018: Per-Session Evidence Chunks Cap
-
-**Status:** Accepted
-**Date:** 2026-05-23
-
-**Context:** Citation-side input to the Synthesizer also needs bounding. As a corpus grows, the reranker may return more high-scoring chunks than a single prompt can absorb. Without a cap, prompts grow with corpus size and per-session cost grows with it.
-
-**Decision:** `EVIDENCE_CHUNKS_PER_SESSION_CAP = 20` (defined in [nexus-ui/lib/types.ts](../nexus-ui/lib/types.ts), enforced in the backend's prompt assembler). The reranker's top-K decides which chunks survive into the prompt; the rest are dropped for that session. The UI surfaces the budget on the skill provenance row as `N / 20 cap`.
-
-**Rationale:** Empirically, the marginal precision improvement from chunks 21–50 is small for skill drafting. Capping at 20 keeps prompt size predictable while leaving enough room for the Adversary to find real flaws. The constant is single-sourced in TypeScript and referenced by the backend so it stays in sync.
-
-**Consequences:** A skill's *stored* `evidence_chunks` may exceed 20 if the cap was raised previously and lowered later — historical artifact, no behavior change. The cap is per session, not per skill: each session re-selects its top-20 against the current changed-chunk set.
-
----
-
-## 17. Assistant Layer (Slice 8)
-
-The **Assistant** is a conversational + action layer on top of Nexus's existing knowledge. It lets a user (or another agent) query Jira/Confluence and the indexed corpus, and take **human-confirmed** actions — create Jira subtasks, transition issues, comment, assign, create/update Confluence pages.
-
-It is consumable through multiple **channels** that share one brain:
-
+Floors live in `queries.json._meta`:
 ```
-CHANNEL   MCP tools (coding agents) · Nexus UI chat · MS Teams (future)
-ASSISTANT tool-calling agent loop · conversation memory · action proposals
-CAPABILITY ~8 curated, intent-shaped tools (the only tools the LLM sees)
-CONNECTOR read + act; consumes the Atlassian Rovo MCP Server (per-user OAuth)
+"min_recall_at_10": 0.6,
+"min_mrr":          0.35
 ```
 
-**Key contracts:** curate-don't-proxy (ADR-012); per-user OAuth for writes (ADR-013); action proposals honour Invariant 3 (ADR-014).
-
-**Delivery:** four increments — backend brain · Atlassian connector + OAuth · MCP server channel · UI chat panel. Full design in [`docs/ASSISTANT-LAYER.md`](./docs/ASSISTANT-LAYER.md); per-increment status in [`docs/SLICE-8-STATUS.md`](./docs/SLICE-8-STATUS.md). API surface: `POST /products/{id}/assistant/messages`, `GET /products/{id}/assistant/conversations`, `POST /assistant/actions/{id}/confirm|reject`, `/auth/atlassian/*`.
-
----
-
-## 18. Verification — E2E Checklist
+Both are conservative starting points. Bump as the pipeline materially
+improves. Run via:
 
 ```bash
-# 1. Start infrastructure
-docker-compose up -d
-# Verify: Qdrant healthy at :6333, Neo4j at :7687, Langfuse at :3001, API at :8000
-
-# 2. Init + configure
-cp nexus.yaml.example nexus.yaml
-export GITHUB_TOKEN=ghp_...
-export DEEPINFRA_API_KEY=...
-
-# 3. Ingest
-nexus ingest
-# Expect: "Indexed N resources from M sources. Watching for changes."
-# Verify: Qdrant collection size > 0; Neo4j node count > 0; UI sources page shows connector as "watching"
-
-# 4. Query retrieval (Slice 1/2 gate)
-nexus query "swap authority check"
-# Expect: ranked results with file:line anchors, confidence scores
-
-# 5. Draft skill (Slice 3 gate)
-nexus council draft --topic "PDA seed validation" --capability security
-# Expect: 4–5 Langfuse spans; proposal in SQLite pending queue
-# Verify: open http://localhost:3000 → proposal visible in queue
-
-# 6. Validate in UI (Slice 4 gate)
-open http://localhost:3000
-# 3-pane view: draft on left, diff in center (or "new skill"), citations on right
-# Adversary critique colour-coded by severity
-# → Click "Approve"
-# Expect: .skill.md written to skills/.../pda-seed-validation.skill.md;
-#          Qdrant embedding updated; provenance stamped with validator email + timestamp
-
-# 7. MCP serving (Slice 2 gate)
-# Claude Desktop config: { "nexus": { "command": "uvx", "args": ["nexus-mcp-server"] } }
-# Ask Claude: "How should I validate PDA seeds in this codebase?"
-# Expect: Answer cites [skill: pda-seed-validation] with file:line
-
-# 8. Live indexing (Slice 5 gate)
-echo "// new helper fn" >> my-repo/programs/swap/src/lib.rs
-# Expect: UI sources page status updates to "Last synced: Xs ago" within 5 s
-# Verify: Qdrant chunk for that file updated; Neo4j entities re-extracted
-
-# 9. PR Review (Slice 5 gate)
-# Open a PR on the connected GitHub repo
-# Expect: structured review comment with findings + severity + [skill: ...] citations within 30 s
-
-# 10. Changelog (Slice 5 gate)
-git tag v0.1.0 && git push --tags
-# Expect: GitHub release notes populated with feat / fix / breaking / other sections within 60 s
-
-# 11. GraphRAG (Slice 6 gate)
-nexus query "what ADR justifies the swap fee structure"
-# Expect: result includes Confluence ADR chunk linked via Neo4j to the relevant commit
-# Verify: Langfuse trace shows GraphRAG expansion step with Neo4j node IDs
-
-# 12. Org Library (Slice 6 gate)
-open http://localhost:3000/org/library
-# → Kick off Curator for "SpringBoot conventions"
-# Expect: proposal with cited external sources + quality score appears in Org Library queue
-# → Ratify → appears in org library; product onboarding auto-adopts it
-
-# 13. Change request (Slice 6 gate)
-# As SME: file change request on owasp-input-validation skill
-# Expect: Security Sentinel verdict appears within 30 s
-# As Org Admin: Approve → new version published; semantic cache invalidated for affected queries
-
-# 14. RAGAS gate (Slice 7)
-python evals/run_ragas.py
-# Expect: faithfulness ≥ 0.85, answer_relevancy ≥ 0.80, context_recall ≥ 0.75
-# Cross-source pairs: GraphRAG retrieval ≥ 10% higher faithfulness than vector-only baseline
-
-# 14a. Code retrieval quality gate (Slice 7)
-python evals/run_code_eval.py
-# Expect: nDCG@10 ≥ 0.75; Recall@10 ≥ 0.80 on code retrieval golden set
-# Pairwise preference accuracy ≥ 0.85: model ranks correct/secure code above buggy/insecure in golden pairs
-# Retrieval quality gate coverage: ≥ 95% of filtered chunks have reranker score < 0.3 (no false positives)
-
-# 14b. Resilience smoke test (Slice 7)
-docker-compose stop neo4j
-nexus query "swap authority check"
-# Expect: result returned in degraded mode (Stage 4 skipped); X-Nexus-Retrieval-Mode: degraded header present
-docker-compose start neo4j
-
-docker-compose stop qdrant
-nexus query "swap authority check"
-# Expect: 503 within 2 s; no silent empty result
-docker-compose start qdrant
-
-# 15. CI gate
-git push
-# Expect: RAGAS + code eval workflows green; faithfulness delta < 5% from baseline
-
-# 16. Docker single-command smoke test (Slice 7)
-docker-compose down -v
-docker-compose up -d
-nexus ingest && nexus council draft --topic "test" --capability security
-# Expect: clean run from zero state in < 5 min
+pytest -m eval                                    # via pytest, skips if infra absent
+uv run python -m tests.eval.harness --product <pid>  # standalone CLI
 ```
 
----
+The CLI exits non-zero when either floor is violated — drops into CI
+cleanly. Re-run after any change to chunking, enrichment, hybrid, rerank,
+repo map, or contextual retrieval.
 
-## 18. Anti-Scope — Explicitly Deferred
+## 11. Storage
 
-| Item | Deferred because |
-|---|---|
-| Cartographer agent | Synthesizer checks existing skills inline; full gap analysis is a separate product |
-| ColPali / multimodal PDFs | Standard text extraction covers code, Markdown, and text-layer PDFs sufficiently |
-| Visual Archaeologist | Only valuable for diagram-heavy codebases; ship after launch if demand arises |
-| Episodic memory for council | Not needed until council session count is in the hundreds |
-| Skill auto-staleness detection | `report_outcome` captures usage; automated alerting is a Slice 8+ feature |
-| A2A federation | Single-org sovereign tool for now |
-| Auto-fix / auto-merge | HITL is the product; no automated approval of any kind |
-| Per-rule overlay editor | Overlay is a justification + counts in the current model; a rule-level editor is deferred |
-| Knowledge-graph visualisation | Explicit product decision: graph is backend-only, UI stays minimal |
-| Versioned skill diffing beyond one-line summary | `diffSummary` string in change requests is sufficient for now |
-| Billing UI | Placeholder only on `/settings/org` |
+- **Skills repo** — single Git repo, one per org, cloned to
+  `hierarchy_root`. The first commit comes from the council's first
+  approval; setup creates the repo empty.
+- **Qdrant** — `nexus_code` + `nexus_text` collections; product_id payload
+  filter on every query.
+- **SQLite** — `proposals` + `sessions` (`storage.proposal_queue`);
+  `registry.db` (products, users, runtime sources, setup KV).
+- **Local files** — `<state_dir>/repomaps/<product_id>.json` per product.
 
----
+## 12. Tech Stack
 
-## 19. Observability
+- **Python 3.13**, managed by `uv`. `from __future__ import annotations`
+  in every module.
+- **FastAPI** for the API. **Pydantic** for boundary types. **httpx** for
+  outbound HTTP. **LangGraph** for the council state machine.
+- **tree-sitter** for code parsing (Python, TS, TSX, JS, Rust, Go).
+- **Qdrant** for vector + sparse storage. **fastembed** for BM25 sparse
+  encoding.
+- **Jina v4** embeddings + **Jina Reranker v3** served via llama.cpp on
+  Metal in dev; CPU in Docker for portability.
+- **DeepInfra** (OpenAI-compatible) for council + enricher LLMs in dev.
+  Swap the `provider` + `base_url` to point at any compatible endpoint.
+- **MCP** (stdio transport) for the agent-facing skill server.
 
-All traces are emitted via **OpenTelemetry (OTel)**. Langfuse consumes OTel natively — no custom SDK calls. This means traces are vendor-portable from day one.
+## 13. Cut layers — kept out by design
 
-### Langfuse Spans — Agent Layer
+The following were in earlier iterations and have been removed. Don't
+reintroduce them without a written justification + a measured win on the
+eval set.
 
-Every agent node emits a span: `{session_id, agent, input_tokens, output_tokens, latency_ms, cost_usd}`.
-
-At the session level: `{session_id, skill_kind, total_tokens, total_usd, revision_count, final_confidence}`.
-
-Cost targets:
-- 100 Master sessions ≈ $1.20 (Synthesizer + Adversary on reasoning tier; thinking tokens included)
-- 100 Domain sessions ≈ $0.50 (Adversary on reasoning tier)
-- 100 Curator passes ≈ $0.20
-
-### OTel Spans — Retrieval Layer
-
-73% of RAG failures are in the retrieval pipeline, not generation. Every retrieval stage is individually instrumented so degradation is caught before it reaches an agent.
-
-| Span name | Key attributes | Alert threshold |
-|---|---|---|
-| `retrieval.query_classify` | `complexity: simple\|complex` | — |
-| `retrieval.hyde` | `latency_ms` | > 800 ms |
-| `retrieval.cache.check` | `hit: bool`, `similarity_score` | hit_rate (1 h rolling) < 20% |
-| `retrieval.embed.query` | `latency_ms`, `model` | > 200 ms |
-| `retrieval.qdrant.dense` | `latency_ms`, `result_count` | > 300 ms or count = 0 |
-| `retrieval.qdrant.sparse` | `latency_ms`, `result_count` | > 200 ms |
-| `retrieval.rrf_merge` | `latency_ms`, `seed_count` | > 50 ms |
-| `retrieval.neo4j.expand` | `latency_ms`, `nodes_added` | > 500 ms |
-| `retrieval.reranker.score` | `latency_ms`, `min_score`, `filtered_count` | > 400 ms or min_score < 0.3 |
-| `retrieval.quality_gate` | `filtered_ratio`, `requery: bool` | filtered_ratio > 0.5 = corpus or query issue |
-| `retrieval.circuit_breaker` | `component`, `state: open\|closed\|half_open` | `state: open` = page oncall |
-
-**Cost tracking per retrieval call:** `embed.tokens`, `reranker.pairs`, `hyde.tokens`, `neo4j.db_hits` — enables adaptive routing where cheap paths are preferred for simple queries.
-
-### Guardrails
-
-- **Prompt-injection filter:** regex scan on retrieved chunks before injection into any agent prompt. Flagged chunks are redacted and logged.
-- **Synthesizer faithfulness check:** any assertion in the draft without a `[file: path:line]` or `[CVE-...]` citation is stripped and flagged in the Langfuse trace. Zero unsupported assertions should reach a human reviewer.
-- **Adversary severity gate:** only `blocking` critiques trigger the one-cycle redraft. `major` and `minor` are attached without redraft. Both are always displayed to the human reviewer.
-- **Retrieval quality gate:** reranker score < 0.3 → chunk filtered; all chunks filtered → re-query once with HyDE forced; second pass fails → `no_context` signal to agent (see §5).
-
----
-
-## 20. Quick Start for a New Developer or Agent
-
-1. **Read §1–2** for the mental model (architecture + two-tier skill model).
-2. **Read §6** (LangGraph Council) to understand how agents interact.
-3. **Read §10** (Integration Roadmap) to find which slice to start on.
-4. **Read §11** (API Contracts) to understand what FastAPI must expose.
-5. **Run the E2E checklist (§17)** as your definition of done for each slice.
-6. **Check ADRs (§16)** before proposing an architectural change — the decision may already be recorded.
-
-**Source of truth for source-of-truths:**
-- UI plan (product requirements): `~/.claude/plans/composed-forging-treasure.md`
-- Backend spec (detailed implementation notes): `~/.claude/plans/delightful-conjuring-feigenbaum.md`
-- Design system (locked): `~/Desktop/projects/nexus-ui/DESIGN.md`
-- This document: synthesis and handoff reference.
+- **Assistant layer** (Jira/Confluence conversational + action loop)
+- **Neo4j / GraphRAG** (entity-relation graph + graph-expansion retrieval
+  stage)
+- **HyDE, query classifier, semantic cache, circuit breakers, prompt-
+  injection guard** (retrieval over-engineering)
+- **Org library** (`OrgSkill`, tech_stack / language / security kinds,
+  ratification flow, change requests)
+- **Skill composition** (`composes_with`, SkillKind master / product_domain,
+  SkillScope product / org)
+- **Multi-agent council** (Archaeologist + Domain Expert + Synthesizer +
+  Adversary — collapsed to 3 nodes per Reflexion)
+- **Change-gated cadence, weekly cap, override flag, corrections compaction**
+  (premature; council fires when the user clicks the button)
+- **Webhook automation, PR review agent, changelog agent** (demo task
+  runners; not on the core path)

@@ -1,79 +1,86 @@
 # Nexus — agent & contributor context
 
 This is the Python backend for **Nexus**, a sovereign, MCP-native **context
-engine**: it ingests an org's code + docs, runs a multi-agent LLM Council to draft
-curated **skill files** (human-approved), serves them via MCP to any AI client,
-and ships an **Assistant layer** that queries and acts on Jira/Confluence. The
-sibling repo `../nexus-ui/` is the Next.js web UI.
+engine**: it ingests an org's code + docs, runs a 3-node LLM council to draft
+curated **skill files** (human-approved), and serves them via MCP to any AI
+client. The sibling repo `../nexus-ui/` is the Next.js web UI.
 
 ## Read first
 
 | Doc | What it is |
 |---|---|
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | **The contributor guide — start here.** Concepts, code map, end-to-end traces, local dev, recipes, glossary. |
-| [`ENGINEERING.md`](./ENGINEERING.md) | The formal spec — architecture, data model, API contracts, ADRs. |
-| [`docs/`](./docs/) | Per-slice delivery status (`SLICE-*-STATUS.md`); the Assistant design (`ASSISTANT-LAYER.md`). |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | **The contributor guide — start here.** Concepts, code map, end-to-end traces, local dev, recipes. |
+| [`ENGINEERING.md`](./ENGINEERING.md) | The formal spec — architecture, data model, API contracts. |
 | [`README.md`](./README.md) | Setup + quickstart. |
 
-## The three invariants — never break these
+## The two invariants — never break these
 
 1. **Product = root entity.** Every resource carries `product_id`; Qdrant shards
-   on it, Neo4j filters on it. Code that crosses the product boundary is a
-   tenancy bug.
-2. **Skills compose, they don't override.** `composes_with` frontmatter defines
-   the prerequisite chain; serve-time assembles `master + domain + org standards`.
-3. **Humans approve, agents draft.** The Council and the Assistant write
-   *proposals*. Nothing becomes real — a skill file, a Jira write — without an
-   explicit human confirm.
+   on it. Code that crosses the product boundary is a tenancy bug.
+   Business units are metadata only in v1 (`owner.team`); do not add BU routes,
+   tables, or tenancy semantics without a product decision.
+2. **Humans approve, agents draft.** The council writes *proposals*. Nothing
+   becomes a skill file without an explicit human approval.
 
-## Cost/scale invariants — see ENGINEERING.md §4.1, §6.6, ADR-015 to ADR-018
+## Pipeline shape — keep this honest
 
-These are recent and easy to miss in the broader spec — call them out so they're
-not silently regressed:
-
-- **Resync is delta-only** (§4.1) — every sync returns
-  `{added, updated, removed, unchanged}` and only the changed chunks are re-embedded.
-  Don't reintroduce full re-ingest paths.
-- **Council is change-gated, weekly-capped, override-able** (ADR-015) — it does not
-  fire on every resync. The cap is per `(product, skill)`. `force: true` is admin-only.
-- **Sessions are seeded with priors** (ADR-016) — current approved skill body, distilled
-  corrections corpus, rejection log. Sessions never start blank when a precedent exists.
-- **Corrections compact** (ADR-017) — older corrections are folded into a single
-  distilled summary so the council's prompt stays bounded as the corpus grows.
-- **Evidence chunks per session is capped** (ADR-018) at `EVIDENCE_CHUNKS_PER_SESSION_CAP = 20`
-  in [nexus-ui/lib/types.ts](../nexus-ui/lib/types.ts). Backend enforces; the constant
-  is single-sourced from TS.
-- **Two revision counters, do not collapse them:**
-  `provenance.revision_count` is `0 | 1` per session (ADR-007, confidence formula input);
-  `provenance.cumulative_revisions` is monotonic across sessions (powers the UI priors badge).
+- **Resync is delta-only.** Every sync returns `{added, updated, removed,
+  unchanged}` and only the changed chunks are re-embedded. Don't reintroduce
+  full re-ingest paths.
+- **Retrieval is three stages: dense + BM25 → RRF → Jina reranker.** No
+  classifier, no HyDE, no semantic cache, no graph expansion, no circuit
+  breakers. Don't reintroduce them without an eval-set win to justify it.
+- **Chunks carry their context.** Code chunks get HQE (3 hypothetical
+  questions) at ingest; doc chunks get Anthropic's Contextual Retrieval
+  blurb. Both prepend at embed time via `text_for_embedding()`.
+- **Council is 3 nodes: Drafter → Critic → Reviser** (Reflexion shape). The
+  critic does its own fresh retrieval — that's the load-bearing piece. Cap
+  at 1 revision per session.
+- **Drafter / Reviser emit Markdown, not JSON.** Citations are regex-parsed
+  post-hoc. Long outputs auto-continue on `finish_reason="length"`. Missing
+  sections trigger one targeted section-fill pass.
+- **Repo map** lives in the council system prompt: a tree-sitter symbol
+  outline of the source tree, lexically ranked against the session topic,
+  token-budgeted. Built at sync time, persisted under
+  `<state>/repomaps/<product>.json`.
+- **Evidence chunks per session is capped** at `EVIDENCE_CHUNKS_PER_SESSION_CAP = 20`
+  in [nexus-ui/lib/types.ts](../nexus-ui/lib/types.ts).
 
 ## Conventions
 
-- **Python 3.13+, managed by `uv`.** `from __future__ import annotations` at the
-  top of every module.
+- **Python 3.13+, managed by `uv`.** `from __future__ import annotations` at
+  the top of every module.
 - **Pydantic** for data crossing process boundaries; **dataclasses** for
   in-memory only; plain dicts only in tests.
 - **Async by default** for anything touching the network or significant I/O.
-- Import order stdlib → third-party → `nexus.*` (ruff/isort enforces).
+- Import order: stdlib → third-party → `nexus.*` (ruff enforces).
 - No `print()` — use `log = logging.getLogger(__name__)`.
-- **Curate, don't proxy** (ADR-012): never expose a raw downstream MCP tool
-  catalogue to an agent LLM — wrap it in a small curated facade.
 
 ## Before you commit
 
 ```bash
 uv run ruff check nexus tests        # lint — must be clean
-uv run pytest -q                     # tests — must be green (152 at last count)
+uv run pytest -q                     # tests — must be green (136 at last count)
 ```
 
+The retrieval eval (`pytest -m eval`) is opt-in — it skips when
+Qdrant/embedder/reranker aren't reachable. Run it after any retrieval-stack
+change against a live product index.
+
 - Add a test for every new public leaf function and every new API route.
-- One logical change per commit; imperative subject; tag PRs with the slice.
+- One logical change per commit; imperative subject.
 
 ## Don't
 
 - Don't add runtime dependencies without discussion — the dep set is deliberate.
 - Don't seed demo/placeholder products — the system boots empty; users onboard
-  their own product via the wizard.
-- Don't skip the proposal/approval step for any write action (Invariant 3).
-- Don't store secrets in plaintext — OAuth tokens are Fernet-encrypted
-  (`NEXUS_TOKEN_KEY`).
+  their own via the wizard. Product onboarding creates a required GitHub
+  source with a product service-account PAT and one or more repo URLs.
+- Don't skip the proposal/approval step for any write action (Invariant 2).
+- Don't reintroduce the cut layers (Assistant / Jira / Confluence, Neo4j /
+  GraphRAG, org library / composition / SkillKind, HyDE / classifier /
+  cache / circuit breakers) without an eval-set or feedback win to justify
+  the complexity.
+- Don't store secrets in plaintext — connector tokens are Fernet-encrypted
+  (`NEXUS_TOKEN_KEY`). Credentials are scoped per product source, not as a
+  global or product-wide credential bundle.

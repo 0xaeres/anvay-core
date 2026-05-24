@@ -1,34 +1,22 @@
-# Nexus configuration — see ENGINEERING.md §15 for the full schema.
-# Apple Silicon dev defaults: embedding + reranker served locally via llama.cpp,
-# light LLMs via Ollama, council LLMs via DeepInfra (cloud).
+# Nexus configuration — see ENGINEERING.md for the full schema.
+# Dev defaults: Qdrant in Docker, embedding + reranker via local llama.cpp,
+# council + enricher LLMs via an OpenAI-compatible cloud endpoint.
 
-# One skills repo per org — cloned on boot, pushed to on approve.
-# Structure inside: product dirs + shared/ at the root.
-#   skills/
-#   ├── forge/          ← per-product skill hierarchy
-#   ├── atlas/
-#   └── shared/         ← cross-product standards (tech stack, language, security)
-skills_repo: git@github.com:myorg/nexus-skills.git
-hierarchy_root: ./skills           # local clone path (ephemeral — re-cloned on boot)
-# For local dev without a skills repo, point at the bundled seeds:
-# hierarchy_root: ./nexus/skills/seed
+# Optional here; the first-run UI wizard can create/attach this at /setup.
+skills_repo: ""
+hierarchy_root: ./skills
 
 # ---------------------------------------------------------------- Connectors
-connectors:
-  - name: github
-    type: github
-    token: ${GITHUB_TOKEN}
-    repos: ["myorg/my-repo"]
-    index: [code, pull_requests, issues, discussions]
-    watch: true
+# You can leave this empty and add sources in the UI.
+connectors: []
 
-# Example additional connectors (commented out by default):
-#  - name: confluence
-#    type: confluence
-#    base_url: https://myorg.atlassian.net
-#    token: ${CONFLUENCE_TOKEN}
-#    spaces: ["ENG", "ARCH"]
-#    watch: false
+# Example static GitHub source:
+# connectors:
+#   - name: github
+#     type: github
+#     token: ${GITHUB_TOKEN}
+#     repos: ["myorg/my-repo"]
+#     watch: true
 
 # ---------------------------------------------------------------- Storage
 vector_store:
@@ -36,119 +24,48 @@ vector_store:
   collections:
     code: nexus_code
     text: nexus_text
-    cache: nexus_cache
-
-graph:
-  url: bolt://localhost:7687
-  user: ${NEO4J_USER}
-  password: ${NEO4J_PASSWORD}
 
 # ---------------------------------------------------------------- Models
-# Council LLMs: cloud (DeepInfra) by default. Swap to ollama for offline dev.
 models:
-  council_agents:               # Archaeologist, Domain Expert — context-assembly tier
-    provider: deepinfra
-    model: deepseek-ai/DeepSeek-V4-Flash
-    api_key: ${DEEPINFRA_API_KEY}
-  synthesizer:                  # reasoning tier
+  council:
     provider: deepinfra
     model: Qwen/Qwen3-Max-Thinking
     api_key: ${DEEPINFRA_API_KEY}
-  adversary:                    # reasoning tier
-    provider: deepinfra
-    model: Qwen/Qwen3-Max-Thinking
-    api_key: ${DEEPINFRA_API_KEY}
-  pr_review:                    # code/agentic tier
-    provider: deepinfra
-    model: MiniMaxAI/MiniMax-M2.5
-    api_key: ${DEEPINFRA_API_KEY}
-  changelog:                    # mid-size efficient
-    provider: deepinfra
-    model: Qwen/Qwen3.6-35B-A3B
-    api_key: ${DEEPINFRA_API_KEY}
-  curator:                      # agentic + web search
-    provider: deepinfra
-    model: zai-org/GLM-5
-    api_key: ${DEEPINFRA_API_KEY}
-  # assistant:                  # OPTIONAL — Assistant agent loop (docs/ASSISTANT-LAYER.md).
-  #   provider: deepinfra       # Falls back to `council_agents` when omitted.
-  #   model: MiniMaxAI/MiniMax-M2.5
-  #   api_key: ${DEEPINFRA_API_KEY}
-  light:                        # local on Apple Silicon — relation extractor, HyDE, classifier, enricher
-    provider: ollama
-    model: qwen2.5:3b
-    base_url: http://localhost:11434
+    base_url: https://api.deepinfra.com/v1/openai
 
-  # Local embedding + reranker via llama.cpp on Metal
+  light:
+    provider: deepinfra
+    model: google/gemma-3-4b-it
+    api_key: ${DEEPINFRA_API_KEY}
+    base_url: https://api.deepinfra.com/v1/openai
+
   embedding:
     provider: jina-local
     model: jinaai/jina-embeddings-v4
     url: http://localhost:8080
+
   reranker:
     provider: jina-local
     model: jinaai/jina-reranker-v3
     url: http://localhost:8081
 
-  # ---- alternate profiles (override per role) ----
-  # Fully offline dev (zero cost):
-  # council_agents: { provider: ollama, model: qwen2.5:14b, base_url: http://localhost:11434 }
-  #
-  # Cloud showcase (highest quality):
-  # synthesizer:    { provider: anthropic, model: claude-sonnet-4-6, api_key: ${ANTHROPIC_API_KEY} }
-
-# ---------------------------------------------------------------- Observability
-observability:
-  langfuse:
-    enabled: true
-    host: http://localhost:3001
-    public_key: ${LANGFUSE_PUBLIC_KEY}
-    secret_key: ${LANGFUSE_SECRET_KEY}
-
-# ---------------------------------------------------------------- Cache
-cache:
-  semantic_threshold: 0.92      # cosine similarity cutoff for cache hit
-  ttl_hours: 24
-
 # ---------------------------------------------------------------- Ingestion
 ingestion:
   enrich_chunks:
-    docs: true                  # LLM context summary prepend (+8–15% precision)
-    code: false                 # tree-sitter structure is sufficient
-  extract_relations:
-    docs: true                  # mine entities + relations into Neo4j
-    code: false                 # noisy without further heuristics; off by default
-  embed_batch_size: 32
-  quality_gate_threshold: 0.3   # reranker score below this → chunk filtered
-
-# ---------------------------------------------------------------- Retrieval
-retrieval:
-  hyde_enabled: true
-  simple_query_threshold: 0.8   # classifier confidence above this → simple path
-  circuit_breaker:
-    failure_threshold: 3
-    recovery_timeout_s: 30
+    docs: true
+    code: true
+  embed_batch_size: 16
+  quality_gate_threshold: 0.3
+  file_batch_size: 20
+  read_concurrency: 5
+  enricher_concurrency: 4
 
 # ---------------------------------------------------------------- Server
 server:
   host: 0.0.0.0
   port: 8000
-  webhook_secret: ${GITHUB_WEBHOOK_SECRET}
 
-# ---------------------------------------------------------------- Assistant
-# Atlassian Rovo MCP Server — powers the Assistant's live Jira/Confluence read +
-# action capabilities (docs/ASSISTANT-LAYER.md §5-6). Optional: when disabled,
-# the Assistant runs against a stub connector.
-# Per-user OAuth also requires NEXUS_TOKEN_KEY in the environment (see .env.example).
-atlassian:
-  enabled: false
-  client_id: ${ATLASSIAN_CLIENT_ID}
-  client_secret: ${ATLASSIAN_CLIENT_SECRET}
-  redirect_uri: http://localhost:8000/auth/atlassian/callback
-  post_auth_redirect: http://localhost:3000/settings/org
-  # mcp_url defaults to the current Atlassian endpoint; the legacy
-  # mcp.atlassian.com/v1/sse endpoint is retired after 2026-06-30.
-  mcp_url: https://mcp.atlassian.com/v1/mcp
-
+# ---------------------------------------------------------------- Local state
 storage:
   proposal_queue: ./data/proposals.db
   council_checkpoint: ./data/council.sqlite

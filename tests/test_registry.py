@@ -44,9 +44,9 @@ def test_registry_products(registry: Registry) -> None:
 def test_registry_sources_id_and_name_lookup(registry: Registry) -> None:
     source = {
         "product": "test-prod",
-        "name": "my-github-source",
-        "type": "github",
-        "config": {"token": "secret-token", "repos": ["a/b"]},
+        "name": "my-filesystem-source",
+        "type": "filesystem",
+        "config": {"roots": ["/tmp/code"]},
     }
     registry.upsert_source(source)
 
@@ -57,23 +57,64 @@ def test_registry_sources_id_and_name_lookup(registry: Registry) -> None:
     stored = sources[0]
     sid = stored["id"]
     assert sid.startswith("src_")
-    assert stored["name"] == "my-github-source"
-    assert stored["type"] == "github"
+    assert stored["name"] == "my-filesystem-source"
+    assert stored["type"] == "filesystem"
 
     # Query by NAME
-    by_name = registry.get_source("test-prod", "my-github-source")
+    by_name = registry.get_source("test-prod", "my-filesystem-source")
     assert by_name is not None
     assert by_name["id"] == sid
 
     # Query by ID (this was the bug, now resolved!)
     by_id = registry.get_source("test-prod", sid)
     assert by_id is not None
-    assert by_id["name"] == "my-github-source"
+    assert by_id["name"] == "my-filesystem-source"
 
     # Delete by ID
     assert registry.delete_source("test-prod", sid) is True
     assert registry.get_source("test-prod", sid) is None
-    assert registry.get_source("test-prod", "my-github-source") is None
+    assert registry.get_source("test-prod", "my-filesystem-source") is None
+
+
+def test_registry_resource_manifest_roundtrip(registry: Registry) -> None:
+    registry.upsert_resource_manifest(
+        {
+            "product": "p",
+            "sourceKey": "src",
+            "resourceUri": "file.py",
+            "contentHash": "abc",
+            "mime": "text/x-python",
+            "sizeBytes": 123,
+            "lastSeenSync": "sync-1",
+            "chunkIds": ["c1", "c2"],
+            "indexedAt": "now",
+            "embeddingVersion": "v1",
+        }
+    )
+
+    row = registry.get_resource_manifest("p", "src", "file.py")
+    assert row is not None
+    assert row["contentHash"] == "abc"
+    assert row["chunkIds"] == ["c1", "c2"]
+    assert registry.list_resource_manifests("p", "src")[0]["resourceUri"] == "file.py"
+    assert registry.delete_resource_manifest("p", "src", "file.py") is True
+    assert registry.get_resource_manifest("p", "src", "file.py") is None
+
+
+def test_registry_refuses_plaintext_source_secrets(registry: Registry, monkeypatch) -> None:
+    from nexus.auth.token_cipher import TokenCipherError
+
+    monkeypatch.delenv("NEXUS_TOKEN_KEY", raising=False)
+
+    with pytest.raises(TokenCipherError, match="NEXUS_TOKEN_KEY is required"):
+        registry.upsert_source(
+            {
+                "product": "test-prod",
+                "name": "insecure-source",
+                "type": "github",
+                "config": {"token": "secret-token", "repos": ["a/b"]},
+            }
+        )
 
 
 def test_registry_source_encryption(registry: Registry, monkeypatch) -> None:

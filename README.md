@@ -1,60 +1,72 @@
 # Nexus — Context Engine for Engineering Teams
 
-Nexus is a **sovereign, MCP-native context engine** for your codebase. It ingests your code and docs, runs an LLM Council to draft curated skill files with human approval, and serves those skills back via MCP to any AI client (Claude, Cursor, Continue, etc.).
+Nexus is a **sovereign, MCP-native context engine** for your codebase. It
+ingests your code and docs, runs a 3-node LLM council to draft curated skill
+files with human approval, and serves those skills back via MCP to any AI
+client (Claude, Cursor, Continue, etc.).
 
-Every AI tool your team uses gets grounded in *your* actual code and conventions — not hallucinated from general training data.
-
-It also ships an **Assistant layer** — a conversational + action interface that queries Jira and Confluence and takes human-confirmed actions (create subtasks, transition issues, update docs), reachable from coding agents (via MCP) and a chat panel in the web UI. See [`docs/ASSISTANT-LAYER.md`](./docs/ASSISTANT-LAYER.md).
+Every AI tool your team uses gets grounded in *your* actual code and
+conventions — not hallucinated from general training data.
 
 ```
 Your codebase + docs
         │
         ▼
-  Nexus ingests (MCP connectors: GitHub, Jira, Confluence)
+  Nexus ingests (GitHub or local filesystem)
         │
         ▼
-  LLM Council drafts skill files  ←  human reviews + approves in the UI
+  Hybrid retrieval (dense + BM25 + Jina rerank)
+        │
+        ▼
+  3-node council (Drafter → Critic → Reviser) drafts a skill
+        │  ← seeded by an aider-style repo map + contextual chunks
+        ▼
+  Human reviews + approves in the UI
         │
         ▼
   Skills served via MCP to Claude / Cursor / Continue / any agent
-        │
-        ▼
-  Agents give grounded, cited, org-specific answers
 ```
 
 ---
 
 ## What is a skill file?
 
-A skill file is a plain Markdown + YAML document that tells an agent *how to work in your codebase*: patterns to follow, pitfalls to avoid, architectural context, domain vocabulary. Skills are versioned, human-ratified, and composable.
+A skill file is a plain Markdown + YAML document that tells an agent *how to
+work in your codebase*: patterns to follow, pitfalls to avoid, architectural
+context, domain vocabulary. One product → one or more skills, each with
+file:line citations back to the source.
 
 ```yaml
 ---
-kind: master          # one master per product; describes the product itself
+name: auth-token-rotation
 product: my-api
-version: 3
-confidence: 0.91
-composes_with: []
+version: 1
+confidence: 0.84
+applies_to:
+  files: ["src/auth/**/*.py"]
+  contexts: ["code-review", "security-audit"]
 provenance:
+  council_session: cs_20260524_142117_a3f2c1
   validated_by: alice@example.com
-  validated_at: 2026-05-18T00:00:00Z
+  validated_at: 2026-05-24T14:25:00Z
+  evidence_chunks: [c1, c2, c5]
+  revision_count: 0
 ---
 
-# My API — Master Skill
+# auth-token-rotation
 
-## Architecture
-The API is a FastAPI + PostgreSQL service…
+We rotate JWT tokens on every refresh; the prior token is short-lived (15m)
+and the refresh token is rotated atomically with the access token.
 
-## Domain Vocabulary
-| Term | Meaning |
-|---|---|
-| Workspace | A tenant-scoped container for all resources |
+## Rules
+1. Always call `rotate_token()` — never mint a fresh token directly
+   [file: src/auth/tokens.py:42].
+2. Refresh and access tokens MUST rotate as a pair [file: src/auth/refresh.py:18].
+3. Reject any token older than 15 minutes [file: src/auth/middleware.py:27].
 
-## Positive Patterns
-Always use `get_or_404` for resource lookups. See [src/deps.py:42].
-
-## Anti-Patterns
-Never access `db.session` outside a dependency — session lifetime is managed by the DI container.
+## Anti-patterns
+- Never store the refresh token in localStorage [file: src/auth/store.py:9].
+- Don't share tokens across tenants — they're scoped per workspace.
 ```
 
 ---
@@ -64,14 +76,12 @@ Never access `db.session` outside a dependency — session lifetime is managed b
 ### Prerequisites
 
 ```bash
-# Python env
 uv sync                               # installs everything from uv.lock
 
 # One-time: local model servers
-brew install llama.cpp ollama
+brew install llama.cpp
 mkdir -p models
-# Download Jina models into models/ directory:
-./scripts/download-models.sh
+./scripts/download-models.sh          # Jina embedding v4 + reranker v3
 ```
 
 ### Configure
@@ -82,23 +92,23 @@ cp .env.example .env
 ```
 
 Edit `nexus.yaml`:
-- `skills_repo` — the org's Git repo (optional in `nexus.yaml`; the first-run UI wizard at `/setup` can create it for you and persist the URL in the registry)
-- `connectors` — add your GitHub org/repos, Confluence spaces, Jira project keys
+- `skills_repo` — the org's Git repo (optional; the first-run UI wizard at
+  `/setup` can create one for you)
+- `connectors` — optional static sources; most products are onboarded through
+  the UI with a GitHub service-account token and one or more repo URLs
 
 Edit `.env`:
-- `DEEPINFRA_API_KEY` — council + PR review LLMs (get one at deepinfra.com)
+- `DEEPINFRA_API_KEY` — council + enricher LLMs (get one at deepinfra.com)
 - `GITHUB_TOKEN` — for the GitHub connector
-- `GITHUB_WEBHOOK_SECRET` — for PR review automation (can leave blank for local dev)
+- `NEXUS_TOKEN_KEY` — Fernet key for encrypting connector tokens at rest
 
-### Start infrastructure
+### Start dev stack
 
 ```bash
-# Qdrant (vector store) + Neo4j (graph) + Langfuse (tracing) + Postgres
-docker compose up -d
-
-# Local model servers (runs on Metal — keep these terminals open)
-make services-up
+make dev                              # Qdrant + llama.cpp embedder/reranker + API
 ```
+
+If you only want the backing services without the API, use `make services-up`.
 
 ### Run the API
 
@@ -116,34 +126,10 @@ npm run dev
 # → http://localhost:3000
 ```
 
-On first boot there's no skills repository and no products. The app routes you to `http://localhost:3000/setup` — a one-time wizard that either creates a new GitHub repo for you (uses `GITHUB_TOKEN`) or attaches to one you already own. Either way, Nexus seeds it with the bundled starter pack (13 curated shared skills under `shared/`) so the org boots with sensible defaults. After setup completes you're routed to `/onboarding` to create your first product.
-
----
-
-## Docker (all-in-one)
-
-**Prerequisites:** only `nexus.yaml` and `.env` — no local installs needed.
-
-```bash
-docker compose --profile full up -d
-```
-
-This single command brings up every service Nexus needs:
-
-| Service | What |
-|---|---|
-| Qdrant, Neo4j, Postgres, Langfuse | Data stores + tracing |
-| `ollama` | Light LLM host (serves `qwen2.5:3b` on internal port) |
-| `model-init` | One-shot init container — downloads Jina GGUFs and pulls `qwen2.5:3b` into their respective volumes, then exits. Skips files already present. |
-| `embedder` | Jina Embeddings v4 served via llama.cpp on `:8080` |
-| `reranker` | Jina Reranker v3 served via llama.cpp on `:8081` |
-| `nexus-api` | FastAPI backend on `:8000` |
-
-**First run:** `model-init` downloads ~4.6 GB of models (Jina GGUFs + `qwen2.5:3b`). Subsequent runs are instant — models are persisted in named Docker volumes.
-
-The UI still runs from `nexus-ui/` with `npm run dev`.
-
-> **Apple Silicon — performance note:** Docker containers on macOS cannot access Apple Metal, so the containerised `embedder` and `reranker` run on **CPU only** and will be slower than the host-based path. For the best experience on an Apple Silicon Mac, use the developer setup (`make services-up`) instead, which runs llama.cpp natively with full Metal acceleration. The `--profile full` path is optimised for Linux servers, CI/CD, and team members who don't want to manage local tooling.
+On first boot there's no skills repository and no products. The app routes
+you to `/setup` — a one-time wizard that either creates a new GitHub repo or
+attaches to one you already own. The repo is initialised empty; skill files
+land as the council approves them.
 
 ---
 
@@ -152,34 +138,27 @@ The UI still runs from `nexus-ui/` with `npm run dev`.
 ### 1. First-run setup (one-time, org-wide)
 
 Visit `http://localhost:3000/setup`:
-- **Create new repo** — Nexus uses `GITHUB_TOKEN` to mint a fresh repo (org or personal) and seeds `shared/` with the starter pack.
-- **Use existing repo** — paste a clone URL; Nexus adds the starter pack to `shared/` only if those files don't already exist.
+- **Create new repo** — Nexus uses `GITHUB_TOKEN` to mint a fresh repo.
+- **Use existing repo** — paste a clone URL; Nexus verifies it can clone.
 
 ### 2. Onboard a product via the UI
 
-After setup, the 4-step product wizard at `http://localhost:3000/onboarding`:
-1. Name your product
-2. Connect sources (GitHub repo, Confluence space, etc.)
-3. Trigger ingestion (watch the live sync log)
-4. Start a council session to draft the master skill
+- Create the product (`/new`)
+- Provide the product service-account GitHub PAT and one or more GitHub repo
+  URLs; Nexus creates the product-scoped GitHub source and starts ingest
+- Trigger ingestion; watch the live SSE sync log
+- Start a council session; watch the live deliberation
+- Approve / edit / reject the proposal at `/p/<id>/review`
 
-### 3. Onboard via CLI (scriptable)
+### 3. CLI alternative
 
 ```bash
-# Ingest a local codebase
-uv run nexus ingest --product <your-product-id> --path /path/to/repo
-
-# Draft a skill via Council
 uv run nexus council draft \
   --product <your-product-id> \
-  --topic "authentication middleware" \
-  --kind product_domain
+  --topic "authentication middleware"
 
-# Approve from the UI
-open http://localhost:3000/p/<your-product-id>/proposals
+open http://localhost:3000/p/<your-product-id>/review
 ```
-
-Replace `<your-product-id>` with the product ID you created in the UI (e.g. `my-api`, `backend`, whatever you named it).
 
 ### 4. Use Nexus from Claude Desktop
 
@@ -203,35 +182,12 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-Claude Desktop will now call `find_skills`, `query_code_context`, and `hybrid_search_corpus` against your indexed codebase.
-
----
-
-## Continuous automation
-
-Once the daemon is running (`make daemon-up`), Nexus watches your configured sources and automatically:
-
-- Re-indexes changed files within ~5 seconds of a push
-- Posts structured PR review comments citing relevant skills
-- Generates release notes on tag push
-
-These require `GITHUB_TOKEN` and a configured webhook endpoint.
-
----
-
-## The Assistant — query and act on Jira/Confluence
-
-The Assistant layer adds a conversational + action interface on top of Nexus's knowledge:
-
-- **Ask** — "summarize JIRA-1234", "search Confluence for the on-call runbook"
-- **Act** — "break JIRA-1234 into subtasks" drafts a plan you confirm before anything is written
-
-Two ways to use it:
-
-- **Web UI** — the chat panel at `/p/<product>/assistant`
-- **Coding agents** — the Nexus MCP server exposes `assistant_ask`, `assistant_get_jira_issue`, `assistant_confirm_action`, etc., so Claude Desktop / Cursor can query and act mid-task
-
-Live Jira/Confluence access requires the Atlassian integration (`atlassian.enabled` in `nexus.yaml`) and per-user OAuth — without it the Assistant runs against stubbed data. Writes always require explicit human confirmation. Full design: [`docs/ASSISTANT-LAYER.md`](./docs/ASSISTANT-LAYER.md).
+The MCP server exposes:
+- `find_skills(query, context?, current_file?, top_k?)`
+- `get_skill(name)`
+- `report_outcome(skill_name, succeeded, notes?)`
+- `query_code_context(symbol, file_glob?)`
+- `hybrid_search_corpus(query, product_id?, top_k?)`
 
 ---
 
@@ -240,23 +196,21 @@ Live Jira/Confluence access requires the Atlassian integration (`atlassian.enabl
 ```
 nexus/
 ├── nexus/
-│   ├── api/          FastAPI routes (/products, /council, /skills, /assistant, /auth, …)
-│   ├── ingest/       Chunking, embedding, indexing pipeline
-│   ├── retrieval/    5-stage RAG: sparse+dense → classifier → HyDE → RRF → rerank
-│   ├── council/      LangGraph multi-agent council (6 agents)
-│   ├── assistant/    Assistant layer — agent loop, capabilities, action proposals
-│   ├── auth/         Per-user OAuth (Atlassian) + token encryption
-│   ├── skills/       Skill models, store, seed files
-│   ├── connectors/   MCP client (stdio + remote) + local_fs connector
-│   ├── graph/        Neo4j GraphRAG layer
-│   ├── mcp_server/   MCP server (stdio) — what Claude Desktop connects to
-│   ├── tasks/        PR review + changelog task runners
-│   ├── daemon.py     Continuous index daemon
-│   └── config.py     nexus.yaml loader
-├── evals/            RAGAS + code-retrieval eval runners + golden set
-├── tests/            104 unit + integration tests
-├── scripts/          resilience-smoke.sh, model download helpers
-├── nexus.yaml.example
+│   ├── api/           FastAPI routes (/products, /sources, /council, /skills, /setup)
+│   ├── ingest/        Chunker (tree-sitter), enricher (HQE + Anthropic CR),
+│   │                  embedder (Jina v4), indexer (Qdrant), pipeline
+│   ├── retrieval/     Hybrid pipeline (dense + BM25 → RRF → Jina reranker),
+│   │                  repomap (aider-style symbol outline)
+│   ├── council/       LangGraph 3-node council: Drafter, Critic, Reviser
+│   │                  Plus runner (SSE), queue (SQLite), skill_parser
+│   ├── skills/        Skill model, store (YAML+Markdown), approval flow
+│   ├── connectors/    local_fs + MCP client
+│   ├── mcp_server/    MCP stdio server — what Claude Desktop connects to
+│   ├── llm/           OpenAI-compatible chat client (continuation-aware)
+│   ├── daemon.py      Continuous index daemon
+│   └── config.py      nexus.yaml loader
+├── tests/             unit + integration tests
+├── tests/eval/        40-query retrieval benchmark (recall@10 + MRR)
 └── docker-compose.yml
 ```
 
@@ -265,22 +219,16 @@ nexus/
 ## Quality gates
 
 ```bash
-uv run pytest                                               # 104 tests
-uv run python -m evals.run_ragas --golden evals/golden.jsonl
-uv run python -m evals.run_code_eval --golden evals/golden.jsonl
-bash scripts/resilience-smoke.sh
+uv run ruff check nexus tests
+uv run pytest -q                       # 136 tests, ~2s
+uv run pytest -m eval                  # opt-in retrieval benchmark
 ```
 
-| Metric | Gate |
-|---|---|
-| `faithfulness` | ≥ 0.85 |
-| `answer_relevancy` | ≥ 0.80 |
-| `context_recall` | ≥ 0.75 |
-| `nDCG@10` | ≥ 0.75 |
-| `Recall@10` | ≥ 0.80 |
-| Pairwise preference | ≥ 0.85 |
-
-CI (`.github/workflows/ci.yml`) runs lint + tests + RAGAS regression on every PR and fails if faithfulness drops > 5% from baseline.
+The eval set under `tests/eval/queries.json` is the authoritative measure of
+retrieval quality. After any change to chunking, enrichment, hybrid, rerank,
+repo map, or contextual retrieval, run `pytest -m eval` against a populated
+index and confirm `recall@10` + `MRR` stay above the floors in
+`queries.json._meta`.
 
 ---
 
@@ -288,15 +236,10 @@ CI (`.github/workflows/ci.yml`) runs lint + tests + RAGAS regression on every PR
 
 | File | What it covers |
 |---|---|
-| [`AGENTS.md`](./AGENTS.md) | Quick orientation for AI agents & new contributors — invariants, conventions, commit checks. |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | **New contributor guide** — code map, end-to-end traces, dev workflow, recipes. Start here. |
-| [`ENGINEERING.md`](./ENGINEERING.md) | Full architecture spec, data model, ADRs, API surface |
-| [`INTEGRATION.md`](./INTEGRATION.md) | UI ↔ backend cutover map |
-| [`docs/UI-CUTOVER-STATUS.md`](./docs/UI-CUTOVER-STATUS.md) | End-to-end demo walkthrough |
-| [`docs/SLICE-*-STATUS.md`](./docs/) | Per-slice delivery notes |
-| [`docs/ASSISTANT-LAYER.md`](./docs/ASSISTANT-LAYER.md) | Design — conversational + action layer over Jira/Confluence |
-| [`docs/SLICE-8-STATUS.md`](./docs/SLICE-8-STATUS.md) | Assistant layer — delivery status (Increment 1 shipped) |
-| [`../nexus-ui/DESIGN.md`](../nexus-ui/DESIGN.md) | UI design system rules |
+| [`AGENTS.md`](./AGENTS.md) | Quick orientation — invariants, conventions, commit checks. |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | New-contributor guide — code map, end-to-end traces, dev workflow. |
+| [`ENGINEERING.md`](./ENGINEERING.md) | Full architecture spec + data model. |
+| [`../nexus-ui/DESIGN.md`](../nexus-ui/DESIGN.md) | UI design system rules. |
 
 ---
 

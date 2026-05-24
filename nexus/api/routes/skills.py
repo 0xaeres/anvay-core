@@ -1,4 +1,4 @@
-"""Skills — see ENGINEERING.md §11."""
+"""Skills — see ENGINEERING.md §8."""
 
 from __future__ import annotations
 

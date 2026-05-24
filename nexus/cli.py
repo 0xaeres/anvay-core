@@ -9,7 +9,7 @@ import typer
 
 app = typer.Typer(
     name="nexus",
-    help="Sovereign, MCP-native skill server for codebases.",
+    help="Sovereign, MCP-native context engine for codebases.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -28,13 +28,13 @@ def init(
     ),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing config."),
 ) -> None:
-    """Interactive setup — writes nexus.yaml. (Slice 1)"""
+    """Interactive setup — writes nexus.yaml."""
     if config_path.exists() and not force:
         typer.secho(
             f"{config_path} already exists. Pass --force to overwrite.", fg=typer.colors.RED
         )
         raise typer.Exit(code=1)
-    typer.echo("nexus init — not yet implemented (Slice 1 follow-on).")
+    typer.echo("nexus init — not yet implemented.")
     typer.echo(f"For now: `cp nexus.yaml.example {config_path}` and edit by hand.")
 
 
@@ -44,11 +44,11 @@ def init(
 @app.command()
 def ingest(
     product: str = typer.Option(..., "--product", "-p", help="Product ID to ingest."),
-    path: Path = typer.Option(..., "--path", help="Local directory to ingest (Slice 1)."),
+    path: Path = typer.Option(..., "--path", help="Local directory to ingest."),
     config_path: Path = typer.Option(Path("nexus.yaml"), "--config", "-c"),
     no_enrich: bool = typer.Option(False, "--no-enrich", help="Skip contextual enrichment."),
 ) -> None:
-    """Pull resources, chunk, embed, index. (Slice 1: local-fs source)"""
+    """Pull resources, chunk, embed, index from a local filesystem source."""
     from nexus.config import NexusConfig
     from nexus.connectors.local_fs import LocalFsConfig, LocalFsSource
     from nexus.ingest.pipeline import run_ingest
@@ -86,7 +86,7 @@ def query(
     ),
     config_path: Path = typer.Option(Path("nexus.yaml"), "--config", "-c"),
 ) -> None:
-    """Run the 5-stage GraphRAG retrieval pipeline."""
+    """Run the hybrid retrieval pipeline."""
     from nexus.config import NexusConfig
     from nexus.retrieval.pipeline import RetrievalContext, retrieve
 
@@ -107,15 +107,11 @@ def query(
 
     result = asyncio.run(_go())
 
-    if result.mode == "no_context":
+    if not result.hits:
         typer.secho("No relevant context found (quality gate).", fg=typer.colors.YELLOW)
         return
-    if result.cache_hit:
-        typer.secho("(cache hit)", fg=typer.colors.GREEN)
-    if result.degraded_components:
-        typer.secho(
-            f"(degraded: {','.join(result.degraded_components)})", fg=typer.colors.YELLOW
-        )
+    if not result.reranked:
+        typer.secho("(reranker unavailable; showing fused order)", fg=typer.colors.YELLOW)
 
     for i, hit in enumerate(result.hits, start=1):
         payload = hit.payload or {}

@@ -1,15 +1,12 @@
 """Remote MCP client — JSON-RPC 2.0 over Streamable HTTP.
 
-Nexus's existing `mcp_client.py` speaks the *stdio* transport (local connector
-subprocesses). The Atlassian Rovo MCP Server is a *remote* server, so it needs
-the HTTP transport: JSON-RPC requests POSTed to a single endpoint, with the
-server replying either as `application/json` or as an SSE stream.
+`mcp_client.py` speaks stdio for local connector subprocesses. This module is
+the small HTTP transport for remote MCP servers: JSON-RPC requests are POSTed to
+one endpoint, and the server may reply as JSON or as an SSE stream.
 
-This client implements just what the Assistant needs: `initialize`,
-`tools/list`, `tools/call`. The `token_provider` callable is invoked per request
-so per-user OAuth tokens (and silent refresh) stay outside this transport layer.
-
-See docs/ASSISTANT-LAYER.md §5.
+The client exposes only `initialize`, `tools/list`, and `tools/call`. The
+`token_provider` callable is invoked per request so credential refresh stays
+outside the transport layer.
 """
 
 from __future__ import annotations
@@ -126,7 +123,7 @@ class RemoteMCPClient:
             {
                 "protocolVersion": _PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "nexus-assistant", "version": "0.1"},
+                "clientInfo": {"name": "nexus", "version": "0.1"},
             },
         )
         await self._notify("notifications/initialized")

@@ -1,9 +1,8 @@
 """Local filesystem source — walks a directory and yields resources.
 
-Stand-in for a real MCP connector during Slice 1. The protocol surface is small
-and intentionally identical to what we'll expose through the MCP client wrapper
-in the slice-1 follow-on (`list_resources` + `read_resource`), so swapping in a
-real MCP source later is purely a configuration change.
+The protocol surface is intentionally identical to the MCP client wrapper
+(`list_resources` + `read_resource`), so filesystem and MCP-backed sources can
+share the ingest pipeline.
 """
 
 from __future__ import annotations

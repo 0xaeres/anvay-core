@@ -1,10 +1,9 @@
-"""Symmetric encryption for OAuth tokens at rest.
+"""Symmetric encryption for connector tokens at rest.
 
 Tokens are encrypted with Fernet (AES-128-CBC + HMAC). The key comes from the
 `NEXUS_TOKEN_KEY` env var — generate one with `TokenCipher.generate_key()`.
-When no key is configured, the Assistant's per-user OAuth feature is disabled
-(the API surfaces a clear "token encryption not configured" error rather than
-storing secrets in plaintext).
+When no key is configured, registry writes that include secret-bearing
+connector config fail clearly rather than storing secrets in plaintext.
 """
 
 from __future__ import annotations

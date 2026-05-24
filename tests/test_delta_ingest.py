@@ -1,0 +1,211 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import ClassVar
+
+import pytest
+
+from nexus.config import NexusConfig
+from nexus.ingest import pipeline
+from nexus.ingest.models import EmbeddedChunk, ResourceRef
+from nexus.registry import Registry
+from nexus.retrieval.sparse import SparseVector
+
+
+def _config(tmp_path: Path) -> NexusConfig:
+    return NexusConfig(
+        models={
+            "council": {"provider": "test", "model": "test"},
+            "light": {"provider": "test", "model": "test"},
+            "embedding": {"provider": "test", "model": "embed-v1", "url": "http://embed"},
+            "reranker": {"provider": "test", "model": "test", "url": "http://rerank"},
+        },
+        storage={
+            "proposal_queue": tmp_path / "proposals.db",
+            "council_checkpoint": tmp_path / "council.sqlite",
+        },
+    )
+
+
+class FakeSource:
+    source_id = "local:test"
+
+    def __init__(self, files: dict[str, str]):
+        self.files = files
+
+    async def list_resources(self) -> AsyncIterator[ResourceRef]:
+        for uri, content in self.files.items():
+            yield ResourceRef(
+                source_id=self.source_id,
+                uri=uri,
+                mime="text/plain",
+                size_bytes=len(content),
+            )
+
+    async def read_resource(self, resource: ResourceRef) -> str:
+        return self.files[resource.uri]
+
+
+class FakeEmbedder:
+    calls = 0
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def embed_chunks(self, chunks):
+        FakeEmbedder.calls += 1
+        return [
+            EmbeddedChunk(chunk=c, vector=[0.1, 0.2], vector_name="dense_text")
+            for c in chunks
+        ]
+
+    async def aclose(self) -> None:
+        pass
+
+
+class FakeEnricher:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def enrich(self, chunks, *, doc_contents):
+        return chunks
+
+    async def aclose(self) -> None:
+        pass
+
+
+class FakeIndexer:
+    instances: ClassVar[list[FakeIndexer]] = []
+
+    def __init__(self, *args, **kwargs):
+        self.upserted = []
+        self.deleted = []
+        FakeIndexer.instances.append(self)
+
+    async def ensure_collections(self) -> None:
+        pass
+
+    async def upsert(self, embedded, *, sparse_by_id=None, **kwargs):
+        self.upserted.append((list(embedded), kwargs))
+        return len(embedded)
+
+    async def delete_points_by_ids(self, point_ids):
+        self.deleted.extend(point_ids)
+        return len(point_ids)
+
+    async def aclose(self) -> None:
+        pass
+
+
+async def _fake_sparse(texts):
+    return [SparseVector(indices=[1], values=[1.0]) for _ in texts]
+
+
+@pytest.fixture(autouse=True)
+def _patch_ingest(monkeypatch):
+    FakeEmbedder.calls = 0
+    FakeIndexer.instances = []
+    monkeypatch.setattr(pipeline, "EmbedderClient", FakeEmbedder)
+    monkeypatch.setattr(pipeline, "ContextualEnricher", FakeEnricher)
+    monkeypatch.setattr(pipeline, "Indexer", FakeIndexer)
+    monkeypatch.setattr(pipeline, "aencode_passages", _fake_sparse)
+
+
+@pytest.mark.asyncio
+async def test_delta_sync_skips_unchanged_resources(tmp_path: Path) -> None:
+    registry = Registry(tmp_path / "registry.db")
+    cfg = _config(tmp_path)
+    source = FakeSource({"doc.txt": "hello world " * 20})
+
+    first = await pipeline.run_ingest(
+        product_id="p",
+        source=source,
+        config=cfg,
+        registry=registry,
+        source_key="source",
+    )
+    second = await pipeline.run_ingest(
+        product_id="p",
+        source=source,
+        config=cfg,
+        registry=registry,
+        source_key="source",
+    )
+
+    assert first.added == 1
+    assert first.unchanged == 0
+    assert second.added == 0
+    assert second.unchanged == 1
+    assert FakeEmbedder.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_delta_sync_deletes_stale_ids_after_successful_upsert(tmp_path: Path) -> None:
+    registry = Registry(tmp_path / "registry.db")
+    cfg = _config(tmp_path)
+    source = FakeSource({"doc.txt": "new content " * 20})
+    version = pipeline.embedding_version(cfg)
+    registry.upsert_resource_manifest(
+        {
+            "product": "p",
+            "sourceKey": "source",
+            "resourceUri": "doc.txt",
+            "contentHash": "old-hash",
+            "mime": "text/plain",
+            "sizeBytes": 10,
+            "lastSeenSync": "old",
+            "chunkIds": ["old-chunk-id"],
+            "indexedAt": "old",
+            "embeddingVersion": version,
+        }
+    )
+
+    stats = await pipeline.run_ingest(
+        product_id="p",
+        source=source,
+        config=cfg,
+        registry=registry,
+        source_key="source",
+    )
+
+    indexer = FakeIndexer.instances[-1]
+    assert stats.updated == 1
+    assert indexer.upserted
+    assert indexer.deleted == ["old-chunk-id"]
+    row = registry.get_resource_manifest("p", "source", "doc.txt")
+    assert row is not None
+    assert row["contentHash"] != "old-hash"
+
+
+@pytest.mark.asyncio
+async def test_delta_sync_removes_deleted_resources(tmp_path: Path) -> None:
+    registry = Registry(tmp_path / "registry.db")
+    cfg = _config(tmp_path)
+    registry.upsert_resource_manifest(
+        {
+            "product": "p",
+            "sourceKey": "source",
+            "resourceUri": "gone.txt",
+            "contentHash": "old-hash",
+            "mime": "text/plain",
+            "sizeBytes": 10,
+            "lastSeenSync": "old",
+            "chunkIds": ["gone-chunk-id"],
+            "indexedAt": "old",
+            "embeddingVersion": pipeline.embedding_version(cfg),
+        }
+    )
+
+    stats = await pipeline.run_ingest(
+        product_id="p",
+        source=FakeSource({}),
+        config=cfg,
+        registry=registry,
+        source_key="source",
+    )
+
+    indexer = FakeIndexer.instances[-1]
+    assert stats.removed == 1
+    assert indexer.deleted == ["gone-chunk-id"]
+    assert registry.get_resource_manifest("p", "source", "gone.txt") is None

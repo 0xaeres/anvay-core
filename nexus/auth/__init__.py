@@ -1,5 +1,5 @@
-"""Authentication — per-user OAuth for the Assistant layer.
+"""Authentication helpers.
 
-See docs/ASSISTANT-LAYER.md §6. Write actions run as the real user, never a
-shared service account, so every token here is per-user and encrypted at rest.
+Connector credentials are encrypted at rest when `NEXUS_TOKEN_KEY` is
+configured. Nexus never stores secrets in plaintext.
 """
