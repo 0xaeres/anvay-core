@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from nexus.api.app import app
 from nexus.api.deps import get_proposal_queue
+from nexus.api.routes import council
 from nexus.council.queue import ProposalQueue
 from nexus.council.runner import HUB
 
@@ -38,12 +38,21 @@ def test_council_stream_route_accepts_live_session_before_queue_record(
     tmp_path: Path,
 ) -> None:
     queue = ProposalQueue(tmp_path / "queue.db")
-    asyncio.run(HUB.start("cs_live"))
+
+    async def fake_stream_events(session_id: str):
+        yield {"event": "session_start", "data": f'{{"session_id":"{session_id}"}}'}
+
+    original = council.stream_events
+    council.stream_events = fake_stream_events
+    HUB._live.add("cs_live")
     app.dependency_overrides[get_proposal_queue] = lambda: queue
     try:
         client = TestClient(app)
-        with client.stream("GET", "/council/sessions/cs_live/stream") as response:
-            assert response.status_code == 200
+        response = client.get("/council/sessions/cs_live/stream")
     finally:
-        asyncio.run(HUB.finish("cs_live"))
+        HUB._live.discard("cs_live")
+        council.stream_events = original
         app.dependency_overrides.pop(get_proposal_queue, None)
+
+    assert response.status_code == 200
+    assert "event: session_start" in response.text
