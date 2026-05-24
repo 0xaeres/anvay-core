@@ -45,7 +45,7 @@ async def reindex_resource(
 
     chunks = chunk_resource(product_id, resource, content)
     if enrich and chunks:
-        chunks = await enricher.enrich(chunks)
+        chunks = await enricher.enrich(chunks, doc_contents={resource.uri: content})
 
     if not chunks:
         return IncrementalResult(chunks_deleted=len(old_ids), chunks_indexed=0)

@@ -66,7 +66,7 @@ class ModelsCfg(BaseModel):
 
 
 class EnrichCfg(BaseModel):
-    docs: bool = False  # context_path heading hierarchy sufficient; zero LLM cost
+    docs: bool = True   # Anthropic Contextual Retrieval — 50-100 token "situate in doc" prepend
     code: bool = True   # HQE: 3 hypothetical questions bridge code → natural language queries
 
 

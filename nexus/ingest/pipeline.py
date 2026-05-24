@@ -97,6 +97,7 @@ async def run_ingest(
             pairs = await asyncio.gather(*[_read(r) for r in resources])
 
             all_chunks: list[Chunk] = []
+            doc_contents: dict[str, str] = {}
             indexed_count = 0
             for pair in pairs:
                 if pair is None:
@@ -107,13 +108,14 @@ async def run_ingest(
                     stats.resources_skipped += 1
                     continue
                 all_chunks.extend(chunks)
+                doc_contents[r.uri] = content
                 indexed_count += 1
 
             if not all_chunks:
                 return
 
             if enrich:
-                all_chunks = await enricher.enrich(all_chunks)
+                all_chunks = await enricher.enrich(all_chunks, doc_contents=doc_contents)
 
             try:
                 embedded = await embedder.embed_chunks(all_chunks)
