@@ -308,7 +308,7 @@ to CPU. Useful knobs:
 
 ```bash
 EMBEDDER_DEVICE=cpu RERANKER_DEVICE=cpu make services-up   # force CPU
-EMBEDDER_UBATCH=2048 EMBEDDER_BATCH=2048 make services-up  # larger RAM machine
+EMBEDDER_UBATCH=2048 RERANKER_UBATCH=2048 make services-up # larger RAM machine
 NEXUS_LOG_LEVEL=DEBUG uv run uvicorn nexus.api.app:app --port 8000 --reload
 ```
 

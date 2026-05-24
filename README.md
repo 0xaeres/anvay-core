@@ -120,7 +120,7 @@ Defaults are conservative for a MacBook Air M2 with 8GB RAM:
 
 ```bash
 EMBEDDER_DEVICE=cpu RERANKER_DEVICE=cpu make services-up   # force CPU
-EMBEDDER_UBATCH=2048 EMBEDDER_BATCH=2048 make services-up  # larger RAM
+EMBEDDER_UBATCH=2048 RERANKER_UBATCH=2048 make services-up # larger RAM
 ```
 
 ### Run the API

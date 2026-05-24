@@ -31,8 +31,14 @@ class _SessionHub:
 
     def __init__(self) -> None:
         self._subscribers: dict[str, list[asyncio.Queue[dict | str]]] = {}
+        self._live: set[str] = set()
         self._completed: set[str] = set()
         self._lock = asyncio.Lock()
+
+    async def start(self, session_id: str) -> None:
+        async with self._lock:
+            self._live.add(session_id)
+            self._completed.discard(session_id)
 
     async def publish(self, session_id: str, event: dict) -> None:
         async with self._lock:
@@ -45,6 +51,7 @@ class _SessionHub:
 
     async def finish(self, session_id: str) -> None:
         async with self._lock:
+            self._live.discard(session_id)
             self._completed.add(session_id)
             queues = list(self._subscribers.get(session_id, []))
         for q in queues:
@@ -68,7 +75,7 @@ class _SessionHub:
                 self._subscribers.pop(session_id, None)
 
     def is_live(self, session_id: str) -> bool:
-        return session_id in self._subscribers and session_id not in self._completed
+        return session_id in self._live and session_id not in self._completed
 
 
 HUB = _SessionHub()
@@ -96,6 +103,7 @@ async def kick_off(
 ) -> str:
     """Schedule a council run as an asyncio task. Returns the session_id."""
     sid = session_id or make_session_id()
+    await HUB.start(sid)
     task = asyncio.create_task(
         _run_session(
             config=config,

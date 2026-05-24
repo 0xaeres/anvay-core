@@ -37,16 +37,6 @@ async def create_session(
     return {"session_id": sid, "status": "running"}
 
 
-@router.get("/council/sessions/{session_id}")
-async def get_session(
-    session_id: str, queue: ProposalQueue = Depends(get_proposal_queue)
-) -> dict:
-    sess = queue.get_session(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="session not found")
-    return sess
-
-
 @router.get("/council/sessions/{session_id}/stream")
 async def session_stream(
     session_id: str, queue: ProposalQueue = Depends(get_proposal_queue)
@@ -82,3 +72,13 @@ async def session_stream(
         yield {"event": "session_end", "data": "{}"}
 
     return EventSourceResponse(replay())
+
+
+@router.get("/council/sessions/{session_id}")
+async def get_session(
+    session_id: str, queue: ProposalQueue = Depends(get_proposal_queue)
+) -> dict:
+    sess = queue.get_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="session not found")
+    return sess

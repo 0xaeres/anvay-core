@@ -13,6 +13,8 @@ set -euo pipefail
 MODEL_PATH="${RERANKER_MODEL:-models/jina-reranker-v3.Q4_K_M.gguf}"
 PORT="${RERANKER_PORT:-8081}"
 CTX_SIZE="${RERANKER_CTX:-8192}"
+BATCH_SIZE="${RERANKER_BATCH:-1024}"
+UBATCH_SIZE="${RERANKER_UBATCH:-1024}"
 DEVICE="${RERANKER_DEVICE:-auto}" # auto | metal | gpu | cpu
 
 if ! command -v llama-server >/dev/null 2>&1; then
@@ -54,10 +56,12 @@ if [ -z "$gpu_layers" ]; then
   esac
 fi
 
-echo "Starting reranker on :$PORT (model=$MODEL_PATH, device=$DEVICE, gpu_layers=$gpu_layers)"
+echo "Starting reranker on :$PORT (model=$MODEL_PATH, device=$DEVICE, batch=$BATCH_SIZE, ubatch=$UBATCH_SIZE, gpu_layers=$gpu_layers)"
 exec llama-server \
   --model "$MODEL_PATH" \
   --port "$PORT" \
   --ctx-size "$CTX_SIZE" \
   --reranking \
+  --batch-size "$BATCH_SIZE" \
+  --ubatch-size "$UBATCH_SIZE" \
   --n-gpu-layers "$gpu_layers"

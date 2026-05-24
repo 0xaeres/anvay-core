@@ -266,6 +266,12 @@ instead of burning retry backoff.
 - `EMBEDDER_BATCH` and `EMBEDDER_UBATCH` (default `1024` for M2/8GB).
 - `EMBEDDER_GPU_LAYERS` for manual override.
 
+`scripts/serve-reranker.sh` mirrors these controls as `RERANKER_DEVICE`,
+`RERANKER_BATCH`, `RERANKER_UBATCH`, and `RERANKER_GPU_LAYERS`. Reranker
+physical-batch failures have the same llama.cpp shape as embedder failures:
+raise `RERANKER_UBATCH` on larger machines or reduce retrieved document size
+if running on constrained hardware.
+
 ### Indexer (`nexus/ingest/indexer.py`)
 
 Qdrant collections (per `nexus.yaml`):
