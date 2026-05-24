@@ -97,3 +97,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "eval: offline retrieval-quality benchmark (requires Qdrant + embedder + reranker; skip by default)",
+]

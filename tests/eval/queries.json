@@ -1,0 +1,219 @@
+{
+  "_meta": {
+    "description": "Hand-curated retrieval eval set for the Nexus codebase itself. Re-run on every retrieval pipeline change. A match is: any returned chunk whose resource_uri ends with one of the listed file paths.",
+    "ingested_product_id": "nexus",
+    "ingested_root": "nexus/",
+    "min_recall_at_10": 0.6,
+    "min_mrr": 0.35
+  },
+  "queries": [
+    {
+      "query": "where is the BM25 sparse encoder",
+      "expected": [{"file": "nexus/retrieval/sparse.py"}],
+      "tags": ["retrieval"]
+    },
+    {
+      "query": "how does the retrieval pipeline fuse dense and sparse hits",
+      "expected": [
+        {"file": "nexus/retrieval/hybrid.py"},
+        {"file": "nexus/retrieval/pipeline.py"}
+      ],
+      "tags": ["retrieval"]
+    },
+    {
+      "query": "Jina reranker client",
+      "expected": [{"file": "nexus/retrieval/reranker.py"}],
+      "tags": ["retrieval"]
+    },
+    {
+      "query": "build a repo map of symbols using tree-sitter",
+      "expected": [{"file": "nexus/retrieval/repomap.py"}],
+      "tags": ["retrieval", "repomap"]
+    },
+    {
+      "query": "how do we render the repo map with a token budget",
+      "expected": [{"file": "nexus/retrieval/repomap.py"}],
+      "tags": ["retrieval", "repomap"]
+    },
+    {
+      "query": "tokenize a council topic for bias terms",
+      "expected": [{"file": "nexus/retrieval/repomap.py"}],
+      "tags": ["retrieval", "repomap"]
+    },
+    {
+      "query": "Anthropic contextual retrieval prompt for doc chunks",
+      "expected": [{"file": "nexus/ingest/enricher.py"}],
+      "tags": ["ingest", "enricher"]
+    },
+    {
+      "query": "hypothetical question generation for code chunks",
+      "expected": [{"file": "nexus/ingest/enricher.py"}],
+      "tags": ["ingest", "enricher"]
+    },
+    {
+      "query": "truncate a giant document around the current chunk",
+      "expected": [{"file": "nexus/ingest/enricher.py"}],
+      "tags": ["ingest", "enricher"]
+    },
+    {
+      "query": "tree-sitter language registry for python typescript rust",
+      "expected": [{"file": "nexus/ingest/chunker.py"}],
+      "tags": ["ingest", "chunker"]
+    },
+    {
+      "query": "chunker preserves heading hierarchy in markdown",
+      "expected": [{"file": "nexus/ingest/chunker.py"}],
+      "tags": ["ingest", "chunker"]
+    },
+    {
+      "query": "how is the embedder client called per batch",
+      "expected": [{"file": "nexus/ingest/embedder.py"}],
+      "tags": ["ingest"]
+    },
+    {
+      "query": "delete old chunks and re-index a resource",
+      "expected": [{"file": "nexus/ingest/incremental.py"}],
+      "tags": ["ingest"]
+    },
+    {
+      "query": "ingest pipeline orchestrates chunking enrichment embedding indexing",
+      "expected": [{"file": "nexus/ingest/pipeline.py"}],
+      "tags": ["ingest"]
+    },
+    {
+      "query": "prepend context summary before embedding text",
+      "expected": [{"file": "nexus/ingest/models.py"}],
+      "tags": ["ingest"]
+    },
+    {
+      "query": "Qdrant indexer upsert with dense and sparse vectors",
+      "expected": [{"file": "nexus/ingest/indexer.py"}],
+      "tags": ["ingest"]
+    },
+    {
+      "query": "drafter agent that writes the initial skill proposal",
+      "expected": [{"file": "nexus/council/agents/drafter.py"}],
+      "tags": ["council"]
+    },
+    {
+      "query": "critic does its own fresh retrieval against source",
+      "expected": [{"file": "nexus/council/agents/critic.py"}],
+      "tags": ["council"]
+    },
+    {
+      "query": "reviser fires only on blocking severity",
+      "expected": [{"file": "nexus/council/agents/reviser.py"}],
+      "tags": ["council"]
+    },
+    {
+      "query": "LangGraph state graph topology for the council",
+      "expected": [{"file": "nexus/council/graph.py"}],
+      "tags": ["council"]
+    },
+    {
+      "query": "session pub sub for SSE clients streaming live deliberation",
+      "expected": [{"file": "nexus/council/runner.py"}],
+      "tags": ["council"]
+    },
+    {
+      "query": "SQLite-backed pending proposal queue schema",
+      "expected": [{"file": "nexus/council/queue.py"}],
+      "tags": ["council"]
+    },
+    {
+      "query": "CouncilState typed dict shared across nodes",
+      "expected": [{"file": "nexus/council/state.py"}],
+      "tags": ["council"]
+    },
+    {
+      "query": "validate that a generated skill has all required sections",
+      "expected": [{"file": "nexus/council/skill_parser.py"}],
+      "tags": ["council"]
+    },
+    {
+      "query": "strip uncited rules from a draft body",
+      "expected": [{"file": "nexus/council/skill_parser.py"}],
+      "tags": ["council"]
+    },
+    {
+      "query": "LLM client chat with auto-continuation on length truncation",
+      "expected": [{"file": "nexus/llm/client.py"}],
+      "tags": ["llm"]
+    },
+    {
+      "query": "OpenAI compatible chat completions for council models",
+      "expected": [{"file": "nexus/llm/client.py"}],
+      "tags": ["llm"]
+    },
+    {
+      "query": "MCP server tool registration find_skills get_skill",
+      "expected": [{"file": "nexus/mcp_server/server.py"}],
+      "tags": ["mcp"]
+    },
+    {
+      "query": "selective serving find_skills filter by file glob and context",
+      "expected": [{"file": "nexus/mcp_server/tools.py"}],
+      "tags": ["mcp"]
+    },
+    {
+      "query": "approve a proposal write skill file and embed body",
+      "expected": [{"file": "nexus/skills/approval.py"}],
+      "tags": ["skills"]
+    },
+    {
+      "query": "SkillStore reads YAML frontmatter and markdown body",
+      "expected": [{"file": "nexus/skills/store.py"}],
+      "tags": ["skills"]
+    },
+    {
+      "query": "Skill pydantic model with provenance",
+      "expected": [{"file": "nexus/skills/models.py"}],
+      "tags": ["skills"]
+    },
+    {
+      "query": "compute confidence formula citation density",
+      "expected": [{"file": "nexus/skills/models.py"}],
+      "tags": ["skills"]
+    },
+    {
+      "query": "github clone and ingest source SSE log stream",
+      "expected": [{"file": "nexus/api/routes/sources.py"}],
+      "tags": ["api"]
+    },
+    {
+      "query": "list product skills endpoint",
+      "expected": [{"file": "nexus/api/routes/skills.py"}],
+      "tags": ["api"]
+    },
+    {
+      "query": "create a council session as a background task",
+      "expected": [{"file": "nexus/api/routes/council.py"}],
+      "tags": ["api"]
+    },
+    {
+      "query": "first-run skills repo bootstrap setup status",
+      "expected": [{"file": "nexus/api/routes/setup.py"}],
+      "tags": ["api"]
+    },
+    {
+      "query": "encrypt connector secrets with Fernet",
+      "expected": [{"file": "nexus/auth/token_cipher.py"}],
+      "tags": ["auth"]
+    },
+    {
+      "query": "local filesystem source walks a directory",
+      "expected": [{"file": "nexus/connectors/local_fs.py"}],
+      "tags": ["connectors"]
+    },
+    {
+      "query": "Pydantic config loader with env variable substitution",
+      "expected": [{"file": "nexus/config.py"}],
+      "tags": ["config"]
+    },
+    {
+      "query": "continuous daemon that watches connector updates",
+      "expected": [{"file": "nexus/daemon.py"}],
+      "tags": ["daemon"]
+    }
+  ]
+}
