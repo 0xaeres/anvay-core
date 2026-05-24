@@ -298,6 +298,27 @@ async def _real_ingest(
                 "status": "connected",
             })
 
+        # ---- repo map: extract symbol outline while local files still exist ----
+        try:
+            from nexus.retrieval.repomap import (
+                extract_repo_map,
+                repomap_path_for,
+                save_repo_map,
+            )
+
+            await _emit(q, "info", "Building repo map (tree-sitter symbol outline)…")
+            rm = await asyncio.to_thread(extract_repo_map, local_root)
+            state_dir = config.storage.proposal_queue.parent
+            save_repo_map(rm, repomap_path_for(state_dir, product_id))
+            await _emit(
+                q,
+                "info",
+                f"Repo map: {len(rm.symbols)} symbols across {rm.file_count} files",
+            )
+        except Exception as e:
+            log.warning("repomap build failed: %s", e)
+            await _emit(q, "warn", f"Repo map build failed: {e} (council will still run)")
+
     except Exception as e:
         log.exception(
             "sync_source failed for product=%s source=%s", product_id, source.get("name")

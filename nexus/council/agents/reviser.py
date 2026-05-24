@@ -25,6 +25,7 @@ from nexus.council.state import (
     DeliberationMessage,
 )
 from nexus.llm.client import ChatClient, TokenUsage
+from nexus.retrieval.repomap import load_repo_map_for_product, topic_bias_terms
 from nexus.skills.models import SkillProposal, compute_confidence
 
 log = logging.getLogger(__name__)
@@ -107,8 +108,14 @@ async def run(
         or "(none listed)"
     )
 
+    repo_map = load_repo_map_for_product(config, state["product_id"])
+    repo_map_block = repo_map.render(
+        bias_terms=topic_bias_terms(state["topic"]), token_budget=500
+    )
+    system_prompt = _SYSTEM if not repo_map_block else f"{_SYSTEM}\n\n{repo_map_block}"
+
     messages = [
-        {"role": "system", "content": _SYSTEM},
+        {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": _USER_TEMPLATE.format(
@@ -132,7 +139,7 @@ async def run(
         missing_summary = _format_missing(report)
         log.info("reviser: section-fill pass — %s", missing_summary)
         fill_messages = [
-            {"role": "system", "content": _SYSTEM},
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": _SECTION_FILL_TEMPLATE.format(

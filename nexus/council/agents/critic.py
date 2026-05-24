@@ -25,6 +25,7 @@ from nexus.council.state import (
 )
 from nexus.llm.client import ChatClient
 from nexus.retrieval.pipeline import RetrievalContext, retrieve
+from nexus.retrieval.repomap import load_repo_map_for_product, topic_bias_terms
 from nexus.skills.models import Critique, SkillProposal
 
 log = logging.getLogger(__name__)
@@ -105,8 +106,14 @@ async def run(
         proposal=proposal,
     )
 
+    repo_map = load_repo_map_for_product(config, state["product_id"])
+    repo_map_block = repo_map.render(
+        bias_terms=topic_bias_terms(state["topic"]), token_budget=500
+    )
+    system_prompt = _SYSTEM if not repo_map_block else f"{_SYSTEM}\n\n{repo_map_block}"
+
     messages = [
-        {"role": "system", "content": _SYSTEM},
+        {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": _USER_TEMPLATE.format(
