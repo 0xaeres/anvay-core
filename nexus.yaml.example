@@ -54,7 +54,7 @@ ingestion:
   enrich_chunks:
     docs: true
     code: true
-  embed_batch_size: 16
+  embed_batch_size: 16          # client-side request fanout; llama.cpp physical batch is EMBEDDER_UBATCH
   quality_gate_threshold: 0.3
   file_batch_size: 20
   read_concurrency: 5

@@ -20,14 +20,15 @@ Read these in order:
 Nexus is a **per-product RAG + curation pipeline** with a hard human-in-the-
 loop gate. The flow has three big phases.
 
-**Phase 1 — Ingest (continuous).** A connector hands the pipeline a stream of
-`(uri, content)` pairs. The chunker carves them on semantic boundaries
-(tree-sitter for code, headings for docs). The enricher prepends contextual
-prefixes (HQE for code; Anthropic Contextual Retrieval for docs). The
-embedder + sparse encoder turn each chunk into a `(dense, sparse)` vector
-pair. The indexer upserts into Qdrant, sharded on `product_id`. A
-tree-sitter walk also persists a repo-map JSON for the council to use as
-navigational context.
+**Phase 1 — Ingest (continuous).** A source yields resources. Nexus first
+computes a source manifest diff in SQLite (`added`, `updated`, `removed`,
+`unchanged`) using canonical resource URIs + SHA-256 content hashes +
+embedding/enrichment config version. Unchanged resources are skipped. Changed
+resources are chunked on semantic boundaries (tree-sitter for code, headings
+for docs), enriched (HQE for code; Anthropic Contextual Retrieval for docs),
+embedded dense + BM25-sparse, and upserted into Qdrant. Only after the new
+vectors are safely written do we delete stale old chunk IDs. A tree-sitter
+repo map is also persisted for council prompt context.
 
 **Phase 2 — Council (on demand).** A user clicks "Run Council" on a topic.
 A 3-node LangGraph state machine fires: **Drafter** retrieves and writes a
@@ -71,10 +72,10 @@ api/
 ingest/
   chunker.py        tree-sitter (Py/TS/TSX/JS/Rust/Go) + heading-aware markdown
   enricher.py       HQE for code | Anthropic Contextual Retrieval for docs
-  embedder.py       Jina v4 via llama.cpp
-  indexer.py        Qdrant upsert (dense + BM25)
-  pipeline.py       run_ingest() — batches files, calls chunk → enrich → embed → upsert
-  incremental.py    reindex_resource() — delta path used by the daemon
+  embedder.py       Jina v4 via llama.cpp/OpenAI-compatible embeddings
+  indexer.py        Qdrant upsert + delete-by-id (dense + BM25)
+  pipeline.py       run_ingest() — manifest diff → chunk → enrich → embed → upsert → cleanup
+  incremental.py    legacy per-resource reindex path used by the daemon
   models.py         Chunk, ResourceRef, ChunkKind, EmbeddedChunk
 
 retrieval/
@@ -123,7 +124,7 @@ setup/
   kv.py             SetupKV (skills_repo URL persistence)
 
 daemon.py           Continuous index daemon — bootstrap + manager.updates() loop
-registry.py         SQLite products/users/runtime-sources
+registry.py         SQLite products/users/runtime-sources/sync manifests
 config.py           NexusConfig + ${env} substitution
 cli.py              `nexus council draft`, `nexus skill show`, etc.
 ```
@@ -161,7 +162,7 @@ components/
 lib/
   api/index.ts      One typed function per backend endpoint
   types.ts          Domain types (Skill, SkillProposal, CouncilSession, …)
-  product-context.tsx  React context for current_product + perms
+  product-context.ts  React context for current product + perms
 ```
 
 See [`../nexus-ui/DESIGN.md`](../nexus-ui/DESIGN.md) for the design system
@@ -181,18 +182,60 @@ rules + IA contract.
    background task; returns immediately.
 5. `_sync_source_contents`:
    - For `github`: validates every repo URL first, then shallow-clones each
-     repo to a tempdir and aggregates indexed resource counts.
+     repo to a tempdir. The temp path is never stored in Qdrant; resources
+     use canonical URIs like `github:owner/repo/path/to/file.py`.
    - For `filesystem`: opens the configured root.
    - `_emit("info", "Counting files…")` over an asyncio.Queue.
    - Iterates `LocalFsSource.list_resources()` to count.
    - `_emit("started", total=N)`.
-   - Wraps the source in `_ProgressAdapter` which emits one structured
-     `progress` event per resource read.
-   - `await run_ingest(...)` — the main pipeline.
+   - Wraps the source in `_CanonicalProgressSource`, which maps real local
+     files to stable resource URIs and emits `progress` events per read.
+   - `await run_ingest(..., registry=registry, source_key=...)` — the delta
+     pipeline. It loads previous manifest rows from SQLite, reads resources
+     to hash them, skips unchanged rows, embeds only added/updated rows,
+     deletes removed resources, and updates the manifest only after Qdrant
+     writes/deletes succeed.
    - After success: builds + persists the repo map; emits `success`.
 6. UI consumes `sourceLogUrl(productId, sourceId)` via `EventSource`. The
-   `IngestionProgress.tsx` component renders the bar + log, auto-retries
-   once on `level=warn` (embed-token-limit hint).
+   `IngestionProgress.tsx` component renders the bar + log. SSE events are
+   plain JSON with `level`, `stage`, `msg`, `ts`, and optional counters. Key
+   stages: `read`, `diff`, `skip`, `chunk`, `enrich`, `embed`, `sparse`,
+   `upsert`, `cleanup_stale`, `delete_removed`, `manifest_update`, `complete`.
+
+### Trace 1b — Why resync is delta-safe
+
+Qdrant is a derived index, not the source of truth. The source of truth for
+sync state is SQLite:
+
+- `source_resources(product_id, source_key, resource_uri, content_hash, ...,
+  chunk_ids_js, embedding_version)` stores the last successfully indexed
+  version of each resource.
+- `source_sync_runs(...)` stores one row per sync attempt and its final diff
+  counts.
+
+On each resync, `run_ingest()` does:
+
+1. Load existing manifest rows for `(product_id, source_key)`.
+2. List current resources and read each one once to compute a SHA-256 hash.
+3. Classify:
+   - **added**: no manifest row.
+   - **updated**: hash changed, or embedding/enrichment config version changed.
+   - **unchanged**: hash + embedding version match; skip chunk/enrich/embed.
+   - **removed**: manifest row is absent from the current source listing.
+4. For added/updated: chunk → enrich → dense embed → BM25 sparse encode →
+   Qdrant upsert. Then delete stale old chunk IDs not present in the new
+   chunk set. Then upsert the manifest row.
+5. For removed: delete old chunk IDs from Qdrant. Only then delete the
+   manifest row, so a failed delete retries on the next sync.
+
+This ordering prevents knowledge-base poisoning:
+
+- Old vectors remain available until replacement vectors are successfully
+  written.
+- Failed embeds do not update manifest rows, so retry still sees the resource
+  as changed.
+- Deleted files do not leave orphan chunks once Qdrant deletion succeeds.
+- GitHub temp clone paths do not leak into Qdrant payloads.
 
 ### Trace 2 — Run a council session
 
@@ -259,6 +302,19 @@ make services-up           # Qdrant + llama.cpp embedder/reranker
 uv run uvicorn nexus.api.app:app --port 8000 --reload
 ```
 
+On Apple Silicon, `scripts/serve-embedder.sh` and `scripts/serve-reranker.sh`
+auto-detect Metal (`--n-gpu-layers 999`). On non-GPU machines they fall back
+to CPU. Useful knobs:
+
+```bash
+EMBEDDER_DEVICE=cpu RERANKER_DEVICE=cpu make services-up   # force CPU
+EMBEDDER_UBATCH=2048 EMBEDDER_BATCH=2048 make services-up  # larger RAM machine
+NEXUS_LOG_LEVEL=DEBUG uv run uvicorn nexus.api.app:app --port 8000 --reload
+```
+
+Default embedder physical batch is intentionally conservative (`1024`) for a
+MacBook Air M2 with 8GB RAM.
+
 ### Frontend
 
 ```bash
@@ -271,7 +327,7 @@ npm run dev                # http://localhost:3000
 
 ```bash
 uv run ruff check nexus tests           # must be clean
-uv run pytest -q                        # 136 unit + integration
+uv run pytest -q                        # unit + integration (146 at last count)
 uv run pytest -m eval                   # opt-in retrieval benchmark
                                         #   (skips if Qdrant/embedder/reranker absent)
 ```
@@ -325,6 +381,10 @@ Roll back.
 **5. Read the repo map your own ingest built.** Cat
 `./data/repomaps/<your-product>.json` and find your favourite class. You
 should see its line number + signature.
+
+**6. Watch delta sync skip unchanged files.** Sync a product twice without
+changing files. The second SSE stream should show `skip` events and final
+`unchanged=N`, with no chunk/enrich/embed work for unchanged resources.
 
 ## 8. Recipes
 
@@ -396,7 +456,9 @@ the marker is safe to leave in CI behind a conditional.
   plain dicts only in tests.
 - **Async by default** for anything touching the network or doing
   significant I/O.
-- **No `print()`.** Use `log = logging.getLogger(__name__)`.
+- **No `print()`.** Use `log = logging.getLogger(__name__)`. API startup
+  calls `nexus.logging_config.setup_logging()`, and `NEXUS_LOG_LEVEL=DEBUG`
+  is the normal way to turn up backend detail.
 - Import order: stdlib → third-party → `nexus.*`. Ruff/isort enforces.
 - **Type-annotate everything** that crosses a function boundary. The
   ergonomic value of annotations on locals is debatable; on signatures
@@ -413,6 +475,9 @@ the marker is safe to leave in CI behind a conditional.
 | **proposal** | The council's draft of a skill. Lives in SQLite until a human approves / rejects / edits. |
 | **session** | One council run; produces one proposal. |
 | **chunk** | A slice of an ingested resource (function, class, paragraph). Has `kind` ∈ {CODE, DOC}, `context_path`, `context_summary`. |
+| **manifest** | SQLite sync state for a source resource: canonical URI, content hash, chunk IDs, embedding version. Prevents full re-embed and stale-vector poisoning. |
+| **source_key** | Stable per-product/per-source/per-root key used to group manifest rows. GitHub multi-repo sources get one key per repo. |
+| **canonical URI** | Stable `resource_uri` stored in Qdrant and the manifest. Filesystem uses absolute paths; GitHub uses `github:owner/repo/path`. |
 | **HQE** | Hypothetical Question Embeddings — 3 questions a developer would type to find a code chunk, prepended at embed time. |
 | **Contextual Retrieval (CR)** | Anthropic's "situate this chunk within the document" prefix; the doc analogue of HQE. |
 | **repo map** | tree-sitter symbol outline of a product's source tree, injected into council system prompts. |

@@ -157,17 +157,47 @@ overwrites the same Qdrant point.
 ## 3. Ingestion Pipeline
 
 `nexus/ingest/pipeline.py::run_ingest()` orchestrates the per-product flow.
-The connector hands us `(ResourceRef, content)` pairs; the pipeline does:
+When called from the source sync route it receives the SQLite `Registry` and a
+stable `source_key`, which enables delta-safe resync. The pipeline does:
 
 ```
-chunk_resource(content) ──► enricher.enrich(chunks, doc_contents) ──►
-  embedder.embed_chunks() ──► aencode_passages() (BM25) ──► indexer.upsert()
+list resources ──► read + SHA-256 hash ──► manifest diff
+  ├─ unchanged ──► skip
+  ├─ removed   ──► Qdrant delete IDs ──► delete manifest row
+  └─ added/updated ──► chunk ──► enrich ──► dense embed ──► BM25 sparse
+                    ──► Qdrant upsert ──► delete stale old IDs
+                    ──► upsert manifest row
 ```
 
 Files batch in groups of `IngestionCfg.file_batch_size` (default 20 on M2/8GB,
 50 on 16GB+). Within a batch reads are concurrent at
 `IngestionCfg.read_concurrency` (5 / 10). The embedder is called once per
-batch — never per file.
+changed batch, never for unchanged resources.
+
+### Delta-Safe Manifest (`nexus/registry.py`)
+
+Qdrant is a derived index. SQLite is the source of truth for what has been
+successfully indexed:
+
+- `source_resources` primary key: `(product_id, source_key, resource_uri)`.
+  Stores `content_hash`, `mime`, `size_bytes`, `last_seen_sync`,
+  `chunk_ids_js`, `indexed_at`, and `embedding_version`.
+- `source_sync_runs` stores sync attempt start/finish timestamps, diff counts,
+  and status.
+
+`embedding_version(config)` hashes the embedding provider/model/url, the light
+enricher provider/model/base URL, and enrichment toggles. If any of those
+change, rows classify as `updated` and re-embed on the next sync.
+
+Ordering rules:
+
+1. Added/updated resources: write replacement Qdrant points first.
+2. Delete old stale chunk IDs only after replacement upsert succeeds.
+3. Update manifest row only after Qdrant upsert + stale cleanup succeeds.
+4. Removed resources: delete Qdrant IDs first, then delete manifest row.
+
+These rules prevent poisoning: failed embeds keep old good vectors and manifest
+state; failed deletes keep manifest rows so cleanup retries later.
 
 ### Chunker (`nexus/ingest/chunker.py`)
 
@@ -178,7 +208,8 @@ batch — never per file.
   its heading hierarchy (e.g. `"Auth / API Keys / Rotating"`).
 - **Plain text**: char splitter with overlap.
 
-Sizing (tuned for llama.cpp `--ubatch-size 512`):
+Sizing (defaults target a MacBook Air M2/8GB running llama.cpp with
+`EMBEDDER_UBATCH=1024`):
 
 ```
 MAX_CHUNK_CHARS    = 1200   # ~300-400 tokens after enricher prefix
@@ -186,7 +217,9 @@ CHAR_SPLIT_TARGET  = 700
 CHAR_SPLIT_OVERLAP = 70
 ```
 
-Don't raise these without first checking that the embedder won't truncate.
+Don't raise these without checking llama.cpp physical batch errors in the
+embedder log. For larger machines, raise `EMBEDDER_UBATCH`/`EMBEDDER_BATCH`;
+for constrained machines, lower chunk sizes instead.
 
 ### Enricher (`nexus/ingest/enricher.py`)
 
@@ -222,7 +255,16 @@ has the full doc, not just the chunk.
 OpenAI-compatible client against a llama.cpp server hosting
 **Jina Embeddings v4** (`jinaai/jina-embeddings-v4`, 2048-dim). The
 `text_for_embedding()` prefix (HQE or CR or `context_path`) is included in
-the input.
+the input. llama.cpp sometimes reports physical-batch token-limit failures as
+HTTP 500; `EmbedderClient` treats those as non-retryable request/config errors
+instead of burning retry backoff.
+
+`scripts/serve-embedder.sh` exposes:
+
+- `EMBEDDER_DEVICE=auto|metal|gpu|cpu` (auto: Apple Silicon → Metal,
+  Nvidia → GPU, otherwise CPU).
+- `EMBEDDER_BATCH` and `EMBEDDER_UBATCH` (default `1024` for M2/8GB).
+- `EMBEDDER_GPU_LAYERS` for manual override.
 
 ### Indexer (`nexus/ingest/indexer.py`)
 
@@ -231,9 +273,14 @@ Qdrant collections (per `nexus.yaml`):
 - `nexus_code` — code chunks, dense + sparse vectors
 - `nexus_text` — doc chunks, dense + sparse vectors
 
-Both collections shard payloads on `product_id`. Sparse vectors come from
-BM25 (`Qdrant/bm25` via fastembed). One upsert per batch carries both
-dense and sparse for every chunk.
+Both collections filter payloads on `product_id`; all retrieval paths include
+that filter. Sparse vectors come from BM25 (`Qdrant/bm25` via fastembed). One
+upsert per changed batch carries both dense and sparse vectors for every chunk.
+
+Payload fields include `product_id`, `resource_uri`, `source_id`, `source_key`,
+`content_hash`, `embedding_version`, `indexed_at`, `kind`, line span,
+`context_path`, and `content`. The indexer can delete by `resource_uri` for
+repair paths or by explicit chunk IDs for delta-safe stale cleanup.
 
 ### Repo Map (`nexus/retrieval/repomap.py`)
 
@@ -257,16 +304,13 @@ files, lexical + structural ranking is within striking distance and avoids
 `networkx` as a dependency. Add PR back if `tests/eval/queries.json` proves
 the gap matters.
 
-### Incremental Ingest (`nexus/ingest/incremental.py`)
+### Legacy Per-Resource Ingest (`nexus/ingest/incremental.py`)
 
-`reindex_resource(product_id, resource, content)`:
-
-1. Delete every existing chunk for this `resource_uri` from Qdrant.
-2. `chunk_resource()` → `enricher.enrich(chunks, doc_contents={uri: content})`.
-3. Embed + sparse-encode → upsert.
-
-Resync is **delta-only** — only the changed resource is touched. Don't
-reintroduce a full re-ingest path.
+`reindex_resource(product_id, resource, content)` is the daemon's older
+per-resource repair path. It deletes existing chunks for one `resource_uri`,
+then chunks/enriches/embeds/upserts the whole resource. Product-source resyncs
+must use the manifest-aware `run_ingest(..., registry=..., source_key=...)`
+path instead; do not reintroduce blind full-source upserts.
 
 ## 4. Retrieval Pipeline
 
@@ -465,12 +509,21 @@ ingesting > none`. `councilInProgress` is independent so the UI can render
 | `POST ""` | Add a runtime source to the registry. |
 | `DELETE /{source_id}` | Remove from registry. |
 | `POST /{source_id}/sync` | Kick off ingest as a background task. Returns `{queued: true}`. |
-| `GET /{source_id}/log` | SSE stream of structured ingest events: `info`, `progress` (with `done/total/pct`), `started`, `warn`, `success`, `done`, `error`. |
+| `GET /{source_id}/log` | SSE stream of JSON ingest events. Each event has `level`, `stage`, `msg`, `ts`, plus counters/URI/batch fields when relevant. |
 
 GitHub sync validates all repo URLs before cloning, shallow-clones every repo
-listed in `config.repos`, ingests each clone under the same product/source, and
-stores an aggregate `resourceCount`. Sync emits one combined repo map after a
-successful ingest (warn on failure — the council still runs without one).
+listed in `config.repos`, and ingests each clone under the same product. GitHub
+resources use canonical `resource_uri` values like `github:owner/repo/path.py`;
+temp clone directories never enter Qdrant or the manifest. A multi-repo source
+gets one manifest `source_key` per repo, so resyncing one repo does not mark
+the others removed. Sync stores aggregate `resourceCount` and emits one
+combined repo map after successful ingest (warn on failure — the council still
+runs without one).
+
+Important SSE stages: `read`, `diff`, `skip`, `chunk`, `enrich`, `embed`,
+`sparse`, `upsert`, `cleanup_stale`, `delete_removed`, `manifest_update`,
+`complete`. The final success message includes `added`, `updated`, `removed`,
+`unchanged`, and `failed` counts.
 
 Confluence and Jira are reserved for later source config screens, not product
 onboarding. When added, Confluence must collect `base_url`, service-account
@@ -631,7 +684,8 @@ repo map, or contextual retrieval.
 - **Qdrant** — `nexus_code` + `nexus_text` collections; product_id payload
   filter on every query.
 - **SQLite** — `proposals` + `sessions` (`storage.proposal_queue`);
-  `registry.db` (products, users, runtime sources, setup KV).
+  `registry.db` (products, users, runtime sources, sync manifests, sync runs,
+  setup KV).
 - **Local files** — `<state_dir>/repomaps/<product_id>.json` per product.
 
 ## 12. Tech Stack
@@ -643,8 +697,8 @@ repo map, or contextual retrieval.
 - **tree-sitter** for code parsing (Python, TS, TSX, JS, Rust, Go).
 - **Qdrant** for vector + sparse storage. **fastembed** for BM25 sparse
   encoding.
-- **Jina v4** embeddings + **Jina Reranker v3** served via llama.cpp on
-  Metal in dev; CPU in Docker for portability.
+- **Jina v4** embeddings + **Jina Reranker v3** served via llama.cpp. Local
+  scripts auto-detect Metal/GPU/CPU and expose env overrides.
 - **DeepInfra** (OpenAI-compatible) for council + enricher LLMs in dev.
   Swap the `provider` + `base_url` to point at any compatible endpoint.
 - **MCP** (stdio transport) for the agent-facing skill server.

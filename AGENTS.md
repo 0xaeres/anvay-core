@@ -15,8 +15,9 @@ client. The sibling repo `../nexus-ui/` is the Next.js web UI.
 
 ## The two invariants — never break these
 
-1. **Product = root entity.** Every resource carries `product_id`; Qdrant shards
-   on it. Code that crosses the product boundary is a tenancy bug.
+1. **Product = root entity.** Every resource carries `product_id`; Qdrant
+   payload filters/indexes on it. Code that crosses the product boundary is a
+   tenancy bug.
    Business units are metadata only in v1 (`owner.team`); do not add BU routes,
    tables, or tenancy semantics without a product decision.
 2. **Humans approve, agents draft.** The council writes *proposals*. Nothing
@@ -24,9 +25,10 @@ client. The sibling repo `../nexus-ui/` is the Next.js web UI.
 
 ## Pipeline shape — keep this honest
 
-- **Resync is delta-only.** Every sync returns `{added, updated, removed,
-  unchanged}` and only the changed chunks are re-embedded. Don't reintroduce
-  full re-ingest paths.
+- **Resync is delta-only.** Every sync computes `{added, updated, removed,
+  unchanged}` from the SQLite source manifest. Unchanged resources are skipped;
+  changed resources are re-embedded before stale old chunk IDs are deleted.
+  Don't reintroduce blind full-source upserts.
 - **Retrieval is three stages: dense + BM25 → RRF → Jina reranker.** No
   classifier, no HyDE, no semantic cache, no graph expansion, no circuit
   breakers. Don't reintroduce them without an eval-set win to justify it.
@@ -60,7 +62,7 @@ client. The sibling repo `../nexus-ui/` is the Next.js web UI.
 
 ```bash
 uv run ruff check nexus tests        # lint — must be clean
-uv run pytest -q                     # tests — must be green (136 at last count)
+uv run pytest -q                     # tests — must be green (146 at last count)
 ```
 
 The retrieval eval (`pytest -m eval`) is opt-in — it skips when

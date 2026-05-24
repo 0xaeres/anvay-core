@@ -110,6 +110,19 @@ make dev                              # Qdrant + llama.cpp embedder/reranker + A
 
 If you only want the backing services without the API, use `make services-up`.
 
+The local llama.cpp scripts auto-detect acceleration:
+
+- Apple Silicon → Metal (`--n-gpu-layers 999`)
+- Nvidia host → GPU
+- otherwise → CPU
+
+Defaults are conservative for a MacBook Air M2 with 8GB RAM:
+
+```bash
+EMBEDDER_DEVICE=cpu RERANKER_DEVICE=cpu make services-up   # force CPU
+EMBEDDER_UBATCH=2048 EMBEDDER_BATCH=2048 make services-up  # larger RAM
+```
+
 ### Run the API
 
 ```bash
@@ -146,7 +159,10 @@ Visit `http://localhost:3000/setup`:
 - Create the product (`/new`)
 - Provide the product service-account GitHub PAT and one or more GitHub repo
   URLs; Nexus creates the product-scoped GitHub source and starts ingest
-- Trigger ingestion; watch the live SSE sync log
+- Trigger ingestion; watch the live SSE sync log. Resync is delta-safe:
+  unchanged files are skipped, changed files are embedded before stale vectors
+  are deleted, and removed files are cleaned from Qdrant after successful
+  delete-by-ID.
 - Start a council session; watch the live deliberation
 - Approve / edit / reject the proposal at `/p/<id>/review`
 
@@ -197,8 +213,9 @@ The MCP server exposes:
 nexus/
 ├── nexus/
 │   ├── api/           FastAPI routes (/products, /sources, /council, /skills, /setup)
-│   ├── ingest/        Chunker (tree-sitter), enricher (HQE + Anthropic CR),
-│   │                  embedder (Jina v4), indexer (Qdrant), pipeline
+│   ├── ingest/        Delta-safe manifest sync, chunker (tree-sitter),
+│   │                  enricher (HQE + Anthropic CR), embedder (Jina v4),
+│   │                  indexer (Qdrant dense + BM25)
 │   ├── retrieval/     Hybrid pipeline (dense + BM25 → RRF → Jina reranker),
 │   │                  repomap (aider-style symbol outline)
 │   ├── council/       LangGraph 3-node council: Drafter, Critic, Reviser
@@ -220,7 +237,7 @@ nexus/
 
 ```bash
 uv run ruff check nexus tests
-uv run pytest -q                       # 136 tests, ~2s
+uv run pytest -q                       # 146 tests, ~2s
 uv run pytest -m eval                  # opt-in retrieval benchmark
 ```
 
