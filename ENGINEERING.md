@@ -598,12 +598,27 @@ vector_store:
     text: nexus_text
 
 models:
-  council:                     # drafter + critic + reviser
+  council:                     # default for drafter + critic + reviser
     provider: deepinfra
     model: Qwen/Qwen3-Max-Thinking
     api_key: ${DEEPINFRA_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
-  # Optional: drafter / critic / reviser override council per role.
+  # Optional role-specific overrides. Omit any role to use models.council.
+  drafter:
+    provider: deepinfra
+    model: Qwen/Qwen3-Max-Thinking
+    api_key: ${DEEPINFRA_API_KEY}
+    base_url: https://api.deepinfra.com/v1/openai
+  critic:
+    provider: deepinfra
+    model: Qwen/Qwen3-Max-Thinking
+    api_key: ${DEEPINFRA_API_KEY}
+    base_url: https://api.deepinfra.com/v1/openai
+  reviser:
+    provider: deepinfra
+    model: Qwen/Qwen3-Max-Thinking
+    api_key: ${DEEPINFRA_API_KEY}
+    base_url: https://api.deepinfra.com/v1/openai
   light:                       # enricher (HQE + Anthropic CR)
     provider: deepinfra
     model: google/gemma-3-4b-it
