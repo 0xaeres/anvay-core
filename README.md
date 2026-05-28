@@ -189,7 +189,31 @@ uv run nexus council draft \
 open http://localhost:3000/p/<your-product-id>/review
 ```
 
-### 4. Use Nexus from Claude Desktop
+### 4. Delete a product completely
+
+Use the guarded CLI cleanup when a test product needs to be removed from local
+state and Qdrant.
+
+```bash
+# Dry-run first. Shows every product-scoped thing that would be removed.
+uv run nexus delete-product --product <your-product-id>
+
+# Actually delete.
+uv run nexus delete-product --product <your-product-id> --yes
+```
+
+This removes the product row, sources, source manifests, sync runs, proposals,
+council sessions, approved `.skill.md` files, Qdrant points from both
+collections, the persisted repo map, and LangGraph checkpoints for that
+product's sessions.
+
+If Qdrant is offline and you only want local SQLite/filesystem cleanup:
+
+```bash
+uv run nexus delete-product --product <your-product-id> --yes --skip-qdrant
+```
+
+### 5. Use Nexus from Claude Desktop
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 

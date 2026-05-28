@@ -235,6 +235,26 @@ class ProposalQueue:
             rows = conn.execute(sql, args).fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    def delete_product(self, product_id: str) -> dict[str, int | list[str]]:
+        with self._conn() as conn:
+            session_ids = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM sessions WHERE product_id = ?", (product_id,)
+                ).fetchall()
+            ]
+            proposal_count = conn.execute(
+                "SELECT COUNT(*) FROM proposals WHERE product_id = ?", (product_id,)
+            ).fetchone()[0]
+            session_count = len(session_ids)
+            conn.execute("DELETE FROM proposals WHERE product_id = ?", (product_id,))
+            conn.execute("DELETE FROM sessions WHERE product_id = ?", (product_id,))
+        return {
+            "proposals": proposal_count,
+            "sessions": session_count,
+            "session_ids": session_ids,
+        }
+
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)

@@ -286,10 +286,38 @@ def add_source_methods(cls):
             )
             return cur.rowcount > 0
 
+    def delete_product(self, product_id: str) -> dict[str, int]:
+        """Delete product metadata plus source manifests/runs from registry DB."""
+        with self._conn() as conn:
+            counts = {
+                "source_resources": conn.execute(
+                    "SELECT COUNT(*) FROM source_resources WHERE product_id = ?",
+                    (product_id,),
+                ).fetchone()[0],
+                "source_sync_runs": conn.execute(
+                    "SELECT COUNT(*) FROM source_sync_runs WHERE product_id = ?",
+                    (product_id,),
+                ).fetchone()[0],
+                "sources": conn.execute(
+                    "SELECT COUNT(*) FROM sources WHERE product_id = ?",
+                    (product_id,),
+                ).fetchone()[0],
+                "products": conn.execute(
+                    "SELECT COUNT(*) FROM products WHERE id = ?",
+                    (product_id,),
+                ).fetchone()[0],
+            }
+            conn.execute("DELETE FROM source_resources WHERE product_id = ?", (product_id,))
+            conn.execute("DELETE FROM source_sync_runs WHERE product_id = ?", (product_id,))
+            conn.execute("DELETE FROM sources WHERE product_id = ?", (product_id,))
+            conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
+        return counts
+
     cls.list_sources = list_sources
     cls.get_source = get_source
     cls.upsert_source = upsert_source
     cls.delete_source = delete_source
+    cls.delete_product = delete_product
     return cls
 
 

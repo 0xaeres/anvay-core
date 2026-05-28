@@ -18,6 +18,33 @@ council_app = typer.Typer(help="LLM council commands.", no_args_is_help=True)
 app.add_typer(council_app, name="council")
 
 
+def _echo_delete_report(report, *, dry_run: bool) -> None:
+    prefix = "Would delete" if dry_run else "Deleted"
+    typer.echo(f"{prefix} product '{report.product_id}':")
+    typer.echo(
+        "  registry   : "
+        f"{report.registry.get('products', 0)} product, "
+        f"{report.registry.get('sources', 0)} sources, "
+        f"{report.registry.get('source_resources', 0)} manifests, "
+        f"{report.registry.get('source_sync_runs', 0)} sync runs"
+    )
+    typer.echo(
+        "  council    : "
+        f"{report.queue.get('proposals', 0)} proposals, "
+        f"{report.queue.get('sessions', 0)} sessions, "
+        f"{report.checkpoints} checkpoints"
+    )
+    typer.echo(f"  skills     : {report.skills} files")
+    if report.qdrant:
+        qdrant_counts = ", ".join(
+            f"{collection}={count}" for collection, count in report.qdrant.items()
+        )
+        typer.echo(f"  qdrant     : {qdrant_counts}")
+    else:
+        typer.echo("  qdrant     : skipped")
+    typer.echo(f"  repomap    : {1 if report.repomap_deleted else 0} file")
+
+
 # ---------------------------------------------------------------- init
 
 
@@ -36,6 +63,37 @@ def init(
         raise typer.Exit(code=1)
     typer.echo("nexus init — not yet implemented.")
     typer.echo(f"For now: `cp nexus.yaml.example {config_path}` and edit by hand.")
+
+
+@app.command("delete-product")
+def delete_product_cmd(
+    product: str = typer.Option(..., "--product", "-p", help="Product ID to delete."),
+    config_path: Path = typer.Option(Path("nexus.yaml"), "--config", "-c"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Actually delete. Default is dry-run."),
+    skip_qdrant: bool = typer.Option(False, "--skip-qdrant", help="Skip Qdrant cleanup."),
+) -> None:
+    """Delete one product and all product-scoped local/Qdrant state."""
+    from nexus.config import NexusConfig
+    from nexus.tools.delete_product import delete_product
+
+    config = NexusConfig.load(config_path)
+    try:
+        report = asyncio.run(
+            delete_product(
+                product_id=product,
+                config=config,
+                dry_run=not yes,
+                skip_qdrant=skip_qdrant,
+            )
+        )
+    except Exception as e:
+        typer.secho(f"delete failed: {type(e).__name__}: {e}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+    _echo_delete_report(report, dry_run=not yes)
+    if not yes:
+        typer.echo("")
+        typer.secho("Dry run only. Re-run with --yes to delete.", fg=typer.colors.YELLOW)
 
 
 # ---------------------------------------------------------------- ingest

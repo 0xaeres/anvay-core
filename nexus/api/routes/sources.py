@@ -38,6 +38,7 @@ log = logging.getLogger(__name__)
 # Per-source log queues: product_id:source_id → asyncio.Queue[dict | None]
 # None signals end-of-stream to a waiting SSE subscriber.
 _log_queues: dict[str, asyncio.Queue] = {}
+_sync_tasks: dict[str, asyncio.Task] = {}
 
 router = APIRouter(prefix="/products/{product_id}/sources", tags=["sources"])
 
@@ -153,8 +154,22 @@ async def sync_source(
 
     source = runtime or config_sources[source_id]
     key = f"{product_id}:{source_id}"
+    existing = _sync_tasks.get(key)
+    if existing and not existing.done():
+        return {
+            "ok": True,
+            "queued": False,
+            "already_running": True,
+            "product": product_id,
+            "source": source_id,
+        }
+    if existing and existing.done():
+        _sync_tasks.pop(key, None)
+
     q: asyncio.Queue = asyncio.Queue(maxsize=2048)
     _log_queues[key] = q
+    if runtime:
+        registry.upsert_source({**runtime, "status": "syncing"})
 
     async def _run() -> None:
         await _sync_source_contents(
@@ -167,7 +182,14 @@ async def sync_source(
         )
 
     task = asyncio.create_task(_run())
-    task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+    _sync_tasks[key] = task
+
+    def _cleanup_task(t: asyncio.Task) -> None:
+        _sync_tasks.pop(key, None)
+        if not t.cancelled():
+            t.exception()
+
+    task.add_done_callback(_cleanup_task)
     return {"ok": True, "queued": True, "product": product_id, "source": source_id}
 
 

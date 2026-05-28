@@ -496,7 +496,7 @@ as encrypted source config, and `repos` may contain multiple GitHub HTTPS/SSH
 URLs. Credentials are scoped per source; there is no product-level credential
 bundle in v1.
 
-`currentStage` precedence (highest wins): `skill > review > council >
+`currentStage` precedence (highest wins): `review > skill > council >
 ingesting > none`. `councilInProgress` is independent so the UI can render
 "Run Council" vs "Council in progress" at the same stage.
 
@@ -508,7 +508,7 @@ ingesting > none`. `councilInProgress` is independent so the UI can render
 | `GET /{source_id}` | One source. |
 | `POST ""` | Add a runtime source to the registry. |
 | `DELETE /{source_id}` | Remove from registry. |
-| `POST /{source_id}/sync` | Kick off ingest as a background task. Returns `{queued: true}`. |
+| `POST /{source_id}/sync` | Kick off ingest as a background task. Returns `{queued: true}` or `{already_running: true}`. |
 | `GET /{source_id}/log` | SSE stream of JSON ingest events. Each event has `level`, `stage`, `msg`, `ts`, plus counters/URI/batch fields when relevant. |
 
 GitHub sync validates all repo URLs before cloning, shallow-clones every repo
@@ -703,6 +703,18 @@ repo map, or contextual retrieval.
   `registry.db` (products, users, runtime sources, sync manifests, sync runs,
   setup KV).
 - **Local files** — `<state_dir>/repomaps/<product_id>.json` per product.
+
+Product deletion is intentionally guarded behind the CLI:
+
+```bash
+uv run nexus delete-product --product <pid>        # dry-run
+uv run nexus delete-product --product <pid> --yes  # delete
+```
+
+It removes product-scoped registry rows, source manifests/runs, proposals,
+sessions, approved skill files, Qdrant payloads in both collections, repo map,
+and LangGraph checkpoints for that product's session IDs. `--skip-qdrant`
+skips vector cleanup for offline/local-only recovery.
 
 ## 12. Tech Stack
 

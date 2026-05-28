@@ -129,3 +129,45 @@ def test_github_sync_clones_all_repos_and_aggregates_count(
     updated = registry.get_source("demo", "github")
     assert updated is not None
     assert updated["resourceCount"] == 5
+
+
+def test_sync_source_dedupes_in_flight_runs(tmp_path: Path, monkeypatch) -> None:
+    registry = Registry(tmp_path / "registry.db")
+    root = tmp_path / "repo"
+    root.mkdir()
+    registry.upsert_source({
+        "product": "demo",
+        "name": "local",
+        "type": "filesystem",
+        "status": "connected",
+        "config": {"root": str(root)},
+        "resourceCount": 1,
+    })
+    cfg = _config(tmp_path)
+    started = 0
+
+    async def fake_sync_source_contents(**kwargs):
+        nonlocal started
+        started += 1
+        await asyncio.sleep(0.2)
+
+    monkeypatch.setattr(sources, "_sync_source_contents", fake_sync_source_contents)
+    sources._sync_tasks.clear()
+    async def scenario():
+        first = await sources.sync_source(
+            product_id="demo", source_id="local", config=cfg, registry=registry
+        )
+        second = await sources.sync_source(
+            product_id="demo", source_id="local", config=cfg, registry=registry
+        )
+        await asyncio.sleep(0.25)
+        return first, second
+
+    try:
+        first, second = asyncio.run(scenario())
+    finally:
+        sources._sync_tasks.clear()
+
+    assert first["queued"] is True
+    assert second["already_running"] is True
+    assert started == 1

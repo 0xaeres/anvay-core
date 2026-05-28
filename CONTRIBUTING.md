@@ -347,9 +347,15 @@ enricher, hybrid, rerank, repomap, or contextual-retrieval logic.
 # Run a council draft from the CLI (no UI):
 uv run nexus council draft --product my-api --topic "auth middleware"
 
-# Show a skill:
-uv run nexus skill show --product my-api --name auth-token-rotation
+# Dry-run product cleanup:
+uv run nexus delete-product --product my-api
+
+# Delete product-scoped SQLite rows, skills, repo map, checkpoints, and Qdrant points:
+uv run nexus delete-product --product my-api --yes
 ```
+
+`--skip-qdrant` keeps the command usable when Qdrant is offline, but leaves
+derived vectors behind until you clean that product payload later.
 
 ### MCP server
 

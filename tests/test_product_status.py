@@ -156,3 +156,15 @@ def test_status_stage_skill_when_approved_exists(client) -> None:
     body = c.get("/products/demo/status").json()
     assert body["currentStage"] == "skill"
     assert body["hasSkill"] is True
+
+
+def test_status_stage_review_when_pending_proposal_and_skill_exists(client) -> None:
+    c, registry, queue, store = client
+    _add_synced_source(registry, "demo")
+    store.save(_demo_skill("demo"))
+    queue.enqueue(_pending_proposal(), session_id="cs_done", product_id="demo")
+
+    body = c.get("/products/demo/status").json()
+
+    assert body["currentStage"] == "review"
+    assert body["hasSkill"] is True

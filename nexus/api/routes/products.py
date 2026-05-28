@@ -77,7 +77,7 @@ async def get_product_status(
 ) -> dict:
     """Single cheap call that powers project-card state in the dashboard.
 
-    Stage precedence (highest wins): skill > review > council > ingesting > none.
+    Stage precedence (highest wins): review > skill > council > ingesting > none.
     The `councilInProgress` flag is independent of stage so the UI can render
     "Run Council" vs "Council in progress" at the same stage.
     """
@@ -101,10 +101,10 @@ async def get_product_status(
         None,
     )
 
-    if has_skill:
-        stage = "skill"
-    elif has_pending:
+    if has_pending:
         stage = "review"
+    elif has_skill:
+        stage = "skill"
     elif has_embeddings:
         stage = "council"
     elif has_sources:
@@ -142,4 +142,3 @@ async def create_product(
         "onboardedAt": datetime.now(UTC).isoformat(),
     })
     return registry.get_product(id)
-

@@ -260,6 +260,30 @@ class Indexer:
             )
         return deleted
 
+    async def delete_by_product(self, *, product_id: str) -> dict[str, int]:
+        """Delete all points for a product from code/text collections."""
+        counts: dict[str, int] = {}
+        product_filter = qm.Filter(
+            must=[
+                qm.FieldCondition(
+                    key="product_id", match=qm.MatchValue(value=product_id)
+                )
+            ]
+        )
+        for coll in (self._code, self._text):
+            before = await self.client.count(
+                collection_name=coll,
+                count_filter=product_filter,
+                exact=True,
+            )
+            if before.count:
+                await self.client.delete(
+                    collection_name=coll,
+                    points_selector=qm.FilterSelector(filter=product_filter),
+                )
+            counts[coll] = before.count
+        return counts
+
     # ------------------------------------------------------------ helpers
 
     def _to_point(
