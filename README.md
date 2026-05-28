@@ -1,3 +1,16 @@
+<p align="center">
+  <img src="./docs/assets/nexus-wordmark.svg" alt="Nexus" width="280">
+</p>
+
+<p align="center">
+  <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-7C8CFF.svg"></a>
+  <img alt="Python 3.13+" src="https://img.shields.io/badge/python-3.13%2B-12121A.svg">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-backend-009688.svg">
+  <img alt="MCP-native" src="https://img.shields.io/badge/MCP-native-7C8CFF.svg">
+  <img alt="LLM Council" src="https://img.shields.io/badge/LLM-council-12121A.svg">
+  <img alt="RAG" src="https://img.shields.io/badge/RAG-dense%20%2B%20BM25%20%2B%20rerank-7C8CFF.svg">
+</p>
+
 # Nexus — Context Engine for Engineering Teams
 
 Nexus is a **sovereign, MCP-native context engine** for your codebase. It
@@ -262,4 +275,4 @@ index and confirm `recall@10` + `MRR` stay above the floors in
 
 ## License
 
-Proprietary — internal use only.
+MIT — see [LICENSE](./LICENSE).
