@@ -66,6 +66,47 @@ export function verifyToken(t: string): boolean { return true }
     assert ("function", "verifyToken") in kinds
 
 
+def test_extract_finds_required_polyglot_symbols(tmp_path: Path) -> None:
+    _write(tmp_path, "src/Greeter.java", """
+class Greeter {
+  public String greet(String name) {
+    return "hi " + name;
+  }
+}
+""".strip())
+    _write(tmp_path, "src/greeter.cpp", """
+namespace demo {
+class Greeter {
+public:
+  const char* greet() { return "hi"; }
+};
+int add(int a, int b) { return a + b; }
+}
+""".strip())
+    _write(tmp_path, "src/Greeter.kt", """
+class Greeter(val prefix: String) {
+  fun greet(name: String): String {
+    return prefix + name
+  }
+}
+""".strip())
+    _write(tmp_path, "src/Vault.sol", """
+contract Vault {
+  struct Account { uint bal; }
+  function deposit() public payable {
+  }
+}
+""".strip())
+
+    rm = extract_repo_map(tmp_path)
+    by_file = {(s.file, s.name) for s in rm.symbols}
+
+    assert ("src/Greeter.java", "Greeter") in by_file
+    assert ("src/greeter.cpp", "Greeter") in by_file
+    assert ("src/Greeter.kt", "Greeter") in by_file
+    assert ("src/Vault.sol", "Vault") in by_file
+
+
 def test_extract_skips_ignored_dirs(tmp_path: Path) -> None:
     _write(tmp_path, "node_modules/lib.js", "function junk() {}")
     _write(tmp_path, "src/real.py", "def real(): pass")

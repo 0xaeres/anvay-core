@@ -29,7 +29,7 @@ from tree_sitter import Node
 
 # We re-use the chunker's tree-sitter language registry so we don't drift on
 # which extensions / boundary nodes are supported.
-from nexus.ingest.chunker import _LANGS, _lang_for
+from nexus.ingest.chunker import _LANGS, _identifier_of, _lang_for
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +103,7 @@ _KIND_BY_NODE: dict[str, str] = {
     "method_definition": "method",
     "interface_declaration": "interface",
     "type_alias_declaration": "type",
+    "variable_declarator": "function",
     # Rust
     "function_item": "function",
     "struct_item": "struct",
@@ -112,6 +113,28 @@ _KIND_BY_NODE: dict[str, str] = {
     # Go
     "method_declaration": "method",
     "type_declaration": "type",
+    # Java / Kotlin
+    "enum_declaration": "enum",
+    "record_declaration": "type",
+    "constructor_declaration": "method",
+    "object_declaration": "object",
+    "property_declaration": "property",
+    "type_alias": "type",
+    # C++
+    "namespace_definition": "namespace",
+    "class_specifier": "class",
+    "struct_specifier": "struct",
+    "union_specifier": "type",
+    "enum_specifier": "enum",
+    "template_declaration": "template",
+    "declaration": "declaration",
+    # Solidity
+    "contract_declaration": "contract",
+    "library_declaration": "library",
+    "modifier_definition": "modifier",
+    "struct_declaration": "struct",
+    "event_definition": "event",
+    "error_declaration": "error",
 }
 
 # File extensions / directories to ignore even if tree-sitter could parse them.
@@ -211,15 +234,8 @@ def _extract_file(path: Path, text: str, cfg, root: Path) -> Iterator[Symbol]:
 
 def _name_of(node: Node, text: str) -> str | None:
     """Best-effort name extraction. Most languages expose a `name` field."""
-    name_node = node.child_by_field_name("name")
-    if name_node is None:
-        # Rust impl_item carries the type after `impl` — fall back to the
-        # raw `type` field which exposes it.
-        name_node = node.child_by_field_name("type")
-    if name_node is None:
-        return None
-    raw = text[name_node.start_byte:name_node.end_byte].strip()
-    return raw[:80] or None
+    raw = _identifier_of(node)
+    return raw[:80] if raw else None
 
 
 def _signature_of(node: Node, text: str) -> str:
@@ -243,11 +259,16 @@ _BASE_WEIGHT = {
     "struct": 2.0,
     "trait": 2.0,
     "interface": 2.0,
+    "contract": 2.0,
+    "library": 1.8,
     "enum": 1.8,
     "type": 1.5,
+    "template": 1.5,
+    "namespace": 1.4,
     "function": 1.2,
     "method": 1.0,
     "impl": 1.0,
+    "modifier": 1.0,
 }
 
 

@@ -44,6 +44,10 @@ dependencies = [
     "tree-sitter-javascript>=0.23",
     "tree-sitter-rust>=0.23",
     "tree-sitter-go>=0.23",
+    "tree-sitter-java>=0.23",
+    "tree-sitter-cpp>=0.23",
+    "tree-sitter-kotlin>=1.1",
+    "tree-sitter-solidity>=1.2",
     # Retrieval: BM25 sparse encoder
     "fastembed>=0.7",
     # Skills: YAML frontmatter

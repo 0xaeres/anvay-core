@@ -102,3 +102,110 @@ def test_text_for_embedding_prepends_context_summary() -> None:
     c.context_summary = "Q: How to produce a list from seed?\nQ: What does foo return?"
     assert c.text_for_embedding().startswith("Q: How to produce")
     assert c.content in c.text_for_embedding()
+
+
+def test_required_code_languages_produce_code_chunks_with_context_paths() -> None:
+    cases = {
+        "Greeter.java": (
+            "text/x-java",
+            "class Greeter {\n"
+            "  private String prefix;\n"
+            "  Greeter(String p) { this.prefix = p; }\n"
+            "  public String greet(String name) {\n"
+            "    return prefix + name;\n"
+            "  }\n"
+            "}\n",
+            "Greeter.greet",
+        ),
+        "widget.tsx": (
+            "text/x-typescript",
+            "type Props = { title: string };\n"
+            "export const Widget = (props: Props) => {\n"
+            "  return props.title ? <div>{props.title}</div> : <span>missing</span>;\n"
+            "};\n",
+            "Widget",
+        ),
+        "lib.rs": (
+            "text/x-rust",
+            "struct Greeter { prefix: String }\n"
+            "impl Greeter {\n"
+            "  fn greet(&self, name: &str) -> String {\n"
+            "    format!(\"{} {}\", self.prefix, name)\n"
+            "  }\n"
+            "}\n",
+            "Greeter",
+        ),
+        "greeter.cpp": (
+            "text/x-c++",
+            "namespace demo {\n"
+            "class Greeter {\n"
+            "public:\n"
+            "  const char* greet() { return \"hello\"; }\n"
+            "};\n"
+            "int add(int a, int b) {\n"
+            "  int sum = a + b;\n"
+            "  return sum;\n"
+            "}\n"
+            "}\n",
+            "demo.Greeter",
+        ),
+        "Greeter.kt": (
+            "text/x-kotlin",
+            "class Greeter(val prefix: String) {\n"
+            "  fun greet(name: String): String {\n"
+            "    return prefix + name\n"
+            "  }\n"
+            "}\n",
+            "Greeter.greet",
+        ),
+        "Vault.sol": (
+            "text/x-solidity",
+            "contract Vault {\n"
+            "  event Deposit(address indexed user);\n"
+            "  error NoFunds();\n"
+            "  struct Account { uint bal; }\n"
+            "  modifier onlyOwner() { _; }\n"
+            "  function deposit() public payable {\n"
+            "    emit Deposit(msg.sender);\n"
+            "  }\n"
+            "}\n",
+            "Vault.deposit",
+        ),
+    }
+
+    for uri, (mime, code, expected_path) in cases.items():
+        chunks = chunk_resource("p", _res(uri, mime), code)
+        assert chunks, f"{uri} should produce chunks"
+        assert all(c.kind is ChunkKind.CODE for c in chunks)
+        assert any(c.context_path == expected_path for c in chunks)
+        assert all(c.start_line >= 1 and c.end_line >= c.start_line for c in chunks)
+
+
+def test_javascript_arrow_function_gets_symbol_context() -> None:
+    code = (
+        "export const Widget = (props) => {\n"
+        "  const title = props.title || 'missing';\n"
+        "  return title.toUpperCase();\n"
+        "};\n"
+    )
+
+    chunks = chunk_resource("p", _res("Widget.js", "application/javascript"), code)
+
+    assert any(c.kind is ChunkKind.CODE and c.context_path == "Widget" for c in chunks)
+
+
+def test_unknown_code_extension_uses_code_fallback_not_doc_chunks() -> None:
+    code = (
+        "class Greeter\n"
+        "  def greet(name)\n"
+        "    message = \"hello #{name}\"\n"
+        "    message.upcase\n"
+        "  end\n"
+        "end\n"
+    )
+
+    chunks = chunk_resource("p", _res("greeter.rb", "text/x-ruby"), code)
+
+    assert chunks
+    assert all(c.kind is ChunkKind.CODE for c in chunks)
+    assert all(c.context_path == "<module>" for c in chunks)

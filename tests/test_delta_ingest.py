@@ -209,3 +209,31 @@ async def test_delta_sync_removes_deleted_resources(tmp_path: Path) -> None:
     assert stats.removed == 1
     assert indexer.deleted == ["gone-chunk-id"]
     assert registry.get_resource_manifest("p", "source", "gone.txt") is None
+
+
+@pytest.mark.asyncio
+async def test_sparse_indexing_uses_enriched_embedding_text(tmp_path: Path, monkeypatch) -> None:
+    seen_texts: list[str] = []
+
+    class EnrichingFakeEnricher(FakeEnricher):
+        async def enrich(self, chunks, *, doc_contents):
+            for chunk in chunks:
+                chunk.context_summary = "Q: How is the enriched sparse text indexed?"
+            return chunks
+
+    async def record_sparse(texts):
+        seen_texts.extend(texts)
+        return [SparseVector(indices=[1], values=[1.0]) for _ in texts]
+
+    monkeypatch.setattr(pipeline, "ContextualEnricher", EnrichingFakeEnricher)
+    monkeypatch.setattr(pipeline, "aencode_passages", record_sparse)
+
+    cfg = _config(tmp_path)
+    await pipeline.run_ingest(
+        product_id="p",
+        source=FakeSource({"doc.txt": "hello world " * 20}),
+        config=cfg,
+    )
+
+    assert seen_texts
+    assert seen_texts[0].startswith("Q: How is the enriched sparse text indexed?")

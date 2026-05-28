@@ -7,13 +7,18 @@ preserve function/class boundaries for code; preserve heading hierarchy for mark
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+import tree_sitter_cpp
 import tree_sitter_go
+import tree_sitter_java
 import tree_sitter_javascript
+import tree_sitter_kotlin
 import tree_sitter_python
 import tree_sitter_rust
+import tree_sitter_solidity
 import tree_sitter_typescript
 from tree_sitter import Language, Node, Parser
 
@@ -42,14 +47,24 @@ class _LangCfg:
     name_field_nodes: tuple[str, ...] = ()
 
 
+def _language(raw) -> Language:
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="int argument support is deprecated",
+            category=DeprecationWarning,
+        )
+        return Language(raw)
+
+
 _LANGS: dict[str, _LangCfg] = {
     "python": _LangCfg(
-        language=Language(tree_sitter_python.language()),
+        language=_language(tree_sitter_python.language()),
         boundary_nodes=("function_definition", "class_definition", "decorated_definition"),
         name_field_nodes=("function_definition", "class_definition"),
     ),
     "typescript": _LangCfg(
-        language=Language(tree_sitter_typescript.language_typescript()),
+        language=_language(tree_sitter_typescript.language_typescript()),
         boundary_nodes=(
             "function_declaration",
             "class_declaration",
@@ -57,16 +72,19 @@ _LANGS: dict[str, _LangCfg] = {
             "interface_declaration",
             "type_alias_declaration",
             "export_statement",
+            "variable_declarator",
         ),
         name_field_nodes=(
             "function_declaration",
             "class_declaration",
             "method_definition",
             "interface_declaration",
+            "type_alias_declaration",
+            "variable_declarator",
         ),
     ),
     "tsx": _LangCfg(
-        language=Language(tree_sitter_typescript.language_tsx()),
+        language=_language(tree_sitter_typescript.language_tsx()),
         boundary_nodes=(
             "function_declaration",
             "class_declaration",
@@ -74,28 +92,125 @@ _LANGS: dict[str, _LangCfg] = {
             "interface_declaration",
             "type_alias_declaration",
             "export_statement",
+            "variable_declarator",
         ),
         name_field_nodes=(
             "function_declaration",
             "class_declaration",
             "method_definition",
             "interface_declaration",
+            "type_alias_declaration",
+            "variable_declarator",
         ),
     ),
     "javascript": _LangCfg(
-        language=Language(tree_sitter_javascript.language()),
-        boundary_nodes=("function_declaration", "class_declaration", "method_definition"),
-        name_field_nodes=("function_declaration", "class_declaration", "method_definition"),
+        language=_language(tree_sitter_javascript.language()),
+        boundary_nodes=(
+            "function_declaration",
+            "class_declaration",
+            "method_definition",
+            "export_statement",
+            "variable_declarator",
+        ),
+        name_field_nodes=(
+            "function_declaration",
+            "class_declaration",
+            "method_definition",
+            "variable_declarator",
+        ),
     ),
     "rust": _LangCfg(
-        language=Language(tree_sitter_rust.language()),
+        language=_language(tree_sitter_rust.language()),
         boundary_nodes=("function_item", "impl_item", "struct_item", "trait_item", "enum_item"),
-        name_field_nodes=("function_item", "struct_item", "trait_item", "enum_item"),
+        name_field_nodes=("function_item", "impl_item", "struct_item", "trait_item", "enum_item"),
     ),
     "go": _LangCfg(
-        language=Language(tree_sitter_go.language()),
+        language=_language(tree_sitter_go.language()),
         boundary_nodes=("function_declaration", "method_declaration", "type_declaration"),
         name_field_nodes=("function_declaration", "method_declaration"),
+    ),
+    "java": _LangCfg(
+        language=_language(tree_sitter_java.language()),
+        boundary_nodes=(
+            "class_declaration",
+            "interface_declaration",
+            "enum_declaration",
+            "record_declaration",
+            "constructor_declaration",
+            "method_declaration",
+        ),
+        name_field_nodes=(
+            "class_declaration",
+            "interface_declaration",
+            "enum_declaration",
+            "record_declaration",
+            "constructor_declaration",
+            "method_declaration",
+        ),
+    ),
+    "cpp": _LangCfg(
+        language=_language(tree_sitter_cpp.language()),
+        boundary_nodes=(
+            "namespace_definition",
+            "class_specifier",
+            "struct_specifier",
+            "union_specifier",
+            "enum_specifier",
+            "template_declaration",
+            "function_definition",
+            "declaration",
+        ),
+        name_field_nodes=(
+            "namespace_definition",
+            "class_specifier",
+            "struct_specifier",
+            "union_specifier",
+            "enum_specifier",
+            "function_definition",
+            "declaration",
+        ),
+    ),
+    "kotlin": _LangCfg(
+        language=_language(tree_sitter_kotlin.language()),
+        boundary_nodes=(
+            "class_declaration",
+            "object_declaration",
+            "function_declaration",
+            "property_declaration",
+            "type_alias",
+        ),
+        name_field_nodes=(
+            "class_declaration",
+            "object_declaration",
+            "function_declaration",
+            "property_declaration",
+            "type_alias",
+        ),
+    ),
+    "solidity": _LangCfg(
+        language=_language(tree_sitter_solidity.language()),
+        boundary_nodes=(
+            "contract_declaration",
+            "interface_declaration",
+            "library_declaration",
+            "function_definition",
+            "modifier_definition",
+            "struct_declaration",
+            "enum_declaration",
+            "event_definition",
+            "error_declaration",
+        ),
+        name_field_nodes=(
+            "contract_declaration",
+            "interface_declaration",
+            "library_declaration",
+            "function_definition",
+            "modifier_definition",
+            "struct_declaration",
+            "enum_declaration",
+            "event_definition",
+            "error_declaration",
+        ),
     ),
 }
 
@@ -114,6 +229,14 @@ def _lang_for(uri: str) -> str | None:
         return "rust"
     if lower.endswith(".go"):
         return "go"
+    if lower.endswith(".java"):
+        return "java"
+    if lower.endswith((".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h")):
+        return "cpp"
+    if lower.endswith((".kt", ".kts")):
+        return "kotlin"
+    if lower.endswith(".sol"):
+        return "solidity"
     return None
 
 
@@ -131,6 +254,8 @@ def chunk_resource(
         return list(_chunk_code(product_id, resource, content, lang))
     if resource.mime == "text/markdown" or resource.uri.lower().endswith((".md", ".mdx")):
         return list(_chunk_markdown(product_id, resource, content))
+    if resource.kind is ChunkKind.CODE:
+        return list(_chunk_plain_text(product_id, resource, content, kind=ChunkKind.CODE))
     return list(_chunk_plain_text(product_id, resource, content))
 
 
@@ -202,9 +327,21 @@ def _identifier_of(node: Node) -> str | None:
     name = node.child_by_field_name("name")
     if name is not None:
         return name.text.decode("utf-8", errors="replace")
+    type_name = node.child_by_field_name("type")
+    if type_name is not None and type_name.type in ("type_identifier", "namespace_identifier"):
+        return type_name.text.decode("utf-8", errors="replace")
     for child in node.children:
-        if child.type in ("identifier", "type_identifier", "property_identifier"):
+        if child.type in (
+            "identifier",
+            "field_identifier",
+            "namespace_identifier",
+            "type_identifier",
+            "property_identifier",
+        ):
             return child.text.decode("utf-8", errors="replace")
+        nested = _identifier_of(child)
+        if nested:
+            return nested
     return None
 
 
@@ -275,7 +412,11 @@ def _chunk_markdown(
 
 
 def _chunk_plain_text(
-    product_id: str, resource: ResourceRef, content: str
+    product_id: str,
+    resource: ResourceRef,
+    content: str,
+    *,
+    kind: ChunkKind = ChunkKind.DOC,
 ) -> Iterator[Chunk]:
     for start, text in _split_oversized(content, start_line=1):
         end = start + text.count("\n")
@@ -287,8 +428,8 @@ def _chunk_plain_text(
             content=text,
             start_line=start,
             end_line=end,
-            kind=ChunkKind.DOC,
-            context_path=None,
+            kind=kind,
+            context_path="<module>" if kind is ChunkKind.CODE else None,
         )
 
 

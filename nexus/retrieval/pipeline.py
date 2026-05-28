@@ -70,15 +70,12 @@ async def retrieve(
     else:
         vector_kinds = ["code", "text"]
 
-    primary_vec_name = "dense_code" if vector_kinds[0] == "code" else "dense_text"
-    query_vector = await ctx.embedder.embed_query(
-        query, vector=primary_vec_name  # type: ignore[arg-type]
-    )
+    query_vectors = await _embed_query_vectors(ctx, query, vector_kinds)
 
     seed_set = await _hybrid_search(
         ctx=ctx,
         product_id=product_id,
-        query_vector=query_vector,
+        query_vectors=query_vectors,
         sparse_query=query,
         vector_kinds=vector_kinds,
     )
@@ -124,7 +121,7 @@ async def _hybrid_search(
     *,
     ctx: RetrievalContext,
     product_id: str,
-    query_vector: list[float],
+    query_vectors: dict[str, list[float]],
     sparse_query: str,
     vector_kinds: list[str],
 ) -> list[Hit]:
@@ -135,7 +132,7 @@ async def _hybrid_search(
         name = "dense_code" if kind == "code" else "dense_text"
         raw = await ctx.indexer.search_dense(
             product_id=product_id,
-            query_vector=query_vector,
+            query_vector=query_vectors[kind],
             vector_name=name,
             top_k=50,
         )
@@ -161,6 +158,18 @@ async def _hybrid_search(
         d, s = await asyncio.gather(_dense(kind), _sparse(kind))
         rankings.extend([d, s])
     return rrf_merge(rankings, top_k=20)
+
+
+async def _embed_query_vectors(
+    ctx: RetrievalContext, query: str, vector_kinds: list[str]
+) -> dict[str, list[float]]:
+    async def _one(kind: str) -> tuple[str, list[float]]:
+        name = "dense_code" if kind == "code" else "dense_text"
+        vec = await ctx.embedder.embed_query(query, vector=name)  # type: ignore[arg-type]
+        return kind, vec
+
+    pairs = await asyncio.gather(*[_one(kind) for kind in vector_kinds])
+    return dict(pairs)
 
 
 def _to_doc(hit: Hit) -> str:

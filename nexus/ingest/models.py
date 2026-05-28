@@ -98,10 +98,15 @@ _CODE_EXTS = {
     ".rb",
     ".cpp",
     ".cc",
+    ".cxx",
     ".c",
     ".h",
     ".hpp",
+    ".hh",
+    ".hxx",
     ".cs",
+    ".sol",
+    ".kts",
 }
 
 _CODE_MIMES = {
@@ -135,6 +140,14 @@ def guess_mime(path: str) -> str:
         return "text/x-rust"
     if lower.endswith(".go"):
         return "text/x-go"
+    if lower.endswith(".java"):
+        return "text/x-java"
+    if lower.endswith((".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h")):
+        return "text/x-c++"
+    if lower.endswith((".kt", ".kts")):
+        return "text/x-kotlin"
+    if lower.endswith(".sol"):
+        return "text/x-solidity"
     if lower.endswith((".md", ".mdx")):
         return "text/markdown"
     if lower.endswith(".pdf"):

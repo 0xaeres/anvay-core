@@ -282,7 +282,7 @@ async def run_ingest(
                 batch=batch_id,
                 chunks=len(all_chunks),
             )
-            sparse_vecs = await aencode_passages([c.content for c in all_chunks])
+            sparse_vecs = await aencode_passages([c.text_for_embedding() for c in all_chunks])
             sparse_by_id = {c.id: sv for c, sv in zip(all_chunks, sparse_vecs, strict=True)}
             content_hash_by_id = {
                 c.id: payload_by_uri[c.resource.uri].content_hash for c in all_chunks
