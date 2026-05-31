@@ -1,4 +1,4 @@
-"""Embedder client — Jina v4 served by llama-server (Apple Silicon, Metal).
+"""Embedder client — OpenAI-compatible embeddings, local Jina or cloud.
 
 Jina v4 separates **task** (retrieval / classification / clustering / …) and
 **modality** (text / code). We use two modes, mapped to Qdrant named vectors:
@@ -21,6 +21,7 @@ from typing import Literal
 
 import httpx
 
+from nexus.config import ModelCfg
 from nexus.ingest.models import Chunk, EmbeddedChunk
 
 log = logging.getLogger(__name__)
@@ -29,11 +30,15 @@ VectorName = Literal["dense_code", "dense_text"]
 Modality = Literal["passage", "query"]
 
 # Jina v4 instruction prefixes (per the model card). Keep in sync with the served GGUF.
-_PREFIXES: dict[tuple[VectorName, Modality], str] = {
+_JINA_V4_PREFIXES: dict[tuple[VectorName, Modality], str] = {
     ("dense_code", "passage"): "Represent the code for retrieval: ",
     ("dense_code", "query"): "Represent the question for retrieving relevant code: ",
     ("dense_text", "passage"): "Represent the document for retrieval: ",
     ("dense_text", "query"): "Represent the question for retrieving relevant documents: ",
+}
+_QWEN3_QUERY_INSTRUCTIONS: dict[VectorName, str] = {
+    "dense_code": "Given a developer search query, retrieve relevant code passages that answer the query",
+    "dense_text": "Given a documentation search query, retrieve relevant passages that answer the query",
 }
 
 
@@ -57,10 +62,45 @@ def _is_nonretryable_server_error(message: str) -> bool:
 class EmbedderClient:
     """Thin async client. Construct once, reuse across the ingestion pipeline."""
 
-    def __init__(self, base_url: str, *, timeout_s: float = 120.0, batch_size: int = 32):
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        provider: str = "jina-local",
+        model: str = "jinaai/jina-embeddings-v4",
+        api_key: str | None = None,
+        instruction_profile: str | None = "jina-v4",
+        timeout_s: float = 120.0,
+        batch_size: int = 32,
+    ):
+        self.provider = provider.lower()
+        self.model = model
         self.base_url = base_url.rstrip("/")
         self.batch_size = batch_size
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout_s)
+        self.instruction_profile = (instruction_profile or "").lower()
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        self._client = httpx.AsyncClient(base_url=self.base_url, headers=headers, timeout=timeout_s)
+
+    @classmethod
+    def from_cfg(cls, cfg: ModelCfg, *, batch_size: int = 32) -> EmbedderClient:
+        provider = cfg.provider.lower()
+        base_url = cfg.base_url or cfg.url
+        if not base_url:
+            base_url = (
+                "https://api.deepinfra.com/v1/openai"
+                if provider == "deepinfra"
+                else "http://localhost:8080"
+            )
+        return cls(
+            base_url=base_url,
+            provider=provider,
+            model=cfg.model,
+            api_key=cfg.api_key,
+            instruction_profile=cfg.instruction_profile,
+            batch_size=batch_size,
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -73,7 +113,7 @@ class EmbedderClient:
         """Return one vector per input string. Batched internally."""
         if not texts:
             return []
-        prefix = _PREFIXES[(vector, modality)]
+        prefix = self._prefix(vector, modality)
         out: list[list[float]] = []
         for i in range(0, len(texts), self.batch_size):
             batch = [prefix + t for t in texts[i : i + self.batch_size]]
@@ -85,8 +125,8 @@ class EmbedderClient:
         for attempt, delay in enumerate((*_RETRY_DELAYS, None)):
             try:
                 resp = await self._client.post(
-                    "/v1/embeddings",
-                    json={"input": inputs, "model": "jina-embeddings-v4"},
+                    self._embeddings_path(),
+                    json={"input": inputs, "model": self.model},
                 )
             except httpx.HTTPError as e:
                 last_exc = EmbedderError(f"embedder request failed: {e}")
@@ -106,6 +146,18 @@ class EmbedderClient:
                 await asyncio.sleep(delay)
 
         raise last_exc or EmbedderError("embedder failed after retries")
+
+    def _embeddings_path(self) -> str:
+        if self.provider == "jina-local":
+            return "/v1/embeddings"
+        return "/embeddings"
+
+    def _prefix(self, vector: VectorName, modality: Modality) -> str:
+        if self.instruction_profile == "jina-v4":
+            return _JINA_V4_PREFIXES[(vector, modality)]
+        if self.instruction_profile == "qwen3" and modality == "query":
+            return f"Instruct: {_QWEN3_QUERY_INSTRUCTIONS[vector]}\nQuery: "
+        return ""
 
     # ------------------------------------------------------------------ helpers
 

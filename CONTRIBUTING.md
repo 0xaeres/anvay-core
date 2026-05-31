@@ -79,7 +79,7 @@ ingest/
   models.py         Chunk, ResourceRef, ChunkKind, EmbeddedChunk
 
 retrieval/
-  pipeline.py       retrieve() — dense + BM25 → RRF → Jina rerank
+  pipeline.py       retrieve() — dense + BM25 → RRF → rerank
   hybrid.py         RRF merge
   sparse.py         BM25 via fastembed (thread-pooled)
   reranker.py       Jina Reranker v3 cross-encoder
@@ -303,9 +303,15 @@ This ordering prevents knowledge-base poisoning:
 uv sync
 cp nexus.yaml.example nexus.yaml
 cp .env.example .env       # fill DEEPINFRA_API_KEY at minimum
-make services-up           # Qdrant + llama.cpp embedder/reranker
+make services-up           # Qdrant + optional local llama.cpp embedder/reranker
 uv run uvicorn nexus.api.app:app --port 8000 --reload
 ```
+
+Default `nexus.yaml.example` uses Qdrant plus DeepInfra Qwen embedding/rerank
+models, so low-resource machines do not need local Jina. Use
+`make local-models-up` when testing the optional `jina-local` profile. Qdrant v1.18+ native
+TurboQuant is controlled by `vector_store.quantization`; changing quantization,
+embedding dimension, or collection names requires resync/reindex.
 
 On Apple Silicon, `scripts/serve-embedder.sh` and `scripts/serve-reranker.sh`
 auto-detect Metal (`--n-gpu-layers 999`). On non-GPU machines they fall back
@@ -319,6 +325,22 @@ NEXUS_LOG_LEVEL=DEBUG uv run uvicorn nexus.api.app:app --port 8000 --reload
 
 Default embedder physical batch is intentionally conservative (`1024`) for a
 MacBook Air M2 with 8GB RAM.
+
+### Retrieval model config
+
+When switching away from local Jina, update config deliberately:
+
+- set `models.embedding.dim` to the provider's output dimension before creating
+  Qdrant collections
+- set `models.embedding.instruction_profile` to the prompt/prefix scheme used
+  for query and passage embeddings
+- reset `ingestion.quality_gate_threshold` to `0.0` until eval calibrates the
+  new reranker score scale
+- resync/reindex products after embedding provider/model/dim/profile changes
+
+Nexus does not currently process visual Confluence diagrams or image
+attachments. Text around a diagram may be indexed, but boxes/arrows/labels in
+the image are not extracted, embedded, or cited.
 
 ### Frontend
 
@@ -335,11 +357,14 @@ uv run ruff check nexus tests           # must be clean
 uv run pytest -q                        # unit + integration (146 at last count)
 uv run pytest -m eval                   # opt-in retrieval benchmark
                                         #   (skips if Qdrant/embedder/reranker absent)
+make test-live-e2e                      # live Qdrant E2E
 ```
 
 The retrieval eval is the floor for "did my change to the pipeline make
 things better or worse?". Re-run it after any modification to chunker,
 enricher, hybrid, rerank, repomap, or contextual-retrieval logic.
+Qdrant with native TurboQuant is the default and only vector-index path; eval
+decisions compare the current stack against the published floors.
 
 ### CLI
 
@@ -350,12 +375,12 @@ uv run nexus council draft --product my-api --topic "auth middleware"
 # Dry-run product cleanup:
 uv run nexus delete-product --product my-api
 
-# Delete product-scoped SQLite rows, skills, repo map, checkpoints, and Qdrant points:
+# Delete product-scoped SQLite rows, skills, repo map, checkpoints, and index entries:
 uv run nexus delete-product --product my-api --yes
 ```
 
-`--skip-qdrant` keeps the command usable when Qdrant is offline, but leaves
-derived vectors behind until you clean that product payload later.
+`--skip-qdrant` keeps the command usable when the retrieval backend is offline,
+but leaves derived index entries behind until you clean that product later.
 
 ### MCP server
 

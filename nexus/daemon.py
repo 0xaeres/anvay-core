@@ -14,13 +14,14 @@ import logging
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from nexus.config import NexusConfig
 from nexus.connectors.manager import ConnectorManager
 from nexus.ingest.embedder import EmbedderClient
 from nexus.ingest.enricher import ContextualEnricher
 from nexus.ingest.incremental import reindex_resource
-from nexus.ingest.indexer import Indexer
+from nexus.ingest.indexer_factory import create_indexer
 
 log = logging.getLogger(__name__)
 
@@ -33,8 +34,8 @@ async def run_daemon(
 ) -> None:
     """Block forever. Caller is responsible for signal handling."""
     async with AsyncExitStack() as stack:
-        embedder = EmbedderClient(
-            base_url=config.models.embedding.url or "http://localhost:8080",
+        embedder = EmbedderClient.from_cfg(
+            config.models.embedding,
             batch_size=config.ingestion.embed_batch_size,
         )
         enricher = ContextualEnricher(
@@ -45,7 +46,7 @@ async def run_daemon(
             enrich_docs=config.ingestion.enrich_chunks.docs,
             concurrency=config.ingestion.enricher_concurrency,
         )
-        indexer = Indexer(url=config.vector_store.url)
+        indexer = create_indexer(config)
         manager = ConnectorManager(config)
 
         stack.push_async_callback(embedder.aclose)
@@ -93,7 +94,7 @@ async def _bootstrap_sync(
     product_id: str,
     embedder: EmbedderClient,
     enricher: ContextualEnricher,
-    indexer: Indexer,
+    indexer: Any,
     enrich: bool,
 ) -> None:
     log.info("daemon: bootstrap sync (product=%s)", product_id)

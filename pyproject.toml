@@ -20,7 +20,7 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     # Storage
-    "qdrant-client>=1.12,<1.13",
+    "qdrant-client>=1.18,<1.19",
     "neo4j>=5.25",
     # MCP
     "mcp>=1.0",

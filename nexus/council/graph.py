@@ -15,7 +15,7 @@ State is checkpointed to SQLite so a process kill mid-session can resume.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +31,7 @@ from nexus.llm.client import ChatClient
 from nexus.retrieval.pipeline import RetrievalContext
 
 log = logging.getLogger(__name__)
+TokenSink = Callable[[dict[str, str]], Awaitable[None]]
 
 
 @dataclass
@@ -48,7 +49,11 @@ class CouncilHandles:
 
 
 @asynccontextmanager
-async def council_handles(config: NexusConfig) -> AsyncIterator[CouncilHandles]:
+async def council_handles(
+    config: NexusConfig,
+    *,
+    token_sink: TokenSink | None = None,
+) -> AsyncIterator[CouncilHandles]:
     drafter_cfg = config.models.drafter or config.models.council
     critic_cfg = config.models.critic or config.models.council
     reviser_cfg = config.models.reviser or config.models.council
@@ -63,9 +68,15 @@ async def council_handles(config: NexusConfig) -> AsyncIterator[CouncilHandles]:
     )
     handles = CouncilHandles(
         retrieval=RetrievalContext.from_config(config),
-        chat_drafter=ChatClient.from_cfg(drafter_cfg, role="drafter"),
-        chat_critic=ChatClient.from_cfg(critic_cfg, role="critic"),
-        chat_reviser=ChatClient.from_cfg(reviser_cfg, role="reviser"),
+        chat_drafter=ChatClient.from_cfg(
+            drafter_cfg, role="drafter", token_sink=token_sink
+        ),
+        chat_critic=ChatClient.from_cfg(
+            critic_cfg, role="critic", token_sink=token_sink
+        ),
+        chat_reviser=ChatClient.from_cfg(
+            reviser_cfg, role="reviser", token_sink=token_sink
+        ),
     )
     try:
         yield handles

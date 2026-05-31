@@ -8,7 +8,7 @@ from pathlib import Path
 
 from nexus.config import NexusConfig
 from nexus.council.queue import ProposalQueue
-from nexus.ingest.indexer import Indexer
+from nexus.ingest.indexer_factory import create_indexer
 from nexus.registry import Registry
 from nexus.retrieval.repomap import repomap_path_for
 from nexus.skills.store import SkillStore
@@ -20,7 +20,7 @@ class DeleteProductReport:
     registry: dict[str, int] = field(default_factory=dict)
     queue: dict[str, int | list[str]] = field(default_factory=dict)
     skills: int = 0
-    qdrant: dict[str, int] = field(default_factory=dict)
+    index: dict[str, int] = field(default_factory=dict)
     repomap_deleted: bool = False
     checkpoints: int = 0
 
@@ -47,22 +47,14 @@ async def delete_product(
     report.checkpoints = _checkpoint_count(config.storage.council_checkpoint, session_ids)
 
     if not skip_qdrant:
-        indexer = Indexer(
-            url=config.vector_store.url,
-            code_collection=config.vector_store.collections.code,
-            text_collection=config.vector_store.collections.text,
-        )
+        indexer = create_indexer(config)
         try:
-            report.qdrant = {
-                config.vector_store.collections.code: await indexer.count(
-                    product_id=product_id, vector_kind="code"
-                ),
-                config.vector_store.collections.text: await indexer.count(
-                    product_id=product_id, vector_kind="text"
-                ),
+            report.index = {
+                "code": await indexer.count(product_id=product_id, vector_kind="code"),
+                "text": await indexer.count(product_id=product_id, vector_kind="text"),
             }
             if not dry_run:
-                report.qdrant = await indexer.delete_by_product(product_id=product_id)
+                report.index = await indexer.delete_by_product(product_id=product_id)
         finally:
             await indexer.aclose()
 

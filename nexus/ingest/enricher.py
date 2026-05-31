@@ -64,7 +64,7 @@ class ContextualEnricher:
         self,
         base_url: str = "https://api.deepinfra.com/v1/openai",
         *,
-        model: str = "google/gemma-3-4b-it",
+        model: str = "google/gemma-4-26B-A4B-it",
         api_key: str | None = None,
         enrich_code: bool = True,
         enrich_docs: bool = True,

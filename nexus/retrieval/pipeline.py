@@ -9,11 +9,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from nexus.config import NexusConfig
 from nexus.ingest.embedder import EmbedderClient
-from nexus.ingest.indexer import Indexer
+from nexus.ingest.indexer_factory import create_indexer
 from nexus.retrieval.hybrid import Hit, rrf_merge
 from nexus.retrieval.reranker import RerankerClient
 from nexus.retrieval.sparse import aencode_query
@@ -33,18 +33,16 @@ class RetrievalResult:
 @dataclass
 class RetrievalContext:
     embedder: EmbedderClient
-    indexer: Indexer
+    indexer: Any
     reranker: RerankerClient
     config: NexusConfig
 
     @classmethod
     def from_config(cls, config: NexusConfig) -> RetrievalContext:
-        emb_url = config.models.embedding.url or "http://localhost:8080"
-        rerank_url = config.models.reranker.url or "http://localhost:8081"
         return cls(
-            embedder=EmbedderClient(base_url=emb_url),
-            indexer=Indexer(url=config.vector_store.url),
-            reranker=RerankerClient(base_url=rerank_url),
+            embedder=EmbedderClient.from_cfg(config.models.embedding),
+            indexer=create_indexer(config),
+            reranker=RerankerClient.from_cfg(config.models.reranker),
             config=config,
         )
 
@@ -126,7 +124,9 @@ async def _hybrid_search(
     vector_kinds: list[str],
 ) -> list[Hit]:
     """Dense + BM25 per modality, then RRF fuse to top-20 seed set."""
-    sparse_vec = await aencode_query(sparse_query)
+    sparse_vec = None
+    if getattr(ctx.indexer, "requires_sparse_vectors", True):
+        sparse_vec = await aencode_query(sparse_query)
 
     async def _dense(kind: str) -> list[Hit]:
         name = "dense_code" if kind == "code" else "dense_text"
@@ -145,6 +145,7 @@ async def _hybrid_search(
         raw = await ctx.indexer.search_sparse(
             product_id=product_id,
             sparse=sparse_vec,
+            query=sparse_query,
             vector_kind=kind,
             top_k=50,
         )

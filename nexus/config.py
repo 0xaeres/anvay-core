@@ -42,9 +42,24 @@ class VectorCollectionsCfg(BaseModel):
     text: str = "nexus_text"
 
 
+class VectorQuantizationCfg(BaseModel):
+    """Qdrant dense-vector quantization.
+
+    TurboQuant is available in Qdrant v1.18+. It is applied when collections are
+    created; changing it for an existing collection requires a recreate/reindex
+    or an explicit Qdrant collection update outside Nexus.
+    """
+
+    enabled: bool = True
+    type: str = "turboquant"
+    bits: str = "bits4"
+    always_ram: bool = True
+
+
 class VectorStoreCfg(BaseModel):
     url: str = "http://localhost:6333"
     collections: VectorCollectionsCfg = Field(default_factory=VectorCollectionsCfg)
+    quantization: VectorQuantizationCfg = Field(default_factory=VectorQuantizationCfg)
 
 
 class ModelCfg(BaseModel):
@@ -55,6 +70,8 @@ class ModelCfg(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     url: str | None = None
+    dim: int | None = None
+    instruction_profile: str | None = None
     model_config = {"extra": "allow"}
 
 

@@ -28,7 +28,7 @@ Your codebase + docs
   Nexus ingests (GitHub or local filesystem)
         │
         ▼
-  Hybrid retrieval (dense + BM25 + Jina rerank)
+  Hybrid retrieval (dense + BM25 + rerank)
         │
         ▼
   Expert council drafts a product skill pack
@@ -118,10 +118,30 @@ Edit `.env`:
 ### Start dev stack
 
 ```bash
-make dev                              # Qdrant + llama.cpp embedder/reranker + API
+make dev                              # Qdrant + API; DeepInfra does embeddings/rerank by default
 ```
 
-If you only want the backing services without the API, use `make services-up`.
+If you use the optional local Jina profile, run `make local-models-up` to start
+local llama.cpp embedder/reranker. `make dev` stays on Qdrant; dense vector
+compression uses Qdrant's native TurboQuant by default.
+
+```yaml
+vector_store:
+  quantization:
+    enabled: true
+    type: turboquant
+    bits: bits4            # best recall; lower bits compress more
+    always_ram: true
+```
+
+Model swaps need matching config. If you move from local Jina to a cloud
+embedding/reranker, set the embedding dimension, instruction profile, and keep
+`quality_gate_threshold: 0.0` until eval calibrates the new reranker scores.
+Changing embedding provider/model/dimension/profile requires product resync.
+
+Nexus does not currently understand visual Confluence architecture diagrams or
+image attachments. It can index surrounding page text, but it does not extract
+diagram boxes/arrows/labels, create visual embeddings, or cite image regions.
 
 The local llama.cpp scripts auto-detect acceleration:
 
@@ -174,8 +194,8 @@ Visit `http://localhost:3000/setup`:
   URLs; Nexus creates the product-scoped GitHub source and starts ingest
 - Trigger ingestion; watch the live SSE sync log. Resync is delta-safe:
   unchanged files are skipped, changed files are embedded before stale vectors
-  are deleted, and removed files are cleaned from Qdrant after successful
-  delete-by-ID.
+  are deleted, and removed files are cleaned from the configured retrieval
+  index after successful delete-by-ID.
 - Start a council session; watch the live deliberation
 - Approve / edit / reject the proposal at `/p/<id>/review`
 
@@ -192,7 +212,7 @@ open http://localhost:3000/p/<your-product-id>/review
 ### 4. Delete a product completely
 
 Use the guarded CLI cleanup when a test product needs to be removed from local
-state and Qdrant.
+state and the derived retrieval index.
 
 ```bash
 # Dry-run first. Shows every product-scoped thing that would be removed.
@@ -203,11 +223,10 @@ uv run nexus delete-product --product <your-product-id> --yes
 ```
 
 This removes the product row, sources, source manifests, sync runs, proposals,
-council sessions, approved `.skill.md` files, Qdrant points from both
-collections, the persisted repo map, and LangGraph checkpoints for that
-product's sessions.
+council sessions, approved `.skill.md` files, retrieval index entries, the
+persisted repo map, and LangGraph checkpoints for that product's sessions.
 
-If Qdrant is offline and you only want local SQLite/filesystem cleanup:
+If the retrieval backend is offline and you only want local SQLite/filesystem cleanup:
 
 ```bash
 uv run nexus delete-product --product <your-product-id> --yes --skip-qdrant
@@ -251,9 +270,9 @@ nexus/
 ├── nexus/
 │   ├── api/           FastAPI routes (/products, /sources, /council, /skills, /setup)
 │   ├── ingest/        Delta-safe manifest sync, chunker (tree-sitter),
-│   │                  enricher (HQE + Anthropic CR), embedder (Jina v4),
-│   │                  indexer (Qdrant dense + BM25)
-│   ├── retrieval/     Hybrid pipeline (dense + BM25 → RRF → Jina reranker),
+│   │                  enricher (HQE + Anthropic CR), embedder,
+│   │                  Qdrant indexer (dense + BM25 + TurboQuant)
+│   ├── retrieval/     Hybrid pipeline (dense + BM25 → RRF → reranker),
 │   │                  repomap (aider-style symbol outline)
 │   ├── council/       LangGraph skill-pack council: planner, experts, synthesizer
 │   │                  Plus runner (SSE), queue (SQLite), skill_parser
@@ -276,6 +295,7 @@ nexus/
 uv run ruff check nexus tests
 uv run pytest -q                       # 146 tests, ~2s
 uv run pytest -m eval                  # opt-in retrieval benchmark
+make test-live-e2e                     # live Qdrant E2E
 ```
 
 The eval set under `tests/eval/queries.json` is the authoritative measure of
@@ -283,6 +303,9 @@ retrieval quality. After any change to chunking, enrichment, hybrid, rerank,
 repo map, or contextual retrieval, run `pytest -m eval` against a populated
 index and confirm `recall@10` + `MRR` stay above the floors in
 `queries.json._meta`.
+
+TurboQuant is the only supported dense-vector compression mode. Eval decisions
+compare the current Qdrant stack against the floors in `queries.json._meta`.
 
 ---
 

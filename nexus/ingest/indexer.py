@@ -5,7 +5,7 @@ Two collections (per nexus.yaml `vector_store.collections`):
   nexus_code   stores code chunks; named vectors: {dense, bm25}
   nexus_text   stores doc chunks;  named vectors: {dense, bm25}
 
-`dense`  — Jina v4 (JINA_V4_DIM, cosine)
+`dense`  — configured embedding model dimensionality, cosine
 `bm25`   — fastembed Qdrant/bm25 sparse encoder; Qdrant applies IDF server-side
 
 Tenant isolation via `product_id` payload filter on every query/scroll/delete.
@@ -20,10 +20,10 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qm
 
 from nexus.ingest.models import Chunk, EmbeddedChunk
-from nexus.retrieval.sparse import SparseVector
+from nexus.retrieval.sparse import SparseVector, aencode_query
 
-# Default Jina v4 embedding dimensionality. Configurable per-collection on create.
-JINA_V4_DIM = 2048
+# Default dense embedding dimensionality. Configurable per-collection on create.
+DEFAULT_VECTOR_DIM = 2048
 
 _CODE_COLLECTION = "nexus_code"
 _TEXT_COLLECTION = "nexus_text"
@@ -36,18 +36,28 @@ class IndexerError(RuntimeError):
 class Indexer:
     """Async Qdrant wrapper. Construct once per process."""
 
+    requires_sparse_vectors = True
+
     def __init__(
         self,
         url: str = "http://localhost:6333",
         *,
         code_collection: str = _CODE_COLLECTION,
         text_collection: str = _TEXT_COLLECTION,
-        vector_dim: int = JINA_V4_DIM,
+        vector_dim: int = DEFAULT_VECTOR_DIM,
+        quantization_enabled: bool = True,
+        quantization_type: str = "turboquant",
+        quantization_bits: str = "bits4",
+        quantization_always_ram: bool = True,
     ):
         self.client = AsyncQdrantClient(url=url)
         self._code = code_collection
         self._text = text_collection
         self._dim = vector_dim
+        self._quantization_enabled = quantization_enabled
+        self._quantization_type = quantization_type
+        self._quantization_bits = quantization_bits
+        self._quantization_always_ram = quantization_always_ram
 
     async def aclose(self) -> None:
         await self.client.close()
@@ -67,6 +77,7 @@ class Indexer:
                         size=self._dim,
                         distance=qm.Distance.COSINE,
                         hnsw_config=qm.HnswConfigDiff(m=16, ef_construct=128),
+                        quantization_config=self._dense_quantization_config(),
                     ),
                 },
                 sparse_vectors_config={
@@ -169,11 +180,16 @@ class Indexer:
         self,
         *,
         product_id: str,
-        sparse: SparseVector,
+        sparse: SparseVector | None = None,
+        query: str | None = None,
         vector_kind: str,
         top_k: int = 50,
     ) -> list[dict]:
         """Sparse BM25 search. `vector_kind` is 'code' or 'text'."""
+        if sparse is None:
+            if query is None:
+                raise ValueError("search_sparse requires sparse or query")
+            sparse = await aencode_query(query)
         coll = self._code if vector_kind == "code" else self._text
         return await self._search(
             collection=coll,
@@ -285,6 +301,34 @@ class Indexer:
         return counts
 
     # ------------------------------------------------------------ helpers
+
+    def _dense_quantization_config(self) -> qm.QuantizationConfig | None:
+        if not self._quantization_enabled:
+            return None
+        if self._quantization_type.lower() not in {"turboquant", "turbo"}:
+            raise IndexerError(
+                f"unsupported vector_store.quantization.type: {self._quantization_type}"
+            )
+        bits_by_name = {
+            "bits1": qm.TurboQuantBitSize.BITS1,
+            "bits1_5": qm.TurboQuantBitSize.BITS1_5,
+            "bits2": qm.TurboQuantBitSize.BITS2,
+            "bits4": qm.TurboQuantBitSize.BITS4,
+        }
+        try:
+            bits = bits_by_name[self._quantization_bits.lower()]
+        except KeyError as e:
+            raise IndexerError(
+                "unsupported vector_store.quantization.bits: "
+                f"{self._quantization_bits}; expected one of "
+                f"{', '.join(sorted(bits_by_name))}"
+            ) from e
+        return qm.TurboQuantization(
+            turbo=qm.TurboQuantQuantizationConfig(
+                always_ram=self._quantization_always_ram,
+                bits=bits,
+            )
+        )
 
     def _to_point(
         self,

@@ -1,7 +1,7 @@
 """End-to-end ingestion pipeline orchestrator.
 
 Pulls resources from a source, chunks them, optionally enriches with contextual
-summaries, embeds, and upserts into Qdrant.
+summaries, embeds, and upserts into the configured retrieval index.
 
 Design:
 - Files are collected into batches of FILE_BATCH_SIZE before any embedding call.
@@ -26,7 +26,7 @@ from nexus.config import NexusConfig
 from nexus.ingest.chunker import chunk_resource
 from nexus.ingest.embedder import EmbedderClient, EmbedderError
 from nexus.ingest.enricher import ContextualEnricher
-from nexus.ingest.indexer import Indexer
+from nexus.ingest.indexer_factory import create_indexer
 from nexus.ingest.models import Chunk, ResourceRef
 from nexus.retrieval.sparse import aencode_passages
 
@@ -80,6 +80,17 @@ def embedding_version(config: NexusConfig) -> str:
         "embedding_provider": config.models.embedding.provider,
         "embedding_model": config.models.embedding.model,
         "embedding_url": config.models.embedding.url,
+        "embedding_base_url": config.models.embedding.base_url,
+        "embedding_dim": config.models.embedding.dim,
+        "embedding_instruction_profile": config.models.embedding.instruction_profile,
+        "vector_quantization_enabled": config.vector_store.quantization.enabled,
+        "vector_quantization_type": config.vector_store.quantization.type,
+        "vector_quantization_bits": config.vector_store.quantization.bits,
+        "reranker_provider": config.models.reranker.provider,
+        "reranker_model": config.models.reranker.model,
+        "reranker_url": config.models.reranker.url,
+        "reranker_base_url": config.models.reranker.base_url,
+        "quality_gate_threshold": config.ingestion.quality_gate_threshold,
         "light_provider": config.models.light.provider,
         "light_model": config.models.light.model,
         "light_base_url": config.models.light.base_url,
@@ -114,8 +125,8 @@ async def run_ingest(
     file_batch_size = config.ingestion.file_batch_size
     read_concurrency = config.ingestion.read_concurrency
 
-    embedder = EmbedderClient(
-        base_url=config.models.embedding.url or "http://localhost:8080",
+    embedder = EmbedderClient.from_cfg(
+        config.models.embedding,
         batch_size=config.ingestion.embed_batch_size,
     )
     enricher = ContextualEnricher(
@@ -126,7 +137,7 @@ async def run_ingest(
         enrich_docs=config.ingestion.enrich_chunks.docs,
         concurrency=config.ingestion.enricher_concurrency,
     )
-    indexer = Indexer(url=config.vector_store.url)
+    indexer = create_indexer(config)
     batch_no = 0
     sync_id = _utc_now()
     version = embedding_version(config)
@@ -275,15 +286,21 @@ async def run_ingest(
                 chunks=len(embedded),
             )
 
-            await emit(
-                "stage",
-                "sparse",
-                f"Encoding BM25 sparse vectors for batch {batch_id}",
-                batch=batch_id,
-                chunks=len(all_chunks),
-            )
-            sparse_vecs = await aencode_passages([c.text_for_embedding() for c in all_chunks])
-            sparse_by_id = {c.id: sv for c, sv in zip(all_chunks, sparse_vecs, strict=True)}
+            sparse_by_id = {}
+            if getattr(indexer, "requires_sparse_vectors", True):
+                await emit(
+                    "stage",
+                    "sparse",
+                    f"Encoding BM25 sparse vectors for batch {batch_id}",
+                    batch=batch_id,
+                    chunks=len(all_chunks),
+                )
+                sparse_vecs = await aencode_passages(
+                    [c.text_for_embedding() for c in all_chunks]
+                )
+                sparse_by_id = {
+                    c.id: sv for c, sv in zip(all_chunks, sparse_vecs, strict=True)
+                }
             content_hash_by_id = {
                 c.id: payload_by_uri[c.resource.uri].content_hash for c in all_chunks
             }
@@ -494,8 +511,8 @@ async def run_query(
     mode: str = "auto",
 ) -> list[dict]:
     """Legacy dense-only query helper; the production path is retrieval.pipeline.retrieve()."""
-    embedder = EmbedderClient(base_url=config.models.embedding.url or "http://localhost:8080")
-    indexer = Indexer(url=config.vector_store.url)
+    embedder = EmbedderClient.from_cfg(config.models.embedding)
+    indexer = create_indexer(config)
     try:
         vectors_to_search: list[str]
         if mode == "code":

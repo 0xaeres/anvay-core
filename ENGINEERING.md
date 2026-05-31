@@ -24,7 +24,7 @@ indexer         Qdrant (dense + BM25)                  │
 repomap         tree-sitter symbol outline             ▼
                                                     SkillProposal
                                                        │
-retrieval       dense + BM25 → RRF → Jina rerank       ▼
+retrieval       dense + BM25 → RRF → rerank            ▼
                                                     human approval
 mcp_server      find_skills, query_code_context,       │
                 hybrid_search_corpus                   ▼
@@ -185,16 +185,18 @@ successfully indexed:
 - `source_sync_runs` stores sync attempt start/finish timestamps, diff counts,
   and status.
 
-`embedding_version(config)` hashes the embedding provider/model/url, the light
-enricher provider/model/base URL, and enrichment toggles. If any of those
-change, rows classify as `updated` and re-embed on the next sync.
+`embedding_version(config)` hashes retrieval backend, embedding
+provider/model/endpoint/dimension/instruction profile, reranker
+provider/model/endpoint, quality gate, the light enricher provider/model/base
+URL, and enrichment toggles. If any of those change, rows classify as
+`updated` and re-embed on the next sync.
 
 Ordering rules:
 
-1. Added/updated resources: write replacement Qdrant points first.
+1. Added/updated resources: write replacement index points first.
 2. Delete old stale chunk IDs only after replacement upsert succeeds.
-3. Update manifest row only after Qdrant upsert + stale cleanup succeeds.
-4. Removed resources: delete Qdrant IDs first, then delete manifest row.
+3. Update manifest row only after index upsert + stale cleanup succeeds.
+4. Removed resources: delete index IDs first, then delete manifest row.
 
 These rules prevent poisoning: failed embeds keep old good vectors and manifest
 state; failed deletes keep manifest rows so cleanup retries later.
@@ -252,12 +254,34 @@ has the full doc, not just the chunk.
 
 ### Embedder (`nexus/ingest/embedder.py`)
 
-OpenAI-compatible client against a llama.cpp server hosting
-**Jina Embeddings v4** (`jinaai/jina-embeddings-v4`, 2048-dim). The
+OpenAI-compatible client against DeepInfra Qwen3 by default, or a local
+llama.cpp server hosting **Jina Embeddings v4** (`jinaai/jina-embeddings-v4`,
+2048-dim) when `provider: jina-local`. The
 `text_for_embedding()` prefix (HQE or CR or `context_path`) is included in
 the input. llama.cpp sometimes reports physical-batch token-limit failures as
 HTTP 500; `EmbedderClient` treats those as non-retryable request/config errors
 instead of burning retry backoff.
+
+Current retrieval is text/code only. Nexus does **not** process Confluence
+architecture diagrams, screenshots, or image attachments as visual evidence:
+it may retrieve surrounding page text, but it does not OCR/layout-parse
+diagrams, embed images, extract boxes/arrows, or cite diagram regions. Add a
+separate visual/document pipeline before claiming diagram support.
+
+Embedding/reranker swaps are high-risk config changes. The brand is less
+important than keeping these aligned:
+
+- instruction profile (query vs passage prefixes, code vs docs wording)
+- `models.embedding.dim` and existing vector index dimensions
+- chunk size vs provider context limits
+- reranker score scale and `quality_gate_threshold`
+- reindex/resync after any embedding provider/model/dim/profile change
+
+`embedding_version(config)` includes provider, model, URL/base URL, dimension,
+instruction profile, reranker provider/model/endpoint, Qdrant quantization
+settings, enrichment toggles, and quality gate. If any changes, delta ingest
+treats resources as updated and rebuilds chunks instead of reusing stale
+vectors.
 
 `scripts/serve-embedder.sh` exposes:
 
@@ -274,6 +298,11 @@ if running on constrained hardware.
 
 ### Indexer (`nexus/ingest/indexer.py`)
 
+The Qdrant indexer implements the async storage contract: ensure storage,
+upsert embedded chunks, dense search, BM25 search, count, delete by chunk IDs,
+delete by resource, delete by product, and close. The retrieval pipeline is
+dense + BM25 -> RRF -> configured reranker.
+
 Qdrant collections (per `nexus.yaml`):
 
 - `nexus_code` — code chunks, dense + sparse vectors
@@ -282,6 +311,8 @@ Qdrant collections (per `nexus.yaml`):
 Both collections filter payloads on `product_id`; all retrieval paths include
 that filter. Sparse vectors come from BM25 (`Qdrant/bm25` via fastembed). One
 upsert per changed batch carries both dense and sparse vectors for every chunk.
+Dense vectors use Qdrant native TurboQuant by default (`bits4`, `always_ram:
+true`) when collections are created.
 
 Payload fields include `product_id`, `resource_uri`, `source_id`, `source_key`,
 `content_hash`, `embedding_version`, `indexed_at`, `kind`, line span,
@@ -324,7 +355,7 @@ rerank-soft-fail:
 
 ```
 embed(query) ──► dense top-50 ┐
-                              ├── RRF merge top-20 ──► Jina rerank top-K
+                              ├── RRF merge top-20 ──► rerank top-K
 BM25(query) ──► sparse top-50 ┘
 ```
 
@@ -333,8 +364,9 @@ BM25(query) ──► sparse top-50 ┘
 default `0.0`) applies only after rerank succeeds: chunks with reranker scores
 below the gate are dropped. Dense embedding scores, BM25 scores, and reranker
 scores are separate scales; this gate is not an embedding-similarity threshold.
-Keep the local Jina/llama.cpp default at `0.0` unless an eval set shows a
-higher cutoff improves precision without losing needed evidence.
+Keep provider defaults at `0.0` until an eval set calibrates that reranker's
+score scale and proves a higher cutoff improves precision without losing
+needed evidence.
 
 Nothing else. **No** classifier, **no** HyDE, **no** semantic cache, **no**
 circuit breakers, **no** graph expansion, **no** prompt-injection guard. The
@@ -590,49 +622,58 @@ vector_store:
   collections:
     code: nexus_code
     text: nexus_text
+  quantization:
+    enabled: true
+    type: turboquant              # Qdrant v1.18+ native TurboQuant
+    bits: bits4                   # bits4 best recall; lower bits compress more
+    always_ram: true
 
 models:
   council:                     # default for drafter + critic + reviser
     provider: deepinfra
-    model: Qwen/Qwen3-Max-Thinking
+    model: google/gemma-4-26B-A4B-it
     api_key: ${DEEPINFRA_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
   # Optional role-specific overrides. Omit any role to use models.council.
   drafter:
     provider: deepinfra
-    model: Qwen/Qwen3-Max-Thinking
+    model: google/gemma-4-26B-A4B-it
     api_key: ${DEEPINFRA_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
   critic:
     provider: deepinfra
-    model: Qwen/Qwen3-Max-Thinking
+    model: google/gemma-4-26B-A4B-it
     api_key: ${DEEPINFRA_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
   reviser:
     provider: deepinfra
-    model: Qwen/Qwen3-Max-Thinking
+    model: google/gemma-4-26B-A4B-it
     api_key: ${DEEPINFRA_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
   light:                       # enricher (HQE + Anthropic CR)
     provider: deepinfra
-    model: google/gemma-3-4b-it
+    model: google/gemma-4-26B-A4B-it
     api_key: ${DEEPINFRA_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
-  embedding:                   # local llama.cpp on Metal
-    provider: jina-local
-    model: jinaai/jina-embeddings-v4
-    url: http://localhost:8080
+  embedding:
+    provider: deepinfra
+    model: Qwen/Qwen3-Embedding-4B
+    api_key: ${DEEPINFRA_API_KEY}
+    base_url: https://api.deepinfra.com/v1/openai
+    dim: 2560
+    instruction_profile: qwen3
   reranker:
-    provider: jina-local
-    model: jinaai/jina-reranker-v3
-    url: http://localhost:8081
+    provider: deepinfra
+    model: Qwen/Qwen3-Reranker-4B
+    api_key: ${DEEPINFRA_API_KEY}
+    base_url: https://api.deepinfra.com/v1/inference
 
 ingestion:
   enrich_chunks:
     docs: true                 # Anthropic Contextual Retrieval
     code: true                 # HQE
   embed_batch_size: 16
-  quality_gate_threshold: 0.0  # reranker score gate; 0.0 keeps local Jina permissive
+  quality_gate_threshold: 0.0  # reranker score gate; calibrate per provider via eval
   file_batch_size: 20          # M2/8GB; bump to 50 on 16GB+
   read_concurrency: 5          # M2/8GB; bump to 10 on 16GB+
   enricher_concurrency: 4
@@ -648,6 +689,11 @@ storage:
 
 `<state_dir>` is `storage.proposal_queue.parent` — also holds
 `repomaps/<product_id>.json` and `registry.db`.
+
+Changing embedding provider/model/dim/instruction profile or Qdrant
+quantization settings forces resync through `embedding_version(config)`. Qdrant
+collections must be recreated or explicitly updated if the embedding dimension
+or quantization config changes after collection creation.
 
 `${VAR}` substitution is performed at load time
 (`nexus/config.py::_expand_env`).
@@ -692,13 +738,15 @@ The CLI exits non-zero when either floor is violated — drops into CI
 cleanly. Re-run after any change to chunking, enrichment, hybrid, rerank,
 repo map, or contextual retrieval.
 
+Qdrant with native TurboQuant is the only vector-index path. Eval compares the
+current stack against the floors in `queries.json._meta`.
+
 ## 11. Storage
 
 - **Skills repo** — single Git repo, one per org, cloned to
   `hierarchy_root`. The first commit comes from the council's first
   approval; setup creates the repo empty.
-- **Qdrant** — `nexus_code` + `nexus_text` collections; product_id payload
-  filter on every query.
+- **Derived retrieval index** — Qdrant dense + sparse collections.
 - **SQLite** — `proposals` + `sessions` (`storage.proposal_queue`);
   `registry.db` (products, users, runtime sources, sync manifests, sync runs,
   setup KV).
@@ -712,9 +760,9 @@ uv run nexus delete-product --product <pid> --yes  # delete
 ```
 
 It removes product-scoped registry rows, source manifests/runs, proposals,
-sessions, approved skill files, Qdrant payloads in both collections, repo map,
-and LangGraph checkpoints for that product's session IDs. `--skip-qdrant`
-skips vector cleanup for offline/local-only recovery.
+sessions, approved skill files, retrieval index entries, repo map, and
+LangGraph checkpoints for that product's session IDs. `--skip-qdrant` skips
+derived index cleanup for offline/local-only recovery.
 
 ## 12. Tech Stack
 
@@ -723,12 +771,13 @@ skips vector cleanup for offline/local-only recovery.
 - **FastAPI** for the API. **Pydantic** for boundary types. **httpx** for
   outbound HTTP. **LangGraph** for the council state machine.
 - **tree-sitter** for code parsing (Python, TS, TSX, JS, Rust, Go).
-- **Qdrant** for vector + sparse storage. **fastembed** for BM25 sparse
-  encoding.
-- **Jina v4** embeddings + **Jina Reranker v3** served via llama.cpp. Local
-  scripts auto-detect Metal/GPU/CPU and expose env overrides.
-- **DeepInfra** (OpenAI-compatible) for council + enricher LLMs in dev.
-  Swap the `provider` + `base_url` to point at any compatible endpoint.
+- **Qdrant** for vector + sparse storage, with native TurboQuant for dense
+  vector compression. **fastembed** backs Qdrant BM25 sparse encoding.
+- **DeepInfra Qwen3** embeddings/reranker are the default low-resource dev
+  profile. Local **Jina v4** embeddings + **Jina Reranker v3** remain available
+  via llama.cpp for high-resource/offline machines.
+- **DeepInfra** (OpenAI-compatible) for council + enricher LLMs in dev. Swap
+  the `provider` + `base_url` to point at any compatible endpoint.
 - **MCP** (stdio transport) for the agent-facing skill server.
 
 ## 13. Cut layers — kept out by design

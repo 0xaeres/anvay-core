@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from nexus.retrieval.hybrid import Hit
-from tests.eval.harness import EvalReport, QueryResult, load_queries, matches_expected
+from tests.eval.harness import (
+    EvalReport,
+    QueryResult,
+    load_queries,
+    matches_expected,
+)
 
 
 def _hit(uri: str, *, start: int = 1, end: int | None = None) -> Hit:

@@ -35,13 +35,13 @@ def _echo_delete_report(report, *, dry_run: bool) -> None:
         f"{report.checkpoints} checkpoints"
     )
     typer.echo(f"  skills     : {report.skills} files")
-    if report.qdrant:
-        qdrant_counts = ", ".join(
-            f"{collection}={count}" for collection, count in report.qdrant.items()
+    if report.index:
+        index_counts = ", ".join(
+            f"{collection}={count}" for collection, count in report.index.items()
         )
-        typer.echo(f"  qdrant     : {qdrant_counts}")
+        typer.echo(f"  index      : {index_counts}")
     else:
-        typer.echo("  qdrant     : skipped")
+        typer.echo("  index      : skipped")
     typer.echo(f"  repomap    : {1 if report.repomap_deleted else 0} file")
 
 
@@ -70,9 +70,9 @@ def delete_product_cmd(
     product: str = typer.Option(..., "--product", "-p", help="Product ID to delete."),
     config_path: Path = typer.Option(Path("nexus.yaml"), "--config", "-c"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Actually delete. Default is dry-run."),
-    skip_qdrant: bool = typer.Option(False, "--skip-qdrant", help="Skip Qdrant cleanup."),
+    skip_qdrant: bool = typer.Option(False, "--skip-qdrant", help="Skip index cleanup."),
 ) -> None:
-    """Delete one product and all product-scoped local/Qdrant state."""
+    """Delete one product and all product-scoped local/index state."""
     from nexus.config import NexusConfig
     from nexus.tools.delete_product import delete_product
 

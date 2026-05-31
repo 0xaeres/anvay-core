@@ -2,19 +2,26 @@
 
 Every council role goes through `ChatClient.from_role(config, role)`. The provider
 field decides the base URL and auth header; the model field decides the request
-body. Streaming and structured-output are deliberately omitted for the MVP — we
-parse JSON from the model's text response.
+body. DeepInfra council clients stream token deltas for prose/markdown calls while
+still returning a complete response to callers. JSON-mode calls stay non-streamed
+because they are machine-parsed control messages.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
 from nexus.config import ModelCfg
+
+log = logging.getLogger(__name__)
+
+TokenSink = Callable[[dict[str, str]], Awaitable[None]]
 
 # Provider → base URL. Override with model.base_url / model.url in nexus.yaml.
 _PROVIDER_BASES: dict[str, str] = {
@@ -64,19 +71,29 @@ class ChatClient:
         base_url: str,
         api_key: str | None,
         role: str,
-        timeout_s: float = 120.0,
+        timeout_s: float = 300.0,
+        stream_chat: bool = False,
+        token_sink: TokenSink | None = None,
     ):
         self.provider = provider
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.role = role
+        self._stream_chat = stream_chat
+        self._token_sink = token_sink
         headers: dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         self._client = httpx.AsyncClient(headers=headers, timeout=timeout_s)
 
     @classmethod
-    def from_cfg(cls, cfg: ModelCfg, *, role: str) -> ChatClient:
+    def from_cfg(
+        cls,
+        cfg: ModelCfg,
+        *,
+        role: str,
+        token_sink: TokenSink | None = None,
+    ) -> ChatClient:
         provider = cfg.provider.lower()
         base = cfg.base_url or cfg.url or _PROVIDER_BASES.get(provider)
         if not base:
@@ -87,6 +104,8 @@ class ChatClient:
             base_url=base,
             api_key=cfg.api_key,
             role=role,
+            stream_chat=provider == "deepinfra",
+            token_sink=token_sink,
         )
 
     async def aclose(self) -> None:
@@ -110,6 +129,20 @@ class ChatClient:
         if json_mode:
             body["response_format"] = {"type": "json_object"}
 
+        if self._stream_chat and not json_mode:
+            try:
+                return await self._chat_stream(body)
+            except LLMError as e:
+                log.warning(
+                    "%s: streaming chat failed; retrying without stream: %s",
+                    self.role,
+                    e,
+                )
+                return await self._chat_non_stream(body)
+
+        return await self._chat_non_stream(body)
+
+    async def _chat_non_stream(self, body: dict[str, Any]) -> ChatResponse:
         try:
             resp = await self._client.post(f"{self.base_url}/chat/completions", json=body)
         except httpx.HTTPError as e:
@@ -136,6 +169,78 @@ class ChatClient:
             raw=payload,
         )
 
+    async def _chat_stream(self, body: dict[str, Any]) -> ChatResponse:
+        """OpenAI-compatible streaming chat; collect text while emitting deltas."""
+        stream_body = {
+            **body,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        content_parts: list[str] = []
+        finish_reason = "stop"
+        usage = TokenUsage()
+        raw_chunks: list[dict[str, Any]] = []
+        try:
+            async with self._client.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                json=stream_body,
+            ) as resp:
+                if resp.status_code != 200:
+                    text = await resp.aread()
+                    raise LLMError(
+                        f"{self.role}: streaming chat returned {resp.status_code}: "
+                        f"{text.decode('utf-8', errors='replace')[:200]}"
+                    )
+                async for line in resp.aiter_lines():
+                    payload = _parse_sse_line(line)
+                    if payload is None:
+                        continue
+                    raw_chunks.append(payload)
+                    usage_obj = payload.get("usage") or {}
+                    if usage_obj:
+                        usage = TokenUsage(
+                            prompt=int(usage_obj.get("prompt_tokens", usage.prompt)),
+                            completion=int(
+                                usage_obj.get("completion_tokens", usage.completion)
+                            ),
+                        )
+                    for choice in payload.get("choices", []) or []:
+                        choice_finish = choice.get("finish_reason")
+                        if choice_finish:
+                            finish_reason = str(choice_finish).lower()
+                        delta = choice.get("delta") or {}
+                        text = delta.get("content") or ""
+                        if not text:
+                            continue
+                        content_parts.append(text)
+                        await self._emit_token(text)
+        except httpx.HTTPError as e:
+            raise LLMError(f"{self.role}: streaming chat call failed: {e}") from e
+
+        return ChatResponse(
+            content="".join(content_parts),
+            usage=usage,
+            model=self.model,
+            finish_reason=finish_reason,
+            raw={"stream": raw_chunks},
+        )
+
+    async def _emit_token(self, text: str) -> None:
+        if self._token_sink is None:
+            return
+        try:
+            await self._token_sink(
+                {
+                    "role": self.role,
+                    "model": self.model,
+                    "provider": self.provider,
+                    "text": text,
+                }
+            )
+        except Exception:
+            log.warning("token sink failed for role=%s", self.role, exc_info=True)
+
     async def chat_json(
         self, messages: list[dict[str, str]], *, temperature: float = 0.2, max_tokens: int = 2048
     ) -> tuple[Any, TokenUsage]:
@@ -144,7 +249,33 @@ class ChatClient:
         resp = await self.chat(
             messages, temperature=temperature, max_tokens=max_tokens, json_mode=True
         )
-        return _parse_json_payload(resp.content), resp.usage
+        try:
+            return _parse_json_payload(resp.content), resp.usage
+        except LLMError:
+            repair_messages = [
+                *messages,
+                {"role": "assistant", "content": resp.content},
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous response was not valid complete JSON. "
+                        "Return only a valid JSON object that satisfies the requested "
+                        "schema. Keep all string fields concise. Do not include Markdown, "
+                        "fences, commentary, or repeated prompt text."
+                    ),
+                },
+            ]
+            repaired = await self.chat(
+                repair_messages,
+                temperature=0.0,
+                max_tokens=max_tokens,
+                json_mode=True,
+            )
+            usage = TokenUsage(
+                prompt=resp.usage.prompt + repaired.usage.prompt,
+                completion=resp.usage.completion + repaired.usage.completion,
+            )
+            return _parse_json_payload(repaired.content), usage
 
     async def chat_markdown(
         self,
@@ -225,3 +356,18 @@ def _parse_json_payload(text: str) -> Any:
         except json.JSONDecodeError:
             pass
     raise LLMError(f"failed to parse JSON from model output: {text[:200]!r}")
+
+
+def _parse_sse_line(line: str) -> dict[str, Any] | None:
+    line = line.strip()
+    if not line or line.startswith(":"):
+        return None
+    if not line.startswith("data:"):
+        return None
+    data = line.removeprefix("data:").strip()
+    if not data or data == "[DONE]":
+        return None
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError as e:
+        raise LLMError(f"failed to parse streaming chat chunk: {data[:200]!r}") from e

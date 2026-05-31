@@ -181,6 +181,7 @@ def _cli() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     cfg = NexusConfig.load(args.config)
     meta, queries = load_queries(Path(args.queries))
+
     report = asyncio.run(
         run_eval(config=cfg, product_id=args.product, top_k=args.top_k, queries=queries)
     )

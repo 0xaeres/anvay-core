@@ -1,6 +1,6 @@
 # Nexus configuration — see ENGINEERING.md for the full schema.
-# Dev defaults: Qdrant in Docker, embedding + reranker via local llama.cpp,
-# council + enricher LLMs via an OpenAI-compatible cloud endpoint.
+# Dev defaults: Qdrant in Docker, DeepInfra embeddings/reranker/council.
+# Local Jina remains available for high-resource/offline machines.
 
 # Optional here; the first-run UI wizard can create/attach this at /setup.
 skills_repo: ""
@@ -24,47 +24,75 @@ vector_store:
   collections:
     code: nexus_code
     text: nexus_text
+  # Qdrant v1.18+ native TurboQuant. Applied on collection creation; changing
+  # type/bits/dim later requires recreating collections or explicitly updating
+  # them in Qdrant, then resyncing/reindexing products.
+  quantization:
+    enabled: true
+    type: turboquant                  # turboquant only for now
+    bits: bits4                       # bits4 best recall; bits2/bits1_5/bits1 compress more
+    always_ram: true
 
 # ---------------------------------------------------------------- Models
 models:
   council:
     provider: deepinfra
-    model: Qwen/Qwen3-Max-Thinking
+    model: google/gemma-4-26B-A4B-it
     api_key: ${DEEPINFRA_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
 
   # Optional role-specific overrides. Omit to use models.council for all three.
   # drafter:
   #   provider: deepinfra
-  #   model: Qwen/Qwen3-Max-Thinking
+  #   model: google/gemma-4-26B-A4B-it
   #   api_key: ${DEEPINFRA_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
   # critic:
   #   provider: deepinfra
-  #   model: Qwen/Qwen3-Max-Thinking
+  #   model: google/gemma-4-26B-A4B-it
   #   api_key: ${DEEPINFRA_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
   # reviser:
   #   provider: deepinfra
-  #   model: Qwen/Qwen3-Max-Thinking
+  #   model: google/gemma-4-26B-A4B-it
   #   api_key: ${DEEPINFRA_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
 
   light:
     provider: deepinfra
-    model: google/gemma-3-4b-it
+    model: google/gemma-4-26B-A4B-it
     api_key: ${DEEPINFRA_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
 
   embedding:
-    provider: jina-local
-    model: jinaai/jina-embeddings-v4
-    url: http://localhost:8080
+    provider: deepinfra
+    model: Qwen/Qwen3-Embedding-4B
+    api_key: ${DEEPINFRA_API_KEY}
+    base_url: https://api.deepinfra.com/v1/openai
+    dim: 2560
+    instruction_profile: qwen3
 
   reranker:
-    provider: jina-local
-    model: jinaai/jina-reranker-v3
-    url: http://localhost:8081
+    provider: deepinfra
+    model: Qwen/Qwen3-Reranker-4B
+    api_key: ${DEEPINFRA_API_KEY}
+    base_url: https://api.deepinfra.com/v1/inference
+
+  # Local Jina profile for high-resource/offline machines. Switching embedding
+  # model, instruction profile, dimension, or reranker score scale requires
+  # resync and eval: instructions, score thresholds, chunk lengths, and vector
+  # dimensions are the real compatibility risks.
+  # embedding:
+  #   provider: jina-local
+  #   model: jinaai/jina-embeddings-v4
+  #   url: http://localhost:8080
+  #   dim: 2048
+  #   instruction_profile: jina-v4
+  #
+  # reranker:
+  #   provider: jina-local
+  #   model: jinaai/jina-reranker-v3
+  #   url: http://localhost:8081
 
 # ---------------------------------------------------------------- Ingestion
 ingestion:

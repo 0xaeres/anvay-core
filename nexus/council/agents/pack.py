@@ -160,7 +160,8 @@ async def experts(
                     "role": "system",
                     "content": (
                         f"You are the {name} expert in a bounded LLM council. "
-                        "Use only the supplied evidence. Be concrete and cite by evidence id."
+                        "Use only the supplied evidence. Return compact JSON only. "
+                        "Do not draft skills, Markdown sections, headings, or long prose."
                     ),
                 },
                 {
@@ -168,12 +169,16 @@ async def experts(
                     "content": (
                         f"Charter: {charter}\nTopic: {state['topic']}\n\n"
                         f"{evidence_for_prompt(fresh)}\n\n"
-                        "Return JSON: {\"summary\":\"...\",\"findings\":[\"...\"],"
-                        "\"missing_questions\":[\"...\"]}"
+                        "Return JSON exactly shaped as "
+                        "{\"summary\":\"...\",\"findings\":[\"...\"],"
+                        "\"missing_questions\":[\"...\"]}. "
+                        "Constraints: summary <= 25 words; findings <= 4 plain strings, "
+                        "each <= 18 words; missing_questions <= 3 plain strings. "
+                        "No Markdown, no citations outside evidence ids, no skill drafts."
                     ),
                 },
             ],
-            max_tokens=1200,
+            max_tokens=500,
         )
         total = _add_usage(total, usage)
         reports.append(

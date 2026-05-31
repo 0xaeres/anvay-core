@@ -53,6 +53,10 @@ class FakeEmbedder:
     def __init__(self, *args, **kwargs):
         pass
 
+    @classmethod
+    def from_cfg(cls, *args, **kwargs):
+        return cls()
+
     async def embed_chunks(self, chunks):
         FakeEmbedder.calls += 1
         return [
@@ -108,7 +112,7 @@ def _patch_ingest(monkeypatch):
     FakeIndexer.instances = []
     monkeypatch.setattr(pipeline, "EmbedderClient", FakeEmbedder)
     monkeypatch.setattr(pipeline, "ContextualEnricher", FakeEnricher)
-    monkeypatch.setattr(pipeline, "Indexer", FakeIndexer)
+    monkeypatch.setattr(pipeline, "create_indexer", lambda config: FakeIndexer())
     monkeypatch.setattr(pipeline, "aencode_passages", _fake_sparse)
 
 

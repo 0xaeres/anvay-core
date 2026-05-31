@@ -51,7 +51,7 @@ async def test_council_handles_use_role_specific_models(tmp_path: Path, monkeypa
     def fake_from_config(_config):
         return FakeRetrieval()
 
-    def fake_from_cfg(cfg: ModelCfg, *, role: str):
+    def fake_from_cfg(cfg: ModelCfg, *, role: str, token_sink=None):
         seen[role] = cfg.model
         return FakeChat(cfg.model, role)
 

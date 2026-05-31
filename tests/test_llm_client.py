@@ -1,7 +1,10 @@
+import json
+
+import httpx
 import pytest
 
 from nexus.config import ModelCfg
-from nexus.llm.client import ChatClient, LLMError, _parse_json_payload
+from nexus.llm.client import ChatClient, LLMError, _parse_json_payload, _parse_sse_line
 
 
 def test_provider_routing_deepinfra() -> None:
@@ -46,3 +49,170 @@ def test_parse_json_payload_empty_returns_empty_dict() -> None:
 def test_parse_json_payload_unparseable_raises() -> None:
     with pytest.raises(LLMError):
         _parse_json_payload("not json at all")
+
+
+def test_parse_sse_line_reads_openai_delta() -> None:
+    payload = _parse_sse_line(
+        'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}'
+    )
+
+    assert payload == {
+        "choices": [{"delta": {"content": "hi"}, "finish_reason": None}]
+    }
+    assert _parse_sse_line("data: [DONE]") is None
+
+
+@pytest.mark.asyncio
+async def test_deepinfra_chat_stream_collects_and_emits_tokens() -> None:
+    lines = [
+        {
+            "choices": [
+                {"delta": {"content": "hello "}, "finish_reason": None}
+            ]
+        },
+        {"choices": [{"delta": {"content": "world"}, "finish_reason": "stop"}]},
+        {"usage": {"prompt_tokens": 3, "completion_tokens": 2}, "choices": []},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["stream"] is True
+        assert body["stream_options"] == {"include_usage": True}
+        content = "".join(f"data: {json.dumps(line)}\n\n" for line in lines)
+        content += "data: [DONE]\n\n"
+        return httpx.Response(200, content=content.encode("utf-8"))
+
+    seen: list[dict[str, str]] = []
+
+    async def token_sink(token: dict[str, str]) -> None:
+        seen.append(token)
+
+    client = ChatClient.from_cfg(
+        ModelCfg(provider="deepinfra", model="m", api_key="k"),
+        role="drafter",
+        token_sink=token_sink,
+    )
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), headers=client._client.headers
+    )
+    try:
+        response = await client.chat([{"role": "user", "content": "go"}])
+    finally:
+        await client.aclose()
+
+    assert response.content == "hello world"
+    assert response.usage.prompt == 3
+    assert response.usage.completion == 2
+    assert [token["text"] for token in seen] == ["hello ", "world"]
+    assert all(token["role"] == "drafter" for token in seen)
+
+
+@pytest.mark.asyncio
+async def test_deepinfra_json_mode_does_not_stream() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        assert "stream" not in body
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": '{"ok": true}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    client = ChatClient.from_cfg(
+        ModelCfg(provider="deepinfra", model="m", api_key="k"),
+        role="critic",
+    )
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), headers=client._client.headers
+    )
+    try:
+        payload, usage = await client.chat_json([{"role": "user", "content": "go"}])
+    finally:
+        await client.aclose()
+
+    assert payload == {"ok": True}
+    assert usage.total == 2
+
+
+@pytest.mark.asyncio
+async def test_chat_json_repairs_invalid_json_once() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            content = '{"ok":'
+        else:
+            body = json.loads(request.content.decode("utf-8"))
+            assert "not valid complete JSON" in body["messages"][-1]["content"]
+            content = '{"ok": true}'
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": content}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    client = ChatClient.from_cfg(
+        ModelCfg(provider="openai", model="m", api_key="k", base_url="https://example.test/v1"),
+        role="critic",
+    )
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), headers=client._client.headers
+    )
+    try:
+        payload, usage = await client.chat_json([{"role": "user", "content": "go"}])
+    finally:
+        await client.aclose()
+
+    assert payload == {"ok": True}
+    assert usage.total == 4
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_failure_retries_non_stream() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        body = json.loads(request.content.decode("utf-8"))
+        if body.get("stream"):
+            return httpx.Response(500, text="stream broke")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "fallback"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+            },
+        )
+
+    client = ChatClient.from_cfg(
+        ModelCfg(provider="deepinfra", model="m", api_key="k"),
+        role="drafter",
+    )
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), headers=client._client.headers
+    )
+    try:
+        response = await client.chat([{"role": "user", "content": "go"}])
+    finally:
+        await client.aclose()
+
+    assert response.content == "fallback"
+    assert response.usage.total == 3
+    assert calls == 2

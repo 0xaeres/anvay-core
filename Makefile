@@ -1,4 +1,4 @@
-.PHONY: help install services-up services-down observability-up docker-up docker-down embedder reranker light-llm api dev test test-live-e2e lint format clean
+.PHONY: help install services-up services-down observability-up docker-up docker-down embedder reranker local-models-up light-llm api dev test test-live-e2e lint format clean
 
 PIDDIR := .pids
 
@@ -6,14 +6,15 @@ help:
 	@echo "Nexus dev orchestration"
 	@echo ""
 	@echo "  make install        — uv sync (Python deps)"
-	@echo "  make services-up    — bring up Qdrant + host embedder/reranker"
+	@echo "  make services-up    — bring up Qdrant"
+	@echo "  make local-models-up — optional: host embedder/reranker for jina-local"
 	@echo "  make observability-up — optional: bring up Langfuse"
 	@echo "  make services-down  — stop everything"
 	@echo "  make api            — run FastAPI dev server"
 	@echo "  make dev            — services-up + api (one shot)"
 	@echo "  make light-llm      — optional: start local Ollama for light model"
 	@echo "  make test           — pytest"
-	@echo "  make test-live-e2e  — real live backend E2E (requires NEXUS_LIVE_E2E=1)"
+	@echo "  make test-live-e2e  — real live backend E2E against Qdrant"
 	@echo "  make lint           — ruff check"
 	@echo "  make format         — ruff format"
 
@@ -56,12 +57,13 @@ light-llm:
 logs:
 	@mkdir -p logs
 
-services-up: logs docker-up embedder reranker
+local-models-up: embedder reranker
+
+services-up: logs docker-up
 	@echo ""
 	@echo "✓ Services up:"
 	@echo "  Qdrant   http://localhost:6333"
-	@echo "  Embedder http://localhost:8080"
-	@echo "  Reranker http://localhost:8081"
+	@echo "  Models   DeepInfra by default; run make local-models-up for jina-local"
 
 services-down: docker-down
 	@for svc in embedder reranker; do \

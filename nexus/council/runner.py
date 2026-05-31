@@ -59,7 +59,7 @@ class _SessionHub:
             await q.put(_END)
 
     async def subscribe(self, session_id: str) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=256)
+        q: asyncio.Queue = asyncio.Queue(maxsize=2048)
         async with self._lock:
             self._subscribers.setdefault(session_id, []).append(q)
             if session_id in self._completed:
@@ -152,8 +152,11 @@ async def _run_session(
         proposal = None
         proposals = []
 
+        async def token_sink(token: dict[str, str]) -> None:
+            await HUB.publish(session_id, {"event": "llm_token", "data": token})
+
         async with (
-            council_handles(config) as handles,
+            council_handles(config, token_sink=token_sink) as handles,
             open_checkpointer(config.storage.council_checkpoint) as saver,
         ):
             graph = build_graph(config, handles)
