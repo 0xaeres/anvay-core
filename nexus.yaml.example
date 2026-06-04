@@ -37,26 +37,30 @@ vector_store:
 models:
   council:
     provider: deepinfra
-    model: google/gemma-4-26B-A4B-it
+    model: deepseek-ai/DeepSeek-V3
     api_key: ${DEEPINFRA_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
+    temperature: 0.0
 
   # Optional role-specific overrides. Omit to use models.council for all three.
   # drafter:
   #   provider: deepinfra
-  #   model: google/gemma-4-26B-A4B-it
+  #   model: deepseek-ai/DeepSeek-V3
   #   api_key: ${DEEPINFRA_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
+  #   temperature: 0.0
   # critic:
   #   provider: deepinfra
-  #   model: google/gemma-4-26B-A4B-it
+  #   model: deepseek-ai/DeepSeek-V3
   #   api_key: ${DEEPINFRA_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
+  #   temperature: 0.0
   # reviser:
   #   provider: deepinfra
-  #   model: google/gemma-4-26B-A4B-it
+  #   model: deepseek-ai/DeepSeek-V3
   #   api_key: ${DEEPINFRA_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
+  #   temperature: 0.0
 
   light:
     provider: deepinfra
@@ -97,13 +101,18 @@ models:
 # ---------------------------------------------------------------- Ingestion
 ingestion:
   enrich_chunks:
-    docs: true
-    code: true
-  embed_batch_size: 16          # client-side request fanout; llama.cpp physical batch is EMBEDDER_UBATCH
+    docs: false
+    code: false
+  embed_batch_size: 32          # client-side request fanout; llama.cpp physical batch is EMBEDDER_UBATCH
   quality_gate_threshold: 0.0
-  file_batch_size: 20
-  read_concurrency: 5
+  file_batch_size: 50
+  read_concurrency: 10
+  batch_concurrency: 2
   enricher_concurrency: 4
+  enrichment_worker:
+    enabled: false
+    poll_interval_s: 5.0
+    max_attempts: 3
 
 # ---------------------------------------------------------------- Server
 server:

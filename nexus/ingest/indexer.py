@@ -14,7 +14,7 @@ A keyword index on `product_id` makes these filters fast.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qm
@@ -50,7 +50,7 @@ class Indexer:
         quantization_bits: str = "bits4",
         quantization_always_ram: bool = True,
     ):
-        self.client = AsyncQdrantClient(url=url)
+        self.client = AsyncQdrantClient(url=url, check_compatibility=False)
         self._code = code_collection
         self._text = text_collection
         self._dim = vector_dim
@@ -241,6 +241,37 @@ class Indexer:
             exact=True,
         )
         return res.count
+
+    async def iter_chunk_payloads(
+        self,
+        *,
+        product_id: str,
+        vector_kind: str,
+        batch_size: int = 256,
+    ) -> AsyncIterator[tuple[str, dict]]:
+        """Yield indexed chunk payloads for one product/kind without vectors."""
+        coll = self._code if vector_kind == "code" else self._text
+        product_filter = qm.Filter(
+            must=[
+                qm.FieldCondition(
+                    key="product_id", match=qm.MatchValue(value=product_id)
+                )
+            ]
+        )
+        offset = None
+        while True:
+            points, offset = await self.client.scroll(
+                collection_name=coll,
+                scroll_filter=product_filter,
+                limit=batch_size,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in points:
+                yield str(point.id), point.payload or {}
+            if offset is None:
+                break
 
     async def delete_by_resource(
         self, *, product_id: str, resource_uri: str

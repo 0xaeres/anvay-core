@@ -18,7 +18,7 @@ ergonomic pain point should not be in the codebase.
 ingest                                              council
 ─────────────                                       ─────────────
 chunker         tree-sitter / heading-aware         drafter
-enricher        HQE for code | Anthropic CR docs    critic   ← own retrieval
+enricher        optional HQE / Anthropic CR         critic   ← own retrieval
 embedder        Jina v4 (Metal)                     reviser  ← only on blocking
 indexer         Qdrant (dense + BM25)                  │
 repomap         tree-sitter symbol outline             ▼
@@ -44,7 +44,7 @@ Two hard constraints. Code that violates them is a bug.
    Business units are optional product metadata (`owner.team`) in v1, not a
    first-class entity or tenancy boundary.
 2. **Humans approve, agents draft.** The council emits `SkillProposal`s.
-   Nothing becomes a `.skill.md` on disk or in Git without
+   Nothing becomes a `SKILL.md` on disk or in Git without
    `approve_proposal()` being called by an authenticated actor.
 
 ## 2. Data Model
@@ -59,6 +59,7 @@ The unit of curated guidance Nexus serves to agents.
 ```python
 class Skill(BaseModel):
     name: str
+    description: str
     product: str
     version: int = 1
     confidence: float          # [0.0, 1.0]
@@ -71,8 +72,9 @@ class Skill(BaseModel):
         return f"{self.product}/{self.name}"
 ```
 
-On disk: `<hierarchy_root>/<product>/<name>.skill.md` with YAML
-frontmatter for everything but `body`.
+On disk: `<hierarchy_root>/<product>/<name>/SKILL.md` with Agent Skills
+frontmatter (`name`, `description`, `compatibility`, and `metadata.nexus_*`).
+Legacy `<product>/<name>.skill.md` files remain readable.
 
 ```python
 class Provenance(BaseModel):
@@ -88,7 +90,7 @@ class Provenance(BaseModel):
 loop fires at most once (see §5). The confidence formula:
 
 ```
-confidence = (citation_density * critic_passes) / 2
+confidence = citation_density * critic_passes
   where citation_density = min(citations / paragraphs, 1.0)
         critic_passes    = 1.0 if revision_count == 0 else 0.7
 ```
@@ -136,7 +138,7 @@ class Chunk(BaseModel):
     end_line: int
     kind: ChunkKind            # CODE | DOC
     context_path: str = ""     # heading hierarchy for docs (e.g. "Auth / API Keys / Rotating")
-    context_summary: str = ""  # enricher output: HQE questions OR CR situating context
+    context_summary: str = ""  # optional enricher output: HQE questions OR CR context
 
     @property
     def id(self) -> str:       # deterministic UUID5 over product + uri + start:end
@@ -164,15 +166,15 @@ stable `source_key`, which enables delta-safe resync. The pipeline does:
 list resources ──► read + SHA-256 hash ──► manifest diff
   ├─ unchanged ──► skip
   ├─ removed   ──► Qdrant delete IDs ──► delete manifest row
-  └─ added/updated ──► chunk ──► enrich ──► dense embed ──► BM25 sparse
+  └─ added/updated ──► chunk ──► dense embed ──► BM25 sparse
                     ──► Qdrant upsert ──► delete stale old IDs
-                    ──► upsert manifest row
+                    ──► upsert manifest row ──► optional enrichment queue
 ```
 
-Files batch in groups of `IngestionCfg.file_batch_size` (default 20 on M2/8GB,
-50 on 16GB+). Within a batch reads are concurrent at
-`IngestionCfg.read_concurrency` (5 / 10). The embedder is called once per
-changed batch, never for unchanged resources.
+Files batch in groups of `IngestionCfg.file_batch_size` (default 50). Reads are
+concurrent at `IngestionCfg.read_concurrency` (default 10). Changed batches are
+processed concurrently up to `IngestionCfg.batch_concurrency` (default 2), and
+the embedder is called once per changed batch, never for unchanged resources.
 
 ### Delta-Safe Manifest (`nexus/registry.py`)
 
@@ -181,15 +183,23 @@ successfully indexed:
 
 - `source_resources` primary key: `(product_id, source_key, resource_uri)`.
   Stores `content_hash`, `mime`, `size_bytes`, `last_seen_sync`,
-  `chunk_ids_js`, `indexed_at`, and `embedding_version`.
+  `chunk_ids_js`, `indexed_at`, `embedding_version`, `enrichment_version`,
+  and `enrichment_status`.
+- `enrichment_jobs` stores durable optional enrichment work. Jobs are claimed
+  by the FastAPI lifespan worker, dropped if stale, retried up to the configured
+  cap, and deleted after success.
 - `source_sync_runs` stores sync attempt start/finish timestamps, diff counts,
   and status.
 
 `embedding_version(config)` hashes retrieval backend, embedding
-provider/model/endpoint/dimension/instruction profile, reranker
-provider/model/endpoint, quality gate, the light enricher provider/model/base
-URL, and enrichment toggles. If any of those change, rows classify as
-`updated` and re-embed on the next sync.
+provider/model/endpoint/dimension/instruction profile and Qdrant quantization
+settings. If any of those change, rows classify as `updated` and re-embed on
+the next sync.
+
+`enrichment_version(config)` hashes the light enricher model/endpoint and
+enrichment toggles. If optional enrichment is enabled and this version changes,
+unchanged resources are queued for background enrichment without rebuilding the
+raw dense+BM25 index.
 
 Ordering rules:
 
@@ -214,7 +224,7 @@ Sizing (defaults target a MacBook Air M2/8GB running llama.cpp with
 `EMBEDDER_UBATCH=1024`):
 
 ```
-MAX_CHUNK_CHARS    = 1200   # ~300-400 tokens after enricher prefix
+MAX_CHUNK_CHARS    = 1200   # ~300-400 tokens; leaves room for optional prefixes
 CHAR_SPLIT_TARGET  = 700
 CHAR_SPLIT_OVERLAP = 70
 ```
@@ -225,7 +235,14 @@ for constrained machines, lower chunk sizes instead.
 
 ### Enricher (`nexus/ingest/enricher.py`)
 
-Two strategies, dispatched on `ChunkKind`:
+Optional LLM enrichment is available but disabled by default
+(`ingestion.enrich_chunks.docs: false`, `code: false`). The default ingest path
+is raw dense + BM25 indexing so a Nexus-sized repo becomes searchable quickly.
+If enabled, source sync writes the raw index first and queues durable background
+jobs; the worker enriches changed resources and upserts the same deterministic
+chunk IDs.
+
+Two optional strategies are dispatched on `ChunkKind`:
 
 **Code → HQE (Hypothetical Question Embeddings).** The LLM generates 3
 "questions a developer would type to find this code", prefixed `Q:`. Stored
@@ -249,16 +266,18 @@ the chunk when a doc is pathologically large; the chunk itself is always
 preserved.
 
 `doc_contents: dict[str, str]` (uri → full text) is threaded from
-`pipeline.flush()` and `incremental.reindex_resource()` so the enricher
-has the full doc, not just the chunk.
+`pipeline.flush()`, the background enrichment worker, and
+`incremental.reindex_resource()` so the enricher has the full doc, not just the
+chunk.
 
 ### Embedder (`nexus/ingest/embedder.py`)
 
 OpenAI-compatible client against DeepInfra Qwen3 by default, or a local
 llama.cpp server hosting **Jina Embeddings v4** (`jinaai/jina-embeddings-v4`,
 2048-dim) when `provider: jina-local`. The
-`text_for_embedding()` prefix (HQE or CR or `context_path`) is included in
-the input. llama.cpp sometimes reports physical-batch token-limit failures as
+`text_for_embedding()` prefix (`context_summary` from optional enrichment, or
+`context_path`) is included in the input. llama.cpp sometimes reports
+physical-batch token-limit failures as
 HTTP 500; `EmbedderClient` treats those as non-retryable request/config errors
 instead of burning retry backoff.
 
@@ -278,10 +297,10 @@ important than keeping these aligned:
 - reindex/resync after any embedding provider/model/dim/profile change
 
 `embedding_version(config)` includes provider, model, URL/base URL, dimension,
-instruction profile, reranker provider/model/endpoint, Qdrant quantization
-settings, enrichment toggles, and quality gate. If any changes, delta ingest
-treats resources as updated and rebuilds chunks instead of reusing stale
-vectors.
+instruction profile, and Qdrant quantization settings. If any changes, delta
+ingest treats resources as updated and rebuilds chunks instead of reusing stale
+vectors. Reranker, quality gate, and optional enrichment changes do not force a
+raw reindex.
 
 `scripts/serve-embedder.sh` exposes:
 
@@ -316,8 +335,10 @@ true`) when collections are created.
 
 Payload fields include `product_id`, `resource_uri`, `source_id`, `source_key`,
 `content_hash`, `embedding_version`, `indexed_at`, `kind`, line span,
-`context_path`, and `content`. The indexer can delete by `resource_uri` for
-repair paths or by explicit chunk IDs for delta-safe stale cleanup.
+`context_path`, and `content`. Optional enrichment overwrites the same point IDs
+with enriched vectors after the raw index exists. The indexer can delete by
+`resource_uri` for repair paths or by explicit chunk IDs for delta-safe stale
+cleanup.
 
 ### Repo Map (`nexus/retrieval/repomap.py`)
 
@@ -344,9 +365,10 @@ the gap matters.
 
 `reindex_resource(product_id, resource, content)` is the daemon's older
 per-resource repair path. It deletes existing chunks for one `resource_uri`,
-then chunks/enriches/embeds/upserts the whole resource. Product-source resyncs
-must use the manifest-aware `run_ingest(..., registry=..., source_key=...)`
-path instead; do not reintroduce blind full-source upserts.
+then chunks, optionally enriches, embeds, and upserts the whole resource.
+Product-source resyncs must use the manifest-aware
+`run_ingest(..., registry=..., source_key=...)` path instead; do not reintroduce
+blind full-source upserts.
 
 ## 4. Retrieval Pipeline
 
@@ -398,7 +420,7 @@ class CouncilState(TypedDict, total=False):
     skill_plan: list[SkillPlanItem]
     expert_reports: list[ExpertReport]
     skill_drafts: list[SkillDraft]
-    proposals: list[SkillProposal]  # one master plus focused proposals
+    proposals: list[SkillProposal]  # context, architecture, engineering proposals
     judge_result: JudgeResult | None
     callback_count: int             # capped at 1
     proposal: SkillProposal | None
@@ -411,16 +433,21 @@ class CouncilState(TypedDict, total=False):
 
 ### Pack Agents (`nexus/council/agents/pack.py`)
 
-Planner retrieves the initial evidence and creates one `product_master` skill
-outline plus 3-7 focused skill outlines. Expert fanout then runs five bounded
-lenses: Architect, Domain, Interface, Quality/Test, and Security. Experts do
-fresh retrieval so the Synthesizer sees more than the planner's initial chunk
-pool.
+Planner retrieves the initial evidence and creates exactly three skill
+outlines: `{product}-context`, `{product}-architecture`, and
+`{product}-engineering`. Expert fanout then runs two bounded lenses: Product
+Mapper and Engineering Mapper. Product Mapper extracts identity, domain
+vocabulary, entities, apps/services/repos, APIs, schemas, auth/tenancy, and
+boundaries. Engineering Mapper extracts commands, toolchain, tests/evals, code
+standards, security/secrets, debugging, and review signals. Experts do fresh
+retrieval so the Synthesizer sees more than the planner's initial chunk pool.
 
 Synthesizer emits one Markdown skill per outline. The completeness repair loop
-validates every draft against the tier-specific schema and retries targeted
-section-fill up to `REPAIR_ATTEMPT_CAP = 3`. Incomplete skills are never queued:
-if repair still fails, the session stops with `reason="incomplete_skill"`.
+validates every draft against the tier-specific schema and retries missing
+sections or factual citation gaps up to `REPAIR_ATTEMPT_CAP = 3`. Factual
+product claims require citations; procedural guidance does not unless it names
+a concrete product fact. Incomplete skills are never queued: if repair still
+fails, the session stops with `reason="incomplete_skill"`.
 
 Judge checks evidence coverage and may request one targeted expert callback.
 After that callback, the graph re-synthesizes and repairs. A second unresolved
@@ -475,8 +502,8 @@ Flow:
 2. Build a `Skill` from the row's fields (no `kind` / `scope` — Skill is
    flat) with `Provenance(council_session, validated_by, validated_at,
    evidence_chunks, adversary_critique, revision_count)`.
-3. `SkillStore.save(skill)` writes the `.skill.md` under
-   `<hierarchy_root>/<product>/<name>.skill.md`.
+3. `SkillStore.save(skill)` writes `SKILL.md` under
+   `<hierarchy_root>/<product>/<name>/SKILL.md`.
 4. `commit_and_push()` commits + pushes (skill repo is a Git repo).
 5. Embed the body as a doc chunk so the skill is itself retrievable.
 6. Flip the queue row to `approved`.
@@ -554,8 +581,9 @@ runs without one).
 
 Important SSE stages: `read`, `diff`, `skip`, `chunk`, `enrich`, `embed`,
 `sparse`, `upsert`, `cleanup_stale`, `delete_removed`, `manifest_update`,
-`complete`. The final success message includes `added`, `updated`, `removed`,
-`unchanged`, and `failed` counts.
+`enrichment_queue`, `complete`. Events include elapsed timings. The final
+success message includes `added`, `updated`, `removed`, `unchanged`, `failed`,
+and optional enrichment pending/failed counts.
 
 Confluence and Jira are reserved for later source config screens, not product
 onboarding. When added, Confluence must collect `base_url`, service-account
@@ -650,7 +678,7 @@ models:
     model: google/gemma-4-26B-A4B-it
     api_key: ${DEEPINFRA_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
-  light:                       # enricher (HQE + Anthropic CR)
+  light:                       # optional enricher (HQE + Anthropic CR)
     provider: deepinfra
     model: google/gemma-4-26B-A4B-it
     api_key: ${DEEPINFRA_API_KEY}
@@ -670,13 +698,18 @@ models:
 
 ingestion:
   enrich_chunks:
-    docs: true                 # Anthropic Contextual Retrieval
-    code: true                 # HQE
-  embed_batch_size: 16
+    docs: false                # optional Anthropic Contextual Retrieval
+    code: false                # optional HQE
+  embed_batch_size: 32
   quality_gate_threshold: 0.0  # reranker score gate; calibrate per provider via eval
-  file_batch_size: 20          # M2/8GB; bump to 50 on 16GB+
-  read_concurrency: 5          # M2/8GB; bump to 10 on 16GB+
+  file_batch_size: 50
+  read_concurrency: 10
+  batch_concurrency: 2
   enricher_concurrency: 4
+  enrichment_worker:
+    enabled: false
+    poll_interval_s: 5.0
+    max_attempts: 3
 
 server:
   host: 0.0.0.0
@@ -693,7 +726,9 @@ storage:
 Changing embedding provider/model/dim/instruction profile or Qdrant
 quantization settings forces resync through `embedding_version(config)`. Qdrant
 collections must be recreated or explicitly updated if the embedding dimension
-or quantization config changes after collection creation.
+or quantization config changes after collection creation. Changing optional
+enrichment settings only affects `enrichment_version(config)` and queues
+background enrichment when enabled.
 
 `${VAR}` substitution is performed at load time
 (`nexus/config.py::_expand_env`).
@@ -735,8 +770,8 @@ uv run python -m tests.eval.harness --product <pid>  # standalone CLI
 ```
 
 The CLI exits non-zero when either floor is violated — drops into CI
-cleanly. Re-run after any change to chunking, enrichment, hybrid, rerank,
-repo map, or contextual retrieval.
+cleanly. Re-run after any change to chunking, optional enrichment, hybrid,
+rerank, or repo map.
 
 Qdrant with native TurboQuant is the only vector-index path. Eval compares the
 current stack against the floors in `queries.json._meta`.
@@ -776,8 +811,8 @@ derived index cleanup for offline/local-only recovery.
 - **DeepInfra Qwen3** embeddings/reranker are the default low-resource dev
   profile. Local **Jina v4** embeddings + **Jina Reranker v3** remain available
   via llama.cpp for high-resource/offline machines.
-- **DeepInfra** (OpenAI-compatible) for council + enricher LLMs in dev. Swap
-  the `provider` + `base_url` to point at any compatible endpoint.
+- **DeepInfra** (OpenAI-compatible) for council LLMs and optional enrichment in
+  dev. Swap the `provider` + `base_url` to point at any compatible endpoint.
 - **MCP** (stdio transport) for the agent-facing skill server.
 
 ## 13. Cut layers — kept out by design

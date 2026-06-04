@@ -142,6 +142,45 @@ async def test_deepinfra_json_mode_does_not_stream() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_uses_configured_sampling_defaults() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "ok"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    client = ChatClient.from_cfg(
+        ModelCfg(
+            provider="openai",
+            model="m",
+            api_key="k",
+            base_url="https://example.test/v1",
+            temperature=0.0,
+            top_p=0.9,
+        ),
+        role="drafter",
+    )
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), headers=client._client.headers
+    )
+    try:
+        await client.chat_markdown([{"role": "user", "content": "go"}])
+    finally:
+        await client.aclose()
+
+    assert seen["temperature"] == 0.0
+    assert seen["top_p"] == 0.9
+
+
+@pytest.mark.asyncio
 async def test_chat_json_repairs_invalid_json_once() -> None:
     calls = 0
 

@@ -1,13 +1,11 @@
-"""LangGraph StateGraph for the product skill-pack council.
+"""LangGraph StateGraph for the single product-skill council.
 
 Topology:
 
-    START -> Planner -> Experts -> Synthesizer -> Repair -> Judge
-       -> (missing evidence?) -> Targeted Callback -> Synthesizer -> Repair -> Judge
-       -> Finalizer -> END
+    START -> Planner -> Experts -> Synthesizer -> Repair -> Eval -> Finalizer -> END
 
-The graph is bounded: one targeted callback, three repair attempts per skill,
-and all outputs remain proposals until a human approves them.
+The graph is bounded: three repair attempts per skill. All outputs remain
+proposals until a human approves them.
 
 State is checkpointed to SQLite so a process kill mid-session can resume.
 """
@@ -85,7 +83,7 @@ async def council_handles(
 
 
 def build_graph(config: NexusConfig, handles: CouncilHandles):
-    """StateGraph for the bounded product skill-pack council."""
+    """StateGraph for the bounded product-skill council."""
 
     async def planner_node(state: CouncilState) -> dict:
         try:
@@ -113,23 +111,17 @@ def build_graph(config: NexusConfig, handles: CouncilHandles):
 
     async def repair_node(state: CouncilState) -> dict:
         try:
-            return await pack.repair_loop(state, chat=handles.chat_reviser)
+            return await pack.repair_loop(
+                state, chat=handles.chat_reviser, retrieval=handles.retrieval
+            )
         except Exception as e:
             raise CouncilAgentError("repair", e) from e
 
-    async def judge_node(state: CouncilState) -> dict:
+    async def evaluator_node(state: CouncilState) -> dict:
         try:
-            return await pack.judge(state, chat=handles.chat_critic)
+            return await pack.evaluator(state, chat=handles.chat_critic)
         except Exception as e:
-            raise CouncilAgentError("judge", e) from e
-
-    async def callback_node(state: CouncilState) -> dict:
-        try:
-            return await pack.targeted_callback(
-                state, retrieval=handles.retrieval, chat=handles.chat_critic
-            )
-        except Exception as e:
-            raise CouncilAgentError("targeted_callback", e) from e
+            raise CouncilAgentError("skill_eval", e) from e
 
     async def finalizer_node(state: CouncilState) -> dict:
         try:
@@ -142,21 +134,15 @@ def build_graph(config: NexusConfig, handles: CouncilHandles):
     graph.add_node("experts", experts_node)
     graph.add_node("synthesizer", synthesizer_node)
     graph.add_node("repair", repair_node)
-    graph.add_node("judge", judge_node)
-    graph.add_node("targeted_callback", callback_node)
+    graph.add_node("skill_eval", evaluator_node)
     graph.add_node("finalizer", finalizer_node)
 
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "experts")
     graph.add_edge("experts", "synthesizer")
     graph.add_edge("synthesizer", "repair")
-    graph.add_edge("repair", "judge")
-    graph.add_conditional_edges(
-        "judge",
-        pack.should_callback,
-        {"targeted_callback": "targeted_callback", "finalizer": "finalizer"},
-    )
-    graph.add_edge("targeted_callback", "synthesizer")
+    graph.add_edge("repair", "skill_eval")
+    graph.add_edge("skill_eval", "finalizer")
     graph.add_edge("finalizer", END)
 
     return graph

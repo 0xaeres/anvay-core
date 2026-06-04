@@ -14,6 +14,7 @@ from nexus.mcp_server.tools import (
     _matches_context,
     _matches_file_globs,
     find_skills,
+    report_outcome,
 )
 from nexus.skills.models import AppliesTo, Provenance, Skill
 from nexus.skills.store import SkillStore
@@ -34,6 +35,7 @@ def _skill(
     name: str,
     *,
     product: str = "test",
+    description: str = "",
     tier: str = "domain",
     files: list[str] | None = None,
     contexts: list[str] | None = None,
@@ -41,6 +43,7 @@ def _skill(
 ) -> Skill:
     return Skill(
         name=name,
+        description=description,
         product=product,
         tier=tier,
         confidence=0.8,
@@ -161,6 +164,30 @@ def test_find_skills_includes_master_before_targeted_skills() -> None:
     assert result["skills"][0]["tier"] == "product_master"
 
 
+def test_find_skills_returns_product_skill_first() -> None:
+    product = _skill("product-skill", tier="product_master", body="# product-skill\n\nProduct map.")
+    legacy = _skill("test-master", tier="product_master", body="# Master\n\nLegacy map.")
+    state = _state_with_skills([legacy, product])
+
+    result = asyncio.run(find_skills(state, query="anything"))
+
+    assert [s["id"] for s in result["skills"]][:1] == ["test/product-skill"]
+
+
+def test_find_skills_ranks_description_matches() -> None:
+    auth = _skill(
+        "auth",
+        description="Use for token rotation and session validation.",
+        body="# Auth\n\nNo matching body text.",
+    )
+    other = _skill("other", description="Use for build tooling.")
+    state = _state_with_skills([other, auth])
+
+    result = asyncio.run(find_skills(state, query="token rotation"))
+    assert result["skills"][0]["id"] == "test/auth"
+    assert result["skills"][0]["summary"] == "Use for token rotation and session validation."
+
+
 def test_find_skills_is_product_scoped() -> None:
     ours = _skill("ours")
     other = _skill("other", product="other")
@@ -169,3 +196,26 @@ def test_find_skills_is_product_scoped() -> None:
     result = asyncio.run(find_skills(state, query="anything"))
     assert [s["id"] for s in result["skills"]] == ["test/ours"]
     assert result["filtered_from"] == 1
+
+
+def test_report_outcome_persists_skill_signal(tmp_path) -> None:
+    config = MagicMock()
+    config.storage.proposal_queue = tmp_path / "queue.db"
+    state = ToolState(product="test", config=config)
+
+    result = asyncio.run(
+        report_outcome(
+            state,
+            skill_name="test-master",
+            succeeded=False,
+            notes="Skill missed tenancy rules.",
+        )
+    )
+
+    assert result["ok"] is True
+    signals = state.queue.list_skill_signals(product_id="test")
+    assert len(signals) == 1
+    assert signals[0]["source_type"] == "mcp_outcome"
+    assert signals[0]["skill_name"] == "test-master"
+    assert signals[0]["text"] == "Skill missed tenancy rules."
+    assert signals[0]["metadata"]["succeeded"] is False

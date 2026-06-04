@@ -184,7 +184,8 @@ async def _render_meta_skill(state: nx_tools.ToolState) -> str:
     summary_lines = []
     for s in hierarchy.get("skills", []):
         summary_lines.append(
-            f"- **{s['name']}** ({s['kind']}, confidence={s['confidence']:.2f})"
+            f"- **{s['name']}** ({s['tier']}, confidence={s['confidence']:.2f}): "
+            f"{s.get('description') or 'No description.'}"
         )
     return template.render(
         now_iso=datetime.now(UTC).isoformat(),

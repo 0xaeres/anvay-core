@@ -115,7 +115,7 @@ def test_live_backend_e2e_ingest_council_review_flows(tmp_path: Path) -> None:
         )
         assert approve_res.status_code == 200, approve_res.text
         assert approve_res.json()["ok"] is True
-        assert (config.hierarchy_root / product_id / f"{master['name']}.skill.md").exists()
+        assert (config.hierarchy_root / product_id / master["name"] / "SKILL.md").exists()
         assert queue.get(master["id"])["status"] == "approved"
 
         reject_target = next(p for p in pending if p["id"] != master["id"])

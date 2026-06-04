@@ -29,8 +29,10 @@ nexus.yaml
 *.sqlite
 *.sqlite3
 
-# Skills (cloned at runtime — never committed to the app repo)
-skills/
+# Skills repo clone (runtime state — never committed to the app repo)
+/skills/
+nexus/skills/seed/
+nexus/skills/starter/
 
 # GGUF model weights (large, downloaded out-of-band)
 models/

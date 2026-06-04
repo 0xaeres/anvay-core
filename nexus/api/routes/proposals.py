@@ -74,8 +74,20 @@ async def edit_proposal(
     actor: str = Body(..., embed=True),
     queue: ProposalQueue = Depends(get_proposal_queue),
 ) -> dict:
+    proposal = queue.get(proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="proposal not found")
     if not queue.update_status(proposal_id, status="edited", actor=actor, body=body):
         raise HTTPException(status_code=404, detail="proposal not found")
+    queue.record_skill_signal(
+        product_id=proposal["product_id"],
+        source_type="edit",
+        skill_name=proposal.get("name"),
+        proposal_id=proposal_id,
+        session_id=proposal.get("session_id"),
+        text="Human edited proposal body before approval.",
+        metadata={"actor": actor},
+    )
     return {"ok": True}
 
 
@@ -85,8 +97,20 @@ async def reject_proposal(
     body: RejectProposalRequest,
     queue: ProposalQueue = Depends(get_proposal_queue),
 ) -> dict:
+    proposal = queue.get(proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="proposal not found")
     if not queue.update_status(proposal_id, status="rejected", actor=None):
         raise HTTPException(status_code=404, detail="proposal not found")
+    queue.record_skill_signal(
+        product_id=proposal["product_id"],
+        source_type="rejection",
+        skill_name=proposal.get("name"),
+        proposal_id=proposal_id,
+        session_id=proposal.get("session_id"),
+        text=body.reason,
+        metadata={"actor": body.actor, "category": body.category},
+    )
     return {"ok": True, "reason": body.reason, "category": body.category}
 
 
@@ -111,6 +135,18 @@ async def revise_proposal(
         proposal_id, status="revision_requested", actor=None
     ):
         raise HTTPException(status_code=404, detail="proposal not found")
+    queue.record_skill_signal(
+        product_id=proposal["product_id"],
+        source_type="revision_request",
+        skill_name=proposal.get("name"),
+        proposal_id=proposal_id,
+        session_id=proposal.get("session_id"),
+        text=feedback,
+        metadata={
+            "actor": body.actor,
+            "comments": [c.model_dump(mode="json") for c in body.comments],
+        },
+    )
 
     comment_text = "\n".join(
         f"- line {c.line}: {c.body}" if c.line is not None else f"- {c.body}"

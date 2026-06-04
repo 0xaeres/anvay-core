@@ -148,9 +148,11 @@ async def _run_session(
             product_id=product_id,
             topic=topic,
             config_path="nexus.yaml",
+            skill_signals=queue.list_skill_signals(product_id=product_id, limit=12),
         )
         proposal = None
         proposals = []
+        eval_results = []
 
         async def token_sink(token: dict[str, str]) -> None:
             await HUB.publish(session_id, {"event": "llm_token", "data": token})
@@ -176,6 +178,8 @@ async def _run_session(
                         proposal = delta["proposal"]
                     if delta.get("proposals"):
                         proposals = list(delta["proposals"])
+                    if delta.get("eval_results"):
+                        eval_results.extend(delta["eval_results"])
 
         if proposal is not None or proposals:
             if not proposals and proposal is not None:
@@ -191,6 +195,13 @@ async def _run_session(
                     deliberation=deliberation_dumped,
                     costs=costs_dumped,
                 )
+            _record_eval_results(
+                queue=queue,
+                session_id=session_id,
+                product_id=product_id,
+                eval_results=eval_results,
+                proposals=proposals,
+            )
             queue.record_session(
                 session_id=session_id,
                 product_id=product_id,
@@ -211,6 +222,13 @@ async def _run_session(
                 },
             )
         else:
+            _record_eval_results(
+                queue=queue,
+                session_id=session_id,
+                product_id=product_id,
+                eval_results=eval_results,
+                proposals=[],
+            )
             queue.record_session(
                 session_id=session_id,
                 product_id=product_id,
@@ -236,6 +254,13 @@ async def _run_session(
                 stopped.detail,
             )
             deliberation_dumped.append(notice["message"])
+            _record_eval_results(
+                queue=queue,
+                session_id=session_id,
+                product_id=product_id,
+                eval_results=locals().get("eval_results", []),
+                proposals=locals().get("proposals", []),
+            )
             queue.record_session(
                 session_id=session_id,
                 product_id=product_id,
@@ -256,6 +281,13 @@ async def _run_session(
         failed_at = datetime.now(UTC).isoformat()
         failure = _failure_message(error=e, timestamp=failed_at)
         deliberation_dumped.append(failure)
+        _record_eval_results(
+            queue=queue,
+            session_id=session_id,
+            product_id=product_id,
+            eval_results=locals().get("eval_results", []),
+            proposals=locals().get("proposals", []),
+        )
         queue.record_session(
             session_id=session_id,
             product_id=product_id,
@@ -309,10 +341,18 @@ async def _publish_node_delta(session_id: str, node_name: str, delta: dict) -> N
                     "name": proposal.name,
                     "tier": getattr(proposal, "tier", None),
                     "confidence": proposal.confidence,
+                    "eval_status": getattr(proposal, "eval_status", None),
+                    "quality_score": getattr(proposal, "quality_score", None),
                     "node": node_name,
                 },
             },
         )
+    if delta.get("eval_results"):
+        for result in delta["eval_results"]:
+            await HUB.publish(
+                session_id,
+                {"event": "skill_eval", "data": _dump(result)},
+            )
     if delta.get("proposals"):
         for proposal in delta["proposals"]:
             await HUB.publish(
@@ -324,6 +364,8 @@ async def _publish_node_delta(session_id: str, node_name: str, delta: dict) -> N
                         "name": proposal.name,
                         "tier": getattr(proposal, "tier", None),
                         "confidence": proposal.confidence,
+                        "eval_status": getattr(proposal, "eval_status", None),
+                        "quality_score": getattr(proposal, "quality_score", None),
                         "node": node_name,
                     },
                 },
@@ -336,6 +378,62 @@ def _dump(obj) -> dict:
     if isinstance(obj, dict):
         return obj
     return {"value": str(obj)}
+
+
+def _record_eval_results(
+    *,
+    queue: ProposalQueue,
+    session_id: str,
+    product_id: str,
+    eval_results: list,
+    proposals: list,
+) -> None:
+    if not eval_results:
+        return
+    latest_by_skill = {result.skill_name: result for result in eval_results}
+    eval_results = list(latest_by_skill.values())
+    by_skill = {p.name: p.id for p in proposals}
+    failed = [r for r in eval_results if getattr(r, "status", None) == "failed"]
+    run_status = "failed" if len(failed) == len(eval_results) else ("partial" if failed else "passed")
+    run_id = f"{session_id}:skill-quality-v1"
+    queue.record_eval_run(
+        run_id=run_id,
+        session_id=session_id,
+        product_id=product_id,
+        suite_version="skill-quality-v1",
+        status=run_status,
+        summary=f"{len(eval_results) - len(failed)}/{len(eval_results)} skill eval(s) passed.",
+    )
+    for result in eval_results:
+        failures = list(getattr(result, "failures", []) or [])
+        proposal_id = by_skill.get(result.skill_name)
+        queue.record_eval_result(
+            run_id=run_id,
+            session_id=session_id,
+            product_id=product_id,
+            proposal_id=proposal_id,
+            skill_name=result.skill_name,
+            status=result.status,
+            summary=result.summary,
+            failures=failures,
+            quality_score=result.quality_score,
+            attempts=result.attempts,
+            signals_used=list(getattr(result, "signals_used", []) or []),
+        )
+        if failures:
+            queue.record_skill_signal(
+                product_id=product_id,
+                source_type="eval_failure",
+                skill_name=result.skill_name,
+                proposal_id=proposal_id,
+                session_id=session_id,
+                text="\n".join(failures),
+                metadata={
+                    "summary": result.summary,
+                    "quality_score": result.quality_score,
+                    "attempts": result.attempts,
+                },
+            )
 
 
 def _failure_message(*, error: Exception, timestamp: str) -> dict:

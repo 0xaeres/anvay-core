@@ -207,7 +207,6 @@ def test_truncate_doc_passthrough_under_cap() -> None:
 
 
 def test_truncate_doc_centres_window_around_chunk() -> None:
-    # Build a doc much larger than the cap with a unique marker partway through.
     marker = "UNIQUE_MARKER_TEXT_THAT_IS_LONG_ENOUGH"
     body = ("filler line\n" * 5000) + marker + ("\nmore filler\n" * 5000)
     assert len(body) > _DOC_TRUNCATE_CHARS

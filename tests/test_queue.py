@@ -8,6 +8,7 @@ def _make_proposal(name: str = "demo", confidence: float = 0.5) -> SkillProposal
     return SkillProposal(
         id=f"prop_{name}",
         name=name,
+        description=f"Use for {name} tests.",
         tier="domain",
         body="# Demo\n\nBody [file: a/b.py:10].",
         citations=[Citation(file="a/b.py", line=10, excerpt="x")],
@@ -19,18 +20,28 @@ def _make_proposal(name: str = "demo", confidence: float = 0.5) -> SkillProposal
 
 def test_enqueue_then_list_returns_proposal(tmp_path: Path) -> None:
     queue = ProposalQueue(tmp_path / "proposals.db")
+    proposal = _make_proposal()
+    proposal.eval_status = "passed"
+    proposal.eval_summary = "Eval passed."
+    proposal.quality_score = 0.91
+    proposal.signals_used = ["sig_1"]
     queue.enqueue(
-        _make_proposal(),
+        proposal,
         session_id="cs_x",
         product_id="forge",
     )
     pending = queue.list(status="pending")
     assert len(pending) == 1
     assert pending[0]["name"] == "demo"
+    assert pending[0]["description"] == "Use for demo tests."
     assert pending[0]["tier"] == "domain"
     assert pending[0]["citations"] == [
         {"id": None, "file": "a/b.py", "line": 10, "excerpt": "x"}
     ]
+    assert pending[0]["eval_status"] == "passed"
+    assert pending[0]["eval_summary"] == "Eval passed."
+    assert pending[0]["quality_score"] == 0.91
+    assert pending[0]["signals_used"] == ["sig_1"]
 
 
 def test_list_filters_by_product(tmp_path: Path) -> None:
@@ -93,3 +104,80 @@ def test_list_sessions_orders_newest_first(tmp_path: Path) -> None:
         )
     sessions = queue.list_sessions(product_id="forge")
     assert [s["id"] for s in sessions] == ["cs_1", "cs_0"]
+
+
+def test_records_skill_signals_and_eval_results_product_scoped(tmp_path: Path) -> None:
+    queue = ProposalQueue(tmp_path / "quality.db")
+    sig = queue.record_skill_signal(
+        product_id="forge",
+        source_type="rejection",
+        skill_name="forge-master",
+        proposal_id="prop_1",
+        session_id="cs_1",
+        text="Too generic.",
+        metadata={"actor": "reviewer"},
+    )
+    queue.record_skill_signal(
+        product_id="atlas",
+        source_type="mcp_outcome",
+        skill_name="atlas-master",
+        text="Worked.",
+    )
+    queue.record_eval_run(
+        run_id="run_1",
+        session_id="cs_1",
+        product_id="forge",
+        suite_version="skill-quality-v1",
+        status="partial",
+        summary="1/2 passed",
+    )
+    queue.record_eval_result(
+        run_id="run_1",
+        session_id="cs_1",
+        product_id="forge",
+        skill_name="forge-master",
+        status="failed",
+        summary="Failed eval.",
+        failures=["Missing citations."],
+        quality_score=0.25,
+        attempts=1,
+        signals_used=[sig],
+    )
+
+    signals = queue.list_skill_signals(product_id="forge")
+    assert len(signals) == 1
+    assert signals[0]["id"] == sig
+    assert signals[0]["metadata"] == {"actor": "reviewer"}
+
+    results = queue.list_eval_results(product_id="forge")
+    assert len(results) == 1
+    assert results[0]["skill_name"] == "forge-master"
+    assert results[0]["failures"] == ["Missing citations."]
+    assert results[0]["signals_used"] == [sig]
+
+    session = queue.get_session("cs_1")
+    assert session is None
+
+
+def test_delete_product_removes_quality_records(tmp_path: Path) -> None:
+    queue = ProposalQueue(tmp_path / "delete.db")
+    queue.record_skill_signal(product_id="forge", source_type="mcp_outcome", text="bad")
+    queue.record_eval_run(
+        run_id="run_1",
+        session_id="cs_1",
+        product_id="forge",
+        suite_version="skill-quality-v1",
+        status="failed",
+    )
+    queue.record_eval_result(
+        run_id="run_1",
+        session_id="cs_1",
+        product_id="forge",
+        skill_name="forge-master",
+        status="failed",
+    )
+
+    queue.delete_product("forge")
+
+    assert queue.list_skill_signals(product_id="forge") == []
+    assert queue.list_eval_results(product_id="forge") == []

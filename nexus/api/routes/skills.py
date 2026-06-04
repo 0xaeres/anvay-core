@@ -24,6 +24,9 @@ async def list_product_skills(
         d["id"] = s.id
         skills.append(d)
         grouped.setdefault(s.tier, []).append(d)
+    skills.sort(key=lambda s: (0 if s.get("name") == "product-skill" else 1, s.get("name", "")))
+    for items in grouped.values():
+        items.sort(key=lambda s: (0 if s.get("name") == "product-skill" else 1, s.get("name", "")))
     return {"skills": skills, "grouped": grouped}
 
 
@@ -87,6 +90,36 @@ async def get_skill_council_history(
 
     sessions = queue.list_sessions(product_id=skill.product)
     return {"sessions": sessions}
+
+
+@router.get("/skills/{skill_id:path}/quality")
+async def get_skill_quality(
+    skill_id: str,
+    store: SkillStore = Depends(get_skill_store),
+    queue: ProposalQueue = Depends(get_proposal_queue),
+) -> dict:
+    skill = _find_skill(store, skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="skill not found")
+
+    eval_results = queue.list_eval_results(
+        product_id=skill.product,
+        skill_name=skill.name,
+        limit=20,
+    )
+    signals = queue.list_skill_signals(
+        product_id=skill.product,
+        skill_name=skill.name,
+        limit=20,
+    )
+    failures = [r for r in eval_results if r.get("status") == "failed"]
+    return {
+        "skill_id": skill.id,
+        "latest_eval": eval_results[0] if eval_results else None,
+        "eval_results": eval_results,
+        "signals": signals,
+        "regeneration_recommended": bool(failures or signals),
+    }
 
 
 @router.get("/skills/{skill_id:path}")

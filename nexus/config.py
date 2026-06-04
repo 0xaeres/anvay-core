@@ -71,6 +71,8 @@ class ModelCfg(BaseModel):
     base_url: str | None = None
     url: str | None = None
     dim: int | None = None
+    temperature: float = 0.0
+    top_p: float | None = None
     instruction_profile: str | None = None
     model_config = {"extra": "allow"}
 
@@ -86,17 +88,25 @@ class ModelsCfg(BaseModel):
 
 
 class EnrichCfg(BaseModel):
-    docs: bool = True   # Anthropic Contextual Retrieval — 50-100 token "situate in doc" prepend
-    code: bool = True   # HQE: 3 hypothetical questions bridge code → natural language queries
+    docs: bool = False  # Optional doc contextual retrieval; off by default for fast ingest
+    code: bool = False  # HQE: optional, expensive code-question generation
+
+
+class EnrichmentWorkerCfg(BaseModel):
+    enabled: bool = False
+    poll_interval_s: float = 5.0
+    max_attempts: int = 3
 
 
 class IngestionCfg(BaseModel):
     enrich_chunks: EnrichCfg = Field(default_factory=EnrichCfg)
-    embed_batch_size: int = 16          # M2/8GB: 16 | upgrade 16GB+: 32
+    embed_batch_size: int = 32
     quality_gate_threshold: float = 0.0
-    file_batch_size: int = 20           # M2/8GB: 20 | upgrade 16GB+: 50
-    read_concurrency: int = 5           # M2/8GB: 5  | upgrade 16GB+: 10
+    file_batch_size: int = 50
+    read_concurrency: int = 10
+    batch_concurrency: int = 2
     enricher_concurrency: int = 4       # cloud inference — rate-limited, not RAM-limited
+    enrichment_worker: EnrichmentWorkerCfg = Field(default_factory=EnrichmentWorkerCfg)
 
 
 class ServerCfg(BaseModel):

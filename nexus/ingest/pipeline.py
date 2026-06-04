@@ -17,17 +17,18 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from nexus.config import NexusConfig
 from nexus.ingest.chunker import chunk_resource
 from nexus.ingest.embedder import EmbedderClient, EmbedderError
 from nexus.ingest.enricher import ContextualEnricher
 from nexus.ingest.indexer_factory import create_indexer
-from nexus.ingest.models import Chunk, ResourceRef
+from nexus.ingest.models import Chunk, ChunkKind, ResourceRef
 from nexus.retrieval.sparse import aencode_passages
 
 log = logging.getLogger(__name__)
@@ -45,6 +46,16 @@ class _Source(Protocol):
 class _Registry(Protocol):
     def list_resource_manifests(self, product_id: str, source_key: str) -> list[dict]: ...
     def upsert_resource_manifest(self, row: dict) -> None: ...
+    def enqueue_enrichment_job(self, row: dict) -> None: ...
+    def update_resource_enrichment(
+        self,
+        product_id: str,
+        source_key: str,
+        resource_uri: str,
+        *,
+        enrichment_version: str,
+        enrichment_status: str,
+    ) -> bool: ...
     def delete_resource_manifest(
         self, product_id: str, source_key: str, resource_uri: str
     ) -> bool: ...
@@ -75,7 +86,7 @@ class _ResourcePayload:
 
 
 def embedding_version(config: NexusConfig) -> str:
-    """Hash embedding-affecting config. Change => full source re-embed."""
+    """Hash raw index-affecting config. Change => source re-embed."""
     payload = {
         "embedding_provider": config.models.embedding.provider,
         "embedding_model": config.models.embedding.model,
@@ -86,11 +97,14 @@ def embedding_version(config: NexusConfig) -> str:
         "vector_quantization_enabled": config.vector_store.quantization.enabled,
         "vector_quantization_type": config.vector_store.quantization.type,
         "vector_quantization_bits": config.vector_store.quantization.bits,
-        "reranker_provider": config.models.reranker.provider,
-        "reranker_model": config.models.reranker.model,
-        "reranker_url": config.models.reranker.url,
-        "reranker_base_url": config.models.reranker.base_url,
-        "quality_gate_threshold": config.ingestion.quality_gate_threshold,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def enrichment_version(config: NexusConfig) -> str:
+    """Hash enrichment-affecting config. Change => background re-enrich."""
+    payload = {
         "light_provider": config.models.light.provider,
         "light_model": config.models.light.model,
         "light_base_url": config.models.light.base_url,
@@ -109,12 +123,27 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _resource_enrichment_enabled(config: NexusConfig, resource: ResourceRef) -> bool:
+    if resource.kind is ChunkKind.CODE:
+        return config.ingestion.enrich_chunks.code
+    return config.ingestion.enrich_chunks.docs
+
+
+def _chunks_enrichment_enabled(config: NexusConfig, chunks: list[Chunk]) -> bool:
+    return any(
+        (chunk.kind is ChunkKind.CODE and config.ingestion.enrich_chunks.code)
+        or (chunk.kind is ChunkKind.DOC and config.ingestion.enrich_chunks.docs)
+        for chunk in chunks
+    )
+
+
 async def run_ingest(
     *,
     product_id: str,
     source: _Source,
     config: NexusConfig,
     enrich: bool = True,
+    enrichment_mode: Literal["foreground", "background", "disabled"] = "foreground",
     event_sink: IngestEventSink | None = None,
     registry: _Registry | None = None,
     source_key: str | None = None,
@@ -124,30 +153,57 @@ async def run_ingest(
 
     file_batch_size = config.ingestion.file_batch_size
     read_concurrency = config.ingestion.read_concurrency
+    batch_concurrency = max(1, config.ingestion.batch_concurrency)
 
     embedder = EmbedderClient.from_cfg(
         config.models.embedding,
         batch_size=config.ingestion.embed_batch_size,
     )
-    enricher = ContextualEnricher(
-        base_url=config.models.light.base_url or "https://api.deepinfra.com/v1/openai",
-        model=config.models.light.model,
-        api_key=config.models.light.api_key,
-        enrich_code=config.ingestion.enrich_chunks.code,
-        enrich_docs=config.ingestion.enrich_chunks.docs,
-        concurrency=config.ingestion.enricher_concurrency,
+    foreground_enrich = enrich and enrichment_mode == "foreground"
+    queue_enrichment = enrich and enrichment_mode == "background"
+    enricher = (
+        ContextualEnricher(
+            base_url=config.models.light.base_url or "https://api.deepinfra.com/v1/openai",
+            model=config.models.light.model,
+            api_key=config.models.light.api_key,
+            enrich_code=config.ingestion.enrich_chunks.code,
+            enrich_docs=config.ingestion.enrich_chunks.docs,
+            concurrency=config.ingestion.enricher_concurrency,
+        )
+        if foreground_enrich
+        else None
     )
     indexer = create_indexer(config)
     batch_no = 0
     sync_id = _utc_now()
     version = embedding_version(config)
+    enrich_version = enrichment_version(config)
     manifest_by_uri: dict[str, dict] = {}
     current_uris: set[str] = set()
     delta_enabled = registry is not None and source_key is not None
+    started_at = time.perf_counter()
+    last_emit_at = started_at
 
     async def emit(level: str, stage: str, msg: str, **extra) -> None:
-        event = {"level": level, "stage": stage, "msg": msg, **extra}
-        log.info("ingest.%s product=%s source=%s %s", stage, product_id, source.source_id, msg)
+        nonlocal last_emit_at
+        now = time.perf_counter()
+        event = {
+            "level": level,
+            "stage": stage,
+            "msg": msg,
+            "elapsed_ms": round((now - started_at) * 1000, 1),
+            "stage_elapsed_ms": round((now - last_emit_at) * 1000, 1),
+            **extra,
+        }
+        last_emit_at = now
+        log.info(
+            "ingest.%s product=%s source=%s elapsed_ms=%.1f %s",
+            stage,
+            product_id,
+            source.source_id,
+            event["elapsed_ms"],
+            msg,
+        )
         if event_sink is not None:
             await event_sink(event)
 
@@ -170,6 +226,9 @@ async def run_ingest(
         await emit("stage", "discover", "Discovering resources")
 
         pending: list[_ResourcePayload] = []
+        batch_sem = asyncio.Semaphore(batch_concurrency)
+        batch_tasks: set[asyncio.Task[None]] = set()
+        all_batch_tasks: list[asyncio.Task[None]] = []
 
         async def flush(items: list[_ResourcePayload]) -> None:
             nonlocal batch_no
@@ -177,6 +236,27 @@ async def run_ingest(
                 return
             batch_no += 1
             batch_id = batch_no
+            task = asyncio.create_task(process_batch(batch_id, list(items)))
+            batch_tasks.add(task)
+            all_batch_tasks.append(task)
+            task.add_done_callback(batch_tasks.discard)
+            if len(batch_tasks) >= batch_concurrency * 2:
+                done, _pending = await asyncio.wait(
+                    batch_tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                for completed in done:
+                    completed.result()
+
+        async def wait_for_batches() -> None:
+            if not all_batch_tasks:
+                return
+            await asyncio.gather(*all_batch_tasks)
+
+        async def process_batch(batch_id: int, items: list[_ResourcePayload]) -> None:
+            async with batch_sem:
+                await _process_batch(batch_id, items)
+
+        async def _process_batch(batch_id: int, items: list[_ResourcePayload]) -> None:
             await emit(
                 "stage",
                 "chunk",
@@ -230,7 +310,7 @@ async def run_ingest(
                 doc_chunks=doc_chunks,
             )
 
-            if enrich:
+            if foreground_enrich:
                 await emit(
                     "stage",
                     "enrich",
@@ -238,6 +318,7 @@ async def run_ingest(
                     batch=batch_id,
                     chunks=len(all_chunks),
                 )
+                assert enricher is not None
                 all_chunks = await enricher.enrich(all_chunks, doc_contents=doc_contents)
                 enriched = sum(1 for c in all_chunks if c.context_summary)
                 await emit(
@@ -249,10 +330,11 @@ async def run_ingest(
                     enriched=enriched,
                 )
             else:
+                action = "Queueing background enrichment" if queue_enrichment else "Skipping enrichment"
                 await emit(
                     "stage",
                     "enrich",
-                    f"Skipping enrichment for batch {batch_id}",
+                    f"{action} for batch {batch_id}",
                     batch=batch_id,
                     chunks=len(all_chunks),
                 )
@@ -322,11 +404,15 @@ async def run_ingest(
             )
 
             indexed_resources = 0
+            queued_resources = 0
             for uri, chunks in chunks_by_uri.items():
                 item = payload_by_uri[uri]
                 new_ids = [c.id for c in chunks]
                 old_ids = item.prior.get("chunkIds", []) if item.prior else []
                 stale_ids = sorted(set(old_ids) - set(new_ids))
+                should_queue_resource = queue_enrichment and _chunks_enrichment_enabled(
+                    config, chunks
+                )
                 if stale_ids:
                     await emit(
                         "stage",
@@ -350,6 +436,16 @@ async def run_ingest(
                             "chunkIds": new_ids,
                             "indexedAt": indexed_at,
                             "embeddingVersion": version,
+                            "enrichmentVersion": (
+                                enrich_version
+                                if (foreground_enrich or should_queue_resource)
+                                else ""
+                            ),
+                            "enrichmentStatus": (
+                                "complete"
+                                if foreground_enrich
+                                else ("pending" if should_queue_resource else "")
+                            ),
                         }
                     )
                     await emit(
@@ -360,11 +456,34 @@ async def run_ingest(
                         uri=uri,
                         chunks=len(new_ids),
                     )
+                    if should_queue_resource:
+                        registry.enqueue_enrichment_job(
+                            {
+                                "product": product_id,
+                                "sourceKey": source_key,
+                                "resourceUri": uri,
+                                "sourceId": item.ref.source_id,
+                                "mime": item.ref.mime,
+                                "sizeBytes": item.ref.size_bytes,
+                                "lastModified": item.ref.last_modified,
+                                "contentHash": item.content_hash,
+                                "content": item.content,
+                            }
+                        )
+                        queued_resources += 1
                 indexed_resources += 1
 
             stats.chunks_produced += len(all_chunks)
             stats.chunks_indexed += n
             stats.resources_indexed += indexed_resources
+            if queue_enrichment and delta_enabled:
+                await emit(
+                    "stage",
+                    "enrichment_queue",
+                    f"Batch {batch_id} queued {queued_resources} resource(s) for enrichment",
+                    batch=batch_id,
+                    resources=queued_resources,
+                )
             await emit(
                 "stage",
                 "upsert",
@@ -391,6 +510,37 @@ async def run_ingest(
             if prior and prior["contentHash"] == digest and prior["embeddingVersion"] == version:
                 stats.unchanged += 1
                 await emit("stage", "skip", f"Unchanged: {r.uri}", uri=r.uri)
+                if (
+                    queue_enrichment
+                    and prior.get("enrichmentVersion") != enrich_version
+                    and _resource_enrichment_enabled(config, r)
+                ):
+                    registry.enqueue_enrichment_job(
+                        {
+                            "product": product_id,
+                            "sourceKey": source_key,
+                            "resourceUri": r.uri,
+                            "sourceId": r.source_id,
+                            "mime": r.mime,
+                            "sizeBytes": r.size_bytes,
+                            "lastModified": r.last_modified,
+                            "contentHash": digest,
+                            "content": content,
+                        }
+                    )
+                    registry.update_resource_enrichment(
+                        product_id,
+                        source_key,
+                        r.uri,
+                        enrichment_version=enrich_version,
+                        enrichment_status="pending",
+                    )
+                    await emit(
+                        "stage",
+                        "enrichment_queue",
+                        f"Queued unchanged resource for enrichment: {r.uri}",
+                        uri=r.uri,
+                    )
                 return None
 
             action = "added" if prior is None else "updated"
@@ -436,6 +586,7 @@ async def run_ingest(
 
         await flush_reads(resource_batch)
         await flush(pending)
+        await wait_for_batches()
 
         if delta_enabled:
             removed_rows = [
@@ -498,7 +649,8 @@ async def run_ingest(
         return stats
     finally:
         await embedder.aclose()
-        await enricher.aclose()
+        if enricher is not None:
+            await enricher.aclose()
         await indexer.aclose()
 
 

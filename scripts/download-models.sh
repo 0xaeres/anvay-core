@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-# Define directories
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODELS_DIR="$PROJECT_ROOT/models"
 
-# Create models directory if it doesn't exist
 mkdir -p "$MODELS_DIR"
 
 echo "Downloading Jina Embeddings v4 (Text Retrieval) Q4_K_M..."

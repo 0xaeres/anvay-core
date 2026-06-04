@@ -50,7 +50,6 @@ def test_registry_sources_id_and_name_lookup(registry: Registry) -> None:
     }
     registry.upsert_source(source)
 
-    # List sources
     sources = registry.list_sources("test-prod")
     assert len(sources) == 1
 
@@ -60,17 +59,14 @@ def test_registry_sources_id_and_name_lookup(registry: Registry) -> None:
     assert stored["name"] == "my-filesystem-source"
     assert stored["type"] == "filesystem"
 
-    # Query by NAME
     by_name = registry.get_source("test-prod", "my-filesystem-source")
     assert by_name is not None
     assert by_name["id"] == sid
 
-    # Query by ID (this was the bug, now resolved!)
     by_id = registry.get_source("test-prod", sid)
     assert by_id is not None
     assert by_id["name"] == "my-filesystem-source"
 
-    # Delete by ID
     assert registry.delete_source("test-prod", sid) is True
     assert registry.get_source("test-prod", sid) is None
     assert registry.get_source("test-prod", "my-filesystem-source") is None

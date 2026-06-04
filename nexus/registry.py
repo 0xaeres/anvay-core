@@ -8,6 +8,7 @@ import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from nexus.auth.token_cipher import TokenCipher, TokenCipherError
@@ -113,6 +114,8 @@ CREATE TABLE IF NOT EXISTS source_resources (
     chunk_ids_js      TEXT NOT NULL DEFAULT '[]',
     indexed_at        TEXT NOT NULL,
     embedding_version TEXT NOT NULL DEFAULT '',
+    enrichment_version TEXT NOT NULL DEFAULT '',
+    enrichment_status TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (product_id, source_key, resource_uri)
 );
 
@@ -134,6 +137,29 @@ CREATE TABLE IF NOT EXISTS source_sync_runs (
 
 CREATE INDEX IF NOT EXISTS idx_source_sync_runs_source
     ON source_sync_runs(product_id, source_key, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS enrichment_jobs (
+    id              TEXT PRIMARY KEY,
+    product_id      TEXT NOT NULL,
+    source_key      TEXT NOT NULL,
+    resource_uri    TEXT NOT NULL,
+    source_id       TEXT NOT NULL,
+    mime            TEXT NOT NULL DEFAULT '',
+    size_bytes      INTEGER,
+    last_modified   TEXT,
+    content_hash    TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_enrichment_jobs_status
+    ON enrichment_jobs(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_enrichment_jobs_product
+    ON enrichment_jobs(product_id, status);
 """
 
 
@@ -143,6 +169,7 @@ class Registry:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
+            _ensure_registry_columns(conn)
         self._seed_defaults()
 
     @contextmanager
@@ -211,6 +238,23 @@ class Registry:
             d["products"] = json.loads(d.pop("products_js"))
             out.append(d)
         return out
+
+
+def _ensure_registry_columns(conn: sqlite3.Connection) -> None:
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(source_resources)").fetchall()
+    }
+    if "enrichment_version" not in existing:
+        conn.execute(
+            "ALTER TABLE source_resources "
+            "ADD COLUMN enrichment_version TEXT NOT NULL DEFAULT ''"
+        )
+    if "enrichment_status" not in existing:
+        conn.execute(
+            "ALTER TABLE source_resources "
+            "ADD COLUMN enrichment_status TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _row_to_product(row: sqlite3.Row) -> dict:
@@ -298,6 +342,10 @@ def add_source_methods(cls):
                     "SELECT COUNT(*) FROM source_sync_runs WHERE product_id = ?",
                     (product_id,),
                 ).fetchone()[0],
+                "enrichment_jobs": conn.execute(
+                    "SELECT COUNT(*) FROM enrichment_jobs WHERE product_id = ?",
+                    (product_id,),
+                ).fetchone()[0],
                 "sources": conn.execute(
                     "SELECT COUNT(*) FROM sources WHERE product_id = ?",
                     (product_id,),
@@ -309,6 +357,7 @@ def add_source_methods(cls):
             }
             conn.execute("DELETE FROM source_resources WHERE product_id = ?", (product_id,))
             conn.execute("DELETE FROM source_sync_runs WHERE product_id = ?", (product_id,))
+            conn.execute("DELETE FROM enrichment_jobs WHERE product_id = ?", (product_id,))
             conn.execute("DELETE FROM sources WHERE product_id = ?", (product_id,))
             conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
         return counts
@@ -334,6 +383,8 @@ def _row_to_resource_manifest(row: sqlite3.Row) -> dict:
     d["lastSeenSync"] = d.pop("last_seen_sync")
     d["indexedAt"] = d.pop("indexed_at")
     d["embeddingVersion"] = d.pop("embedding_version")
+    d["enrichmentVersion"] = d.pop("enrichment_version", "")
+    d["enrichmentStatus"] = d.pop("enrichment_status", "")
     d["contentHash"] = d.pop("content_hash")
     d["resourceUri"] = d.pop("resource_uri")
     d["sourceKey"] = d.pop("source_key")
@@ -370,8 +421,9 @@ def add_manifest_methods(cls):
             conn.execute(
                 """INSERT OR REPLACE INTO source_resources
                    (product_id, source_key, resource_uri, content_hash, mime, size_bytes,
-                    last_seen_sync, chunk_ids_js, indexed_at, embedding_version)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    last_seen_sync, chunk_ids_js, indexed_at, embedding_version,
+                    enrichment_version, enrichment_status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     row["product"],
                     row["sourceKey"],
@@ -383,6 +435,8 @@ def add_manifest_methods(cls):
                     json.dumps(row.get("chunkIds", [])),
                     row["indexedAt"],
                     row.get("embeddingVersion", ""),
+                    row.get("enrichmentVersion", ""),
+                    row.get("enrichmentStatus", ""),
                 ),
             )
 
@@ -394,6 +448,30 @@ def add_manifest_methods(cls):
                 """DELETE FROM source_resources
                    WHERE product_id = ? AND source_key = ? AND resource_uri = ?""",
                 (product_id, source_key, resource_uri),
+            )
+            return cur.rowcount > 0
+
+    def update_resource_enrichment(
+        self,
+        product_id: str,
+        source_key: str,
+        resource_uri: str,
+        *,
+        enrichment_version: str,
+        enrichment_status: str,
+    ) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                """UPDATE source_resources
+                   SET enrichment_version = ?, enrichment_status = ?
+                   WHERE product_id = ? AND source_key = ? AND resource_uri = ?""",
+                (
+                    enrichment_version,
+                    enrichment_status,
+                    product_id,
+                    source_key,
+                    resource_uri,
+                ),
             )
             return cur.rowcount > 0
 
@@ -434,9 +512,159 @@ def add_manifest_methods(cls):
     cls.get_resource_manifest = get_resource_manifest
     cls.upsert_resource_manifest = upsert_resource_manifest
     cls.delete_resource_manifest = delete_resource_manifest
+    cls.update_resource_enrichment = update_resource_enrichment
     cls.start_sync_run = start_sync_run
     cls.finish_sync_run = finish_sync_run
     return cls
 
 
 Registry = add_manifest_methods(Registry)
+
+
+# ---------------------------------------------------------------- enrichment queue
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _row_to_enrichment_job(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    d["sizeBytes"] = d.pop("size_bytes")
+    d["lastModified"] = d.pop("last_modified")
+    d["contentHash"] = d.pop("content_hash")
+    d["resourceUri"] = d.pop("resource_uri")
+    d["sourceKey"] = d.pop("source_key")
+    d["sourceId"] = d.pop("source_id")
+    d["lastError"] = d.pop("last_error")
+    d["createdAt"] = d.pop("created_at")
+    d["updatedAt"] = d.pop("updated_at")
+    d["product"] = d.pop("product_id")
+    return d
+
+
+def add_enrichment_job_methods(cls):
+    """Add durable background enrichment job helpers."""
+
+    def enqueue_enrichment_job(self, row: dict) -> None:
+        now = _utc_now()
+        job_id = (
+            row.get("id")
+            or f"{row['product']}:{row['sourceKey']}:{row['resourceUri']}"
+        )
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO enrichment_jobs
+                   (id, product_id, source_key, resource_uri, source_id, mime,
+                    size_bytes, last_modified, content_hash, content, status,
+                    attempts, last_error, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       source_id = excluded.source_id,
+                       mime = excluded.mime,
+                       size_bytes = excluded.size_bytes,
+                       last_modified = excluded.last_modified,
+                       content_hash = excluded.content_hash,
+                       content = excluded.content,
+                       status = 'pending',
+                       attempts = 0,
+                       last_error = NULL,
+                       updated_at = excluded.updated_at""",
+                (
+                    job_id,
+                    row["product"],
+                    row["sourceKey"],
+                    row["resourceUri"],
+                    row["sourceId"],
+                    row.get("mime", ""),
+                    row.get("sizeBytes"),
+                    row.get("lastModified"),
+                    row["contentHash"],
+                    row["content"],
+                    "pending",
+                    0,
+                    None,
+                    now,
+                    now,
+                ),
+            )
+
+    def claim_enrichment_job(self, *, max_attempts: int) -> dict | None:
+        now = _utc_now()
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM enrichment_jobs
+                   WHERE status = 'pending' AND attempts < ?
+                   ORDER BY updated_at ASC
+                   LIMIT 1""",
+                (max_attempts,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                """UPDATE enrichment_jobs
+                   SET status = 'running', attempts = attempts + 1, updated_at = ?
+                   WHERE id = ?""",
+                (now, row["id"]),
+            )
+            claimed = conn.execute(
+                "SELECT * FROM enrichment_jobs WHERE id = ?", (row["id"],)
+            ).fetchone()
+        return _row_to_enrichment_job(claimed) if claimed else None
+
+    def complete_enrichment_job(self, job_id: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM enrichment_jobs WHERE id = ?", (job_id,))
+            return cur.rowcount > 0
+
+    def fail_enrichment_job(self, job_id: str, *, error: str, max_attempts: int) -> None:
+        now = _utc_now()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT attempts FROM enrichment_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return
+            status = "failed" if int(row["attempts"]) >= max_attempts else "pending"
+            conn.execute(
+                """UPDATE enrichment_jobs
+                   SET status = ?, last_error = ?, updated_at = ?
+                   WHERE id = ?""",
+                (status, error[:1000], now, job_id),
+            )
+
+    def enrichment_job_counts(self, product_id: str | None = None) -> dict[str, int]:
+        sql = "SELECT status, COUNT(*) AS n FROM enrichment_jobs"
+        args: list[str] = []
+        if product_id:
+            sql += " WHERE product_id = ?"
+            args.append(product_id)
+        sql += " GROUP BY status"
+        with self._conn() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        counts = {"pending": 0, "running": 0, "failed": 0}
+        for row in rows:
+            counts[str(row["status"])] = int(row["n"])
+        return counts
+
+    def reset_running_enrichment_jobs(self) -> int:
+        now = _utc_now()
+        with self._conn() as conn:
+            cur = conn.execute(
+                """UPDATE enrichment_jobs
+                   SET status = 'pending', updated_at = ?
+                   WHERE status = 'running'""",
+                (now,),
+            )
+            return cur.rowcount
+
+    cls.enqueue_enrichment_job = enqueue_enrichment_job
+    cls.claim_enrichment_job = claim_enrichment_job
+    cls.complete_enrichment_job = complete_enrichment_job
+    cls.fail_enrichment_job = fail_enrichment_job
+    cls.enrichment_job_counts = enrichment_job_counts
+    cls.reset_running_enrichment_jobs = reset_running_enrichment_jobs
+    return cls
+
+
+Registry = add_enrichment_job_methods(Registry)

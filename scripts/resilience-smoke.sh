@@ -40,22 +40,7 @@ else
   echo "skip: reranker not running under make services-up"
 fi
 
-bold "3. Stop Neo4j - expect Stage 4 skipped, dashboard still 200"
-if docker compose ps neo4j 2>/dev/null | grep -q running; then
-  docker compose stop neo4j >/dev/null
-  sleep 3
-  CODE=$(curl -s -o /dev/null -w '%{http_code}' "$API/products/$PRODUCT/dashboard")
-  if [ "$CODE" = "200" ]; then
-    pass "API still serves with Neo4j down"
-  else
-    fail "neo4j down -> $CODE"
-  fi
-  docker compose start neo4j >/dev/null
-else
-  echo "skip: Neo4j not running in docker compose"
-fi
-
-bold "4. Stop Qdrant - expect 503 (no silent empty results)"
+bold "3. Stop Qdrant - expect 503 (no silent empty results)"
 if docker compose ps qdrant 2>/dev/null | grep -q running; then
   docker compose stop qdrant >/dev/null
   sleep 3

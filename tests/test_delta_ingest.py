@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
-from nexus.config import NexusConfig
+from nexus.config import EnrichCfg, NexusConfig
 from nexus.ingest import pipeline
 from nexus.ingest.models import EmbeddedChunk, ResourceRef
 from nexus.registry import Registry
@@ -49,6 +50,9 @@ class FakeSource:
 
 class FakeEmbedder:
     calls = 0
+    active = 0
+    max_active = 0
+    delay_s = 0.0
 
     def __init__(self, *args, **kwargs):
         pass
@@ -59,20 +63,30 @@ class FakeEmbedder:
 
     async def embed_chunks(self, chunks):
         FakeEmbedder.calls += 1
-        return [
-            EmbeddedChunk(chunk=c, vector=[0.1, 0.2], vector_name="dense_text")
-            for c in chunks
-        ]
+        FakeEmbedder.active += 1
+        FakeEmbedder.max_active = max(FakeEmbedder.max_active, FakeEmbedder.active)
+        try:
+            if FakeEmbedder.delay_s:
+                await asyncio.sleep(FakeEmbedder.delay_s)
+            return [
+                EmbeddedChunk(chunk=c, vector=[0.1, 0.2], vector_name="dense_text")
+                for c in chunks
+            ]
+        finally:
+            FakeEmbedder.active -= 1
 
     async def aclose(self) -> None:
         pass
 
 
 class FakeEnricher:
+    calls = 0
+
     def __init__(self, *args, **kwargs):
         pass
 
     async def enrich(self, chunks, *, doc_contents):
+        FakeEnricher.calls += 1
         return chunks
 
     async def aclose(self) -> None:
@@ -109,6 +123,10 @@ async def _fake_sparse(texts):
 @pytest.fixture(autouse=True)
 def _patch_ingest(monkeypatch):
     FakeEmbedder.calls = 0
+    FakeEmbedder.active = 0
+    FakeEmbedder.max_active = 0
+    FakeEmbedder.delay_s = 0.0
+    FakeEnricher.calls = 0
     FakeIndexer.instances = []
     monkeypatch.setattr(pipeline, "EmbedderClient", FakeEmbedder)
     monkeypatch.setattr(pipeline, "ContextualEnricher", FakeEnricher)
@@ -241,3 +259,97 @@ async def test_sparse_indexing_uses_enriched_embedding_text(tmp_path: Path, monk
 
     assert seen_texts
     assert seen_texts[0].startswith("Q: How is the enriched sparse text indexed?")
+
+
+@pytest.mark.asyncio
+async def test_background_enrichment_queues_without_foreground_llm(
+    tmp_path: Path,
+) -> None:
+    registry = Registry(tmp_path / "registry.db")
+    cfg = _config(tmp_path)
+    cfg.ingestion.enrich_chunks = EnrichCfg(docs=True, code=False)
+
+    stats = await pipeline.run_ingest(
+        product_id="p",
+        source=FakeSource({"doc.txt": "hello world " * 20}),
+        config=cfg,
+        registry=registry,
+        source_key="source",
+        enrichment_mode="background",
+    )
+
+    indexer = FakeIndexer.instances[-1]
+    assert stats.added == 1
+    assert indexer.upserted
+    assert FakeEnricher.calls == 0
+    assert registry.enrichment_job_counts("p")["pending"] == 1
+
+
+@pytest.mark.asyncio
+async def test_background_enrichment_skips_docs_when_doc_enrichment_disabled(
+    tmp_path: Path,
+) -> None:
+    registry = Registry(tmp_path / "registry.db")
+    cfg = _config(tmp_path)
+
+    stats = await pipeline.run_ingest(
+        product_id="p",
+        source=FakeSource({"doc.txt": "hello world " * 20}),
+        config=cfg,
+        registry=registry,
+        source_key="source",
+        enrichment_mode="background",
+    )
+
+    assert stats.added == 1
+    assert FakeEnricher.calls == 0
+    assert registry.enrichment_job_counts("p")["pending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ingest_processes_changed_batches_concurrently(tmp_path: Path) -> None:
+    registry = Registry(tmp_path / "registry.db")
+    cfg = _config(tmp_path)
+    cfg.ingestion.file_batch_size = 1
+    cfg.ingestion.batch_concurrency = 2
+    FakeEmbedder.delay_s = 0.05
+
+    stats = await pipeline.run_ingest(
+        product_id="p",
+        source=FakeSource(
+            {
+                "a.txt": "alpha " * 20,
+                "b.txt": "bravo " * 20,
+                "c.txt": "charlie " * 20,
+            }
+        ),
+        config=cfg,
+        registry=registry,
+        source_key="source",
+        enrichment_mode="disabled",
+    )
+
+    assert stats.added == 3
+    assert FakeEmbedder.calls == 3
+    assert FakeEmbedder.max_active == 2
+
+
+@pytest.mark.asyncio
+async def test_background_enrichment_skips_code_when_hqe_disabled(
+    tmp_path: Path,
+) -> None:
+    registry = Registry(tmp_path / "registry.db")
+    cfg = _config(tmp_path)
+
+    stats = await pipeline.run_ingest(
+        product_id="p",
+        source=FakeSource({"app.py": "def hello():\n    return 'world'\n"}),
+        config=cfg,
+        registry=registry,
+        source_key="source",
+        enrichment_mode="background",
+    )
+
+    assert stats.added == 1
+    assert FakeEnricher.calls == 0
+    assert registry.enrichment_job_counts("p")["pending"] == 0

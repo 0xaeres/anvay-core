@@ -74,6 +74,8 @@ class ChatClient:
         timeout_s: float = 300.0,
         stream_chat: bool = False,
         token_sink: TokenSink | None = None,
+        temperature: float = 0.0,
+        top_p: float | None = None,
     ):
         self.provider = provider
         self.model = model
@@ -81,6 +83,8 @@ class ChatClient:
         self.role = role
         self._stream_chat = stream_chat
         self._token_sink = token_sink
+        self.temperature = temperature
+        self.top_p = top_p
         headers: dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -106,6 +110,8 @@ class ChatClient:
             role=role,
             stream_chat=provider == "deepinfra",
             token_sink=token_sink,
+            temperature=cfg.temperature,
+            top_p=cfg.top_p,
         )
 
     async def aclose(self) -> None:
@@ -115,17 +121,22 @@ class ChatClient:
         self,
         messages: list[dict[str, str]],
         *,
-        temperature: float = 0.2,
+        temperature: float | None = None,
+        top_p: float | None = None,
         max_tokens: int = 2048,
         json_mode: bool = False,
     ) -> ChatResponse:
         """OpenAI-compatible /chat/completions. Returns the assistant content."""
+        request_temperature = self.temperature if temperature is None else temperature
+        request_top_p = self.top_p if top_p is None else top_p
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature,
+            "temperature": request_temperature,
             "max_tokens": max_tokens,
         }
+        if request_top_p is not None:
+            body["top_p"] = request_top_p
         if json_mode:
             body["response_format"] = {"type": "json_object"}
 
@@ -242,12 +253,21 @@ class ChatClient:
             log.warning("token sink failed for role=%s", self.role, exc_info=True)
 
     async def chat_json(
-        self, messages: list[dict[str, str]], *, temperature: float = 0.2, max_tokens: int = 2048
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int = 2048,
     ) -> tuple[Any, TokenUsage]:
         """Convenience: ask for JSON, parse it. Falls back to extracting the first JSON
         object from the text if `response_format` isn't honoured by the provider."""
         resp = await self.chat(
-            messages, temperature=temperature, max_tokens=max_tokens, json_mode=True
+            messages,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            json_mode=True,
         )
         try:
             return _parse_json_payload(resp.content), resp.usage
@@ -268,6 +288,7 @@ class ChatClient:
             repaired = await self.chat(
                 repair_messages,
                 temperature=0.0,
+                top_p=top_p,
                 max_tokens=max_tokens,
                 json_mode=True,
             )
@@ -281,7 +302,8 @@ class ChatClient:
         self,
         messages: list[dict[str, str]],
         *,
-        temperature: float = 0.2,
+        temperature: float | None = None,
+        top_p: float | None = None,
         max_tokens: int = 2048,
         max_continuations: int = 2,
     ) -> ChatResponse:
@@ -293,7 +315,11 @@ class ChatClient:
         Token usage is summed across continuations.
         """
         resp = await self.chat(
-            messages, temperature=temperature, max_tokens=max_tokens, json_mode=False
+            messages,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            json_mode=False,
         )
         if not resp.truncated:
             return resp
@@ -319,6 +345,7 @@ class ChatClient:
             next_resp = await self.chat(
                 continuation_messages,
                 temperature=temperature,
+                top_p=top_p,
                 max_tokens=max_tokens,
                 json_mode=False,
             )

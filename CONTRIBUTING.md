@@ -23,23 +23,26 @@ loop gate. The flow has three big phases.
 **Phase 1 — Ingest (continuous).** A source yields resources. Nexus first
 computes a source manifest diff in SQLite (`added`, `updated`, `removed`,
 `unchanged`) using canonical resource URIs + SHA-256 content hashes +
-embedding/enrichment config version. Unchanged resources are skipped. Changed
-resources are chunked on semantic boundaries (tree-sitter for code, headings
-for docs), enriched (HQE for code; Anthropic Contextual Retrieval for docs),
-embedded dense + BM25-sparse, and upserted into Qdrant. Only after the new
-vectors are safely written do we delete stale old chunk IDs. A tree-sitter
-repo map is also persisted for council prompt context.
+embedding config version. Unchanged resources are skipped. Changed resources
+are chunked on semantic boundaries (tree-sitter for code, headings for docs),
+embedded dense + BM25-sparse, and upserted into Qdrant. Optional LLM enrichment
+(HQE for code; Anthropic Contextual Retrieval for docs) is disabled by default;
+if enabled, source sync queues it as background work after the fast raw index is
+written. Only after the new vectors are safely written do we delete stale old
+chunk IDs. A tree-sitter repo map is also persisted for council prompt context.
 
 **Phase 2 — Council (on demand).** A user clicks "Run Council" on a topic.
-A bounded LangGraph skill-pack council runs: Planner retrieves and outlines a
-master skill plus focused skills; expert passes inspect architecture, domain,
-interfaces, quality/testing, and security; Synthesizer writes Markdown drafts;
-Repair validates and fills missing sections; Judge may request one targeted
+A bounded LangGraph skill-pack council runs: Planner retrieves and outlines the
+fixed context, architecture, and engineering skills; Product Mapper extracts
+identity, vocabulary, entities, apps/services, APIs, schemas, and boundaries;
+Engineering Mapper extracts commands, standards, tests/evals, security, and
+debug/review signals; Synthesizer writes Markdown drafts; Repair validates and
+fills missing sections or factual citation gaps; Judge may request one targeted
 callback before Finalizer queues proposals in SQLite. Human approval is still
 required before anything becomes a skill file.
 
 **Phase 3 — Approve & serve.** The user reviews + edits + approves the
-proposal in the UI. `approve_proposal()` writes the `.skill.md` to the
+proposal in the UI. `approve_proposal()` writes the Agent Skills `SKILL.md` to the
 skills repo, commits + pushes, embeds the body so the skill itself becomes
 retrievable, and flips the proposal status. From that point the skill is
 served via MCP to any AI client connected to the product.
@@ -71,10 +74,11 @@ api/
 
 ingest/
   chunker.py        tree-sitter (Py/TS/TSX/JS/Rust/Go) + heading-aware markdown
-  enricher.py       HQE for code | Anthropic Contextual Retrieval for docs
+  enricher.py       optional HQE for code | Anthropic Contextual Retrieval for docs
   embedder.py       Jina v4 via llama.cpp/OpenAI-compatible embeddings
   indexer.py        Qdrant upsert + delete-by-id (dense + BM25)
-  pipeline.py       run_ingest() — manifest diff → chunk → enrich → embed → upsert → cleanup
+  pipeline.py       run_ingest() — manifest diff → chunk → embed → sparse → upsert → cleanup
+  enrichment_worker.py  durable optional background enrichment
   incremental.py    legacy per-resource reindex path used by the daemon
   models.py         Chunk, ResourceRef, ChunkKind, EmbeddedChunk
 
@@ -194,14 +198,15 @@ rules + IA contract.
    - `await run_ingest(..., registry=registry, source_key=...)` — the delta
      pipeline. It loads previous manifest rows from SQLite, reads resources
      to hash them, skips unchanged rows, embeds only added/updated rows,
-     deletes removed resources, and updates the manifest only after Qdrant
-     writes/deletes succeed.
+     deletes removed resources, optionally queues enrichment, and updates the
+     manifest only after Qdrant writes/deletes succeed.
    - After success: builds + persists the repo map; emits `success`.
 6. UI consumes `sourceLogUrl(productId, sourceId)` via `EventSource`. The
    `IngestionProgress.tsx` component renders the bar + log. SSE events are
    plain JSON with `level`, `stage`, `msg`, `ts`, and optional counters. Key
    stages: `read`, `diff`, `skip`, `chunk`, `enrich`, `embed`, `sparse`,
-   `upsert`, `cleanup_stale`, `delete_removed`, `manifest_update`, `complete`.
+   `upsert`, `cleanup_stale`, `delete_removed`, `manifest_update`,
+   `enrichment_queue`, `complete`.
 
 ### Trace 1b — Why resync is delta-safe
 
@@ -209,8 +214,9 @@ Qdrant is a derived index, not the source of truth. The source of truth for
 sync state is SQLite:
 
 - `source_resources(product_id, source_key, resource_uri, content_hash, ...,
-  chunk_ids_js, embedding_version)` stores the last successfully indexed
-  version of each resource.
+  chunk_ids_js, embedding_version, enrichment_version, enrichment_status)`
+  stores the last successfully indexed version of each resource plus optional
+  enrichment state.
 - `source_sync_runs(...)` stores one row per sync attempt and its final diff
   counts.
 
@@ -220,12 +226,15 @@ On each resync, `run_ingest()` does:
 2. List current resources and read each one once to compute a SHA-256 hash.
 3. Classify:
    - **added**: no manifest row.
-   - **updated**: hash changed, or embedding/enrichment config version changed.
-   - **unchanged**: hash + embedding version match; skip chunk/enrich/embed.
+   - **updated**: hash changed, or embedding config version changed.
+   - **unchanged**: hash + embedding version match; skip chunk/embed. If
+     enrichment is enabled and its version changed, queue background enrichment
+     without rebuilding the raw index.
    - **removed**: manifest row is absent from the current source listing.
-4. For added/updated: chunk → enrich → dense embed → BM25 sparse encode →
-   Qdrant upsert. Then delete stale old chunk IDs not present in the new
-   chunk set. Then upsert the manifest row.
+4. For added/updated: chunk → dense embed → BM25 sparse encode → Qdrant
+   upsert. Then delete stale old chunk IDs not present in the new chunk set.
+   Then upsert the manifest row. If enrichment is enabled for that resource
+   kind, queue a durable enrichment job.
 5. For removed: delete old chunk IDs from Qdrant. Only then delete the
    manifest row, so a failed delete retries on the next sync.
 
@@ -272,12 +281,15 @@ This ordering prevents knowledge-base poisoning:
 2. `load_repo_map_for_product(config, product_id)` →
    `repo_map.render(...)`. Planner and Synthesizer use this structure with
    retrieved evidence.
-3. Expert passes retrieve fresh evidence for architecture, domain, interfaces,
-   quality/testing, and security.
+3. Product Mapper and Engineering Mapper retrieve fresh evidence for product
+   structure, architecture, APIs, schemas, commands, tests, standards, and
+   security signals.
 4. Synthesizer emits Markdown drafts with `chat.chat_markdown(...)`; long
    outputs auto-continue on `finish_reason="length"`.
-5. `validate_skill_markdown(body, tier=...)` → missing/short sections trigger
-   targeted section-fill repair, capped at 3 attempts per skill.
+5. `validate_skill_markdown(body, tier=...)` → missing/short sections and
+   uncited factual sections trigger targeted repair, capped at 3 attempts per
+   skill. Procedural sections such as debugging and review checklists do not
+   need citations unless they assert concrete product facts.
 6. `strip_uncited_rules(body)` removes list items in `## Rules` that lack
    `[file: path:line]`.
 7. `parse_skill_markdown(body, evidence=evidence)` — H1 → name, regex →
@@ -289,7 +301,7 @@ This ordering prevents knowledge-base poisoning:
 
 1. `queue.get(proposal_id)` — abort if missing; no-op if already approved.
 2. `_row_to_skill(row, actor)` — builds the `Skill` Pydantic model.
-3. `SkillStore.save(skill)` writes `<hierarchy_root>/<product>/<name>.skill.md`.
+3. `SkillStore.save(skill)` writes `<hierarchy_root>/<product>/<name>/SKILL.md`.
 4. `commit_and_push(store.root, message=…)` pushes to the configured remote.
 5. `_embed_skill_body(skill, ...)` — turns the body into a single doc
    chunk and upserts to Qdrant so the skill itself becomes retrievable.
@@ -323,8 +335,10 @@ EMBEDDER_UBATCH=2048 RERANKER_UBATCH=2048 make services-up # larger RAM machine
 NEXUS_LOG_LEVEL=DEBUG uv run uvicorn nexus.api.app:app --port 8000 --reload
 ```
 
-Default embedder physical batch is intentionally conservative (`1024`) for a
-MacBook Air M2 with 8GB RAM.
+Default local embedder physical batch is intentionally conservative (`1024`) for
+a MacBook Air M2 with 8GB RAM. The default DeepInfra ingest path is more
+parallel now that enrichment is off: `embed_batch_size=32`,
+`file_batch_size=50`, `read_concurrency=10`, and `batch_concurrency=2`.
 
 ### Retrieval model config
 
@@ -354,7 +368,7 @@ npm run dev                # http://localhost:3000
 
 ```bash
 uv run ruff check nexus tests           # must be clean
-uv run pytest -q                        # unit + integration (146 at last count)
+uv run pytest -q                        # unit + integration
 uv run pytest -m eval                   # opt-in retrieval benchmark
                                         #   (skips if Qdrant/embedder/reranker absent)
 make test-live-e2e                      # live Qdrant E2E
@@ -362,7 +376,7 @@ make test-live-e2e                      # live Qdrant E2E
 
 The retrieval eval is the floor for "did my change to the pipeline make
 things better or worse?". Re-run it after any modification to chunker,
-enricher, hybrid, rerank, repomap, or contextual-retrieval logic.
+optional enricher, hybrid, rerank, repomap, or contextual-retrieval logic.
 Qdrant with native TurboQuant is the default and only vector-index path; eval
 decisions compare the current stack against the published floors.
 
@@ -420,7 +434,9 @@ should see its line number + signature.
 
 **6. Watch delta sync skip unchanged files.** Sync a product twice without
 changing files. The second SSE stream should show `skip` events and final
-`unchanged=N`, with no chunk/enrich/embed work for unchanged resources.
+`unchanged=N`, with no chunk/embed work for unchanged resources. If optional
+enrichment is enabled and only the enrichment version changed, the raw index is
+left alone and a background enrichment job is queued.
 
 ## 8. Recipes
 
@@ -507,15 +523,15 @@ the marker is safe to leave in CI behind a conditional.
 |---|---|
 | **product** | Root entity; everything below it (sources, chunks, sessions, skills) is scoped to one product. |
 | **business unit** | Optional display metadata on a product (`owner.team`) in v1; not a route, table, or isolation boundary. |
-| **skill** | A curated, human-approved markdown playbook with file:line citations. Lives in the org's skills repo. |
+| **skill** | A curated, human-approved Agent Skills `SKILL.md` playbook with file:line citations. Lives in the org's skills repo. |
 | **proposal** | The council's draft of a skill. Lives in SQLite until a human approves / rejects / edits. |
 | **session** | One council run; produces one proposal. |
 | **chunk** | A slice of an ingested resource (function, class, paragraph). Has `kind` ∈ {CODE, DOC}, `context_path`, `context_summary`. |
-| **manifest** | SQLite sync state for a source resource: canonical URI, content hash, chunk IDs, embedding version. Prevents full re-embed and stale-vector poisoning. |
+| **manifest** | SQLite sync state for a source resource: canonical URI, content hash, chunk IDs, embedding version, optional enrichment version/status. Prevents full re-embed and stale-vector poisoning. |
 | **source_key** | Stable per-product/per-source/per-root key used to group manifest rows. GitHub multi-repo sources get one key per repo. |
 | **canonical URI** | Stable `resource_uri` stored in Qdrant and the manifest. Filesystem uses absolute paths; GitHub uses `github:owner/repo/path`. |
-| **HQE** | Hypothetical Question Embeddings — 3 questions a developer would type to find a code chunk, prepended at embed time. |
-| **Contextual Retrieval (CR)** | Anthropic's "situate this chunk within the document" prefix; the doc analogue of HQE. |
+| **HQE** | Optional Hypothetical Question Embeddings — 3 questions a developer would type to find a code chunk, prepended at embed time. Disabled by default. |
+| **Contextual Retrieval (CR)** | Optional Anthropic-style "situate this chunk within the document" prefix; the doc analogue of HQE. Disabled by default. |
 | **repo map** | tree-sitter symbol outline of a product's source tree, injected into council system prompts. |
 | **RRF** | Reciprocal Rank Fusion — how dense and sparse retrieval hits are combined. |
 | **Planner / Experts / Synthesizer / Repair / Judge / Finalizer** | The bounded skill-pack council nodes. |
@@ -529,6 +545,7 @@ the marker is safe to leave in CI behind a conditional.
 - Reflexion paper (Shinn et al. 2023, `arxiv.org/abs/2303.11366`) — the
   draft/critique/revise pattern Nexus's council follows.
 - Anthropic Contextual Retrieval (Sep 2024,
-  `anthropic.com/news/contextual-retrieval`) — the doc enrichment technique.
+  `anthropic.com/news/contextual-retrieval`) — the optional doc enrichment
+  technique.
 - aider repo map (`aider.chat/docs/repomap.html`) — the symbol-outline
   technique Nexus's repomap is modelled on (minus PageRank for v1).

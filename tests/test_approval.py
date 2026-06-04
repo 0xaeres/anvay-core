@@ -23,7 +23,7 @@ from nexus.config import (
     VectorStoreCfg,
 )
 from nexus.council.queue import ProposalQueue
-from nexus.skills.approval import approve_proposal
+from nexus.skills.approval import _wrap_markdown_body, approve_proposal
 from nexus.skills.models import Citation, SkillProposal
 
 
@@ -55,6 +55,7 @@ def _seed_proposal(queue: ProposalQueue) -> SkillProposal:
     p = SkillProposal(
         id="prop_seed",
         name="demo-skill",
+        description="Use for demo approval tests.",
         body="# Demo\n\n## Rules\n\n1. Cited [file: a.py:1].\n",
         citations=[Citation(file="a.py", line=1, excerpt="x")],
         confidence=0.6,
@@ -80,10 +81,12 @@ def test_approve_writes_skill_file_and_flips_status(tmp_path: Path) -> None:
         )
     )
     assert result["ok"] is True
-    # Skill file landed on disk under hierarchy_root (flat: <product>/<name>.skill.md)
-    expected = tmp_path / "skills" / "forge" / "demo-skill.skill.md"
+    # Skill file landed on disk under Agent Skills layout: <product>/<name>/SKILL.md.
+    expected = tmp_path / "skills" / "forge" / "demo-skill" / "SKILL.md"
     assert expected.exists()
     contents = expected.read_text(encoding="utf-8")
+    assert "description: Use for demo approval tests." in contents
+    assert "nexus_product: forge" in contents
     assert "## Rules" in contents
     assert "[file: a.py:1]" in contents
     # Queue row flipped to approved + actor stamped
@@ -91,6 +94,41 @@ def test_approve_writes_skill_file_and_flips_status(tmp_path: Path) -> None:
     assert row is not None
     assert row["status"] == "approved"
     assert row["approved_by"] == "reviewer@example"
+
+
+def test_approve_product_skill_writes_flat_file_and_reloads(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    queue = ProposalQueue(cfg.storage.proposal_queue)
+    proposal = SkillProposal(
+        id="prop_product_skill",
+        name="product-skill",
+        description="Use for product orientation and grounded development.",
+        tier="product_master",
+        body="# product-skill\n\n## Use This Skill When\n\nUse for grounded work.\n",
+        citations=[Citation(file="a.py", line=1, excerpt="x")],
+        confidence=0.6,
+        status="pending",
+        created_at="2026-05-19T00:00:00Z",
+    )
+    queue.enqueue(proposal, session_id="cs_seed", product_id="forge")
+
+    result = asyncio.run(
+        approve_proposal(
+            proposal_id=proposal.id,
+            actor="reviewer@example",
+            config=cfg,
+            queue=queue,
+        )
+    )
+
+    expected = tmp_path / "skills" / "forge" / "product-skill.md"
+    assert result["ok"] is True
+    assert expected.exists()
+    from nexus.skills.store import SkillStore
+
+    loaded = SkillStore(tmp_path / "skills").load("forge/product-skill.md")
+    assert loaded.name == "product-skill"
+    assert loaded.product == "forge"
 
 
 def test_approve_unknown_proposal_raises(tmp_path: Path) -> None:
@@ -115,3 +153,27 @@ def test_approve_twice_is_idempotent(tmp_path: Path) -> None:
         approve_proposal(proposal_id=p.id, actor="me", config=cfg, queue=queue)
     )
     assert second.get("skipped") == "already_approved"
+
+
+def test_wrap_markdown_body_wraps_prose_but_preserves_code_fences() -> None:
+    long_sentence = " ".join(["Nexus keeps generated skill prose readable"] * 8)
+    body = (
+        "# product-skill\n\n"
+        f"{long_sentence}\n\n"
+        "- " + " ".join(["List guidance stays readable"] * 8) + "\n\n"
+        "```python\n"
+        "x = '" + ("a" * 140) + "'\n"
+        "```\n"
+    )
+
+    wrapped = _wrap_markdown_body(body, width=88)
+
+    in_fence = False
+    for line in wrapped.splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or not line:
+            continue
+        assert len(line) <= 88
+    assert "x = '" + ("a" * 140) + "'" in wrapped

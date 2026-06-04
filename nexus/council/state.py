@@ -12,7 +12,7 @@ from typing import Annotated, TypedDict
 
 from pydantic import BaseModel, Field
 
-from nexus.skills.models import Critique, SkillProposal, SkillTier
+from nexus.skills.models import Critique, EvalStatus, SkillProposal, SkillTier
 
 
 class EvidenceChunk(BaseModel):
@@ -39,6 +39,7 @@ class AgentCost(BaseModel):
 
 class SkillPlanItem(BaseModel):
     name: str
+    description: str = ""
     tier: SkillTier
     purpose: str = ""
     parent: str | None = None
@@ -56,19 +57,24 @@ class ExpertReport(BaseModel):
 
 class SkillDraft(BaseModel):
     name: str
+    description: str = ""
     tier: SkillTier
     parent: str | None = None
     related: list[str] = Field(default_factory=list)
     coverage: dict = Field(default_factory=dict)
     body: str
     repair_attempts: int = 0
+    repair_warnings: list[str] = Field(default_factory=list)
 
 
-class JudgeResult(BaseModel):
-    passed: bool = True
-    missing_evidence: bool = False
-    questions: list[str] = Field(default_factory=list)
+class SkillEvalResult(BaseModel):
+    skill_name: str
+    status: EvalStatus
     summary: str = ""
+    failures: list[str] = Field(default_factory=list)
+    quality_score: float = Field(ge=0.0, le=1.0, default=0.0)
+    attempts: int = 0
+    signals_used: list[str] = Field(default_factory=list)
 
 
 class CouncilState(TypedDict, total=False):
@@ -80,12 +86,12 @@ class CouncilState(TypedDict, total=False):
 
     # Shared evidence — populated by Drafter; Critic adds its own re-retrieval to it.
     evidence: Annotated[list[EvidenceChunk], operator.add]
+    skill_signals: list[dict]
     skill_plan: list[SkillPlanItem]
     expert_reports: Annotated[list[ExpertReport], operator.add]
     skill_drafts: list[SkillDraft]
+    eval_results: Annotated[list[SkillEvalResult], operator.add]
     proposals: list[SkillProposal]
-    judge_result: JudgeResult | None
-    callback_count: int
 
     # Per-node outputs
     proposal: SkillProposal | None
@@ -104,6 +110,7 @@ def initial_state(
     product_id: str,
     topic: str,
     config_path: str,
+    skill_signals: list[dict] | None = None,
 ) -> CouncilState:
     return {
         "session_id": session_id,
@@ -111,12 +118,12 @@ def initial_state(
         "topic": topic,
         "config_path": config_path,
         "evidence": [],
+        "skill_signals": skill_signals or [],
         "skill_plan": [],
         "expert_reports": [],
         "skill_drafts": [],
+        "eval_results": [],
         "proposals": [],
-        "judge_result": None,
-        "callback_count": 0,
         "proposal": None,
         "proposal_id": None,
         "critique": None,

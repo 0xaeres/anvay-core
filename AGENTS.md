@@ -36,9 +36,13 @@ client. The sibling repo `../nexus-ui/` is the Next.js web UI.
   questions) at ingest; doc chunks get Anthropic's Contextual Retrieval
   blurb. Both prepend at embed time via `text_for_embedding()`.
 - **Council is bounded expert-pack generation.** Planner → expert fanout
-  (Architect, Domain, Interface, Quality/Test, Security) → Synthesizer →
-  completeness Repair → Judge → optional one Targeted Callback → Finalizer.
-  The callback cap is 1 per session.
+  (architect, domain_expert, quality_expert) → Synthesizer →
+  completeness Repair (≤3 attempts per skill) → Eval → Finalizer.
+  Each expert produces a compact JSON report (summary, findings,
+  missing_questions); the Synthesizer builds the full 13-section
+  `product_master` Markdown skill from those reports + evidence + repo map.
+  Incomplete skills are never queued; the Eval node runs 5 deterministic
+  checks (identity, structure, name match, citation faithfulness, trigger).
 - **Synthesizer emits Markdown skills, not JSON.** Citations are regex-parsed
   post-hoc. Long outputs auto-continue on `finish_reason="length"`. Missing
   sections trigger targeted section-fill repair, capped at 3 attempts per skill;
@@ -48,7 +52,7 @@ client. The sibling repo `../nexus-ui/` is the Next.js web UI.
   token-budgeted. Built at sync time, persisted under
   `<state>/repomaps/<product>.json`.
 - **Evidence chunks per session is capped** at `EVIDENCE_CHUNKS_PER_SESSION_CAP = 20`
-  in [nexus-ui/lib/types.ts](../nexus-ui/lib/types.ts).
+  in [`nexus/council/agents/pack.py`](./nexus/council/agents/pack.py).
 
 ## Conventions
 

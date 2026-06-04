@@ -17,9 +17,9 @@ human-validated and carry a `confidence ∈ [0,1]`.
 
 **Go deeper on demand.** While working, if you need to verify a specific implementation,
 find all usages of a symbol, or ground your reasoning in actual code, call
-`query_code_context` for a precise symbol lookup or `hybrid_search_corpus` for a richer
-GraphRAG-backed search. These query the full indexed corpus through the same retrieval
-pipeline that grounded the skills themselves.
+`query_code_context` for a precise symbol lookup or `hybrid_search_corpus` for a broader
+dense + BM25 + rerank search. These query the full indexed corpus through the same
+retrieval pipeline that grounded the skills themselves.
 
 **Report outcomes.** When a task completes (or fails), call `report_outcome` with the
 skill name and a brief note. This feeds the staleness tracking that keeps skills relevant.

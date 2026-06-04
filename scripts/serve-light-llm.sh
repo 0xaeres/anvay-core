@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Ensure Ollama is running and the light LLM model is pulled.
-# Used by: contextual enricher, relation extractor, HyDE, query classifier.
+# Used by: contextual chunk enrichment.
 #
 # Prereq: install Ollama (brew install ollama, or https://ollama.com).
 
@@ -25,7 +25,6 @@ if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
   done
 fi
 
-# Check if the model is already pulled.
 # NOTE: avoid `! cmd | grep` under set -euo pipefail — grep exit 1 (no match)
 # propagates through the pipe and aborts the script before we can act on it.
 # Use a subshell + explicit exit-code capture instead.

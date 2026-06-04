@@ -32,7 +32,7 @@ Your codebase + docs
         │
         ▼
   Expert council drafts a product skill pack
-        │  ← seeded by an aider-style repo map + contextual chunks
+        │  ← seeded by an aider-style repo map + retrieved chunks
         ▼
   Human reviews + approves proposals in the UI
         │
@@ -44,26 +44,30 @@ Your codebase + docs
 
 ## What is a skill file?
 
-A skill file is a plain Markdown + YAML document that tells an agent *how to
-work in your codebase*: patterns to follow, pitfalls to avoid, architectural
-context, domain vocabulary. One product → one or more skills, each with
-file:line citations back to the source.
+A skill is an Agent Skills directory with a `SKILL.md` file that tells an agent
+*how to work in your codebase*: patterns to follow, pitfalls to avoid,
+architectural context, domain vocabulary, and when to use the skill. One
+product gets a fixed three-skill pack: context, architecture, and engineering.
+Factual product claims cite file:line evidence; procedural playbook guidance
+stays concise and uncited unless it names a concrete product fact.
 
 ```yaml
 ---
 name: auth-token-rotation
-product: my-api
-version: 1
-confidence: 0.84
-applies_to:
-  files: ["src/auth/**/*.py"]
-  contexts: ["code-review", "security-audit"]
-provenance:
-  council_session: cs_20260524_142117_a3f2c1
-  validated_by: alice@example.com
-  validated_at: 2026-05-24T14:25:00Z
-  evidence_chunks: [c1, c2, c5]
-  revision_count: 0
+description: Use for auth token rotation, refresh flows, session validation, and security review.
+compatibility:
+  agents: ["codex", "claude", "cursor", "continue"]
+  format: agent-skills
+metadata:
+  nexus_product: my-api
+  nexus_tier: interface
+  nexus_confidence: 0.84
+  nexus_provenance:
+    council_session: cs_20260524_142117_a3f2c1
+    validated_by: alice@example.com
+    validated_at: 2026-05-24T14:25:00Z
+    evidence_chunks: [c1, c2, c5]
+    revision_count: 0
 ---
 
 # auth-token-rotation
@@ -111,7 +115,7 @@ Edit `nexus.yaml`:
   the UI with a GitHub service-account token and one or more repo URLs
 
 Edit `.env`:
-- `DEEPINFRA_API_KEY` — council + enricher LLMs (get one at deepinfra.com)
+- `DEEPINFRA_API_KEY` — council LLMs (and optional enrichment, if enabled)
 - `GITHUB_TOKEN` — for the GitHub connector
 - `NEXUS_TOKEN_KEY` — Fernet key for encrypting connector tokens at rest
 
@@ -149,7 +153,10 @@ The local llama.cpp scripts auto-detect acceleration:
 - Nvidia host → GPU
 - otherwise → CPU
 
-Defaults are conservative for a MacBook Air M2 with 8GB RAM:
+Local model defaults are conservative for a MacBook Air M2 with 8GB RAM. The
+default DeepInfra ingest path uses larger client batches
+(`embed_batch_size=32`, `file_batch_size=50`, `read_concurrency=10`,
+`batch_concurrency=2`) because LLM chunk enrichment is off.
 
 ```bash
 EMBEDDER_DEVICE=cpu RERANKER_DEVICE=cpu make services-up   # force CPU
@@ -195,7 +202,9 @@ Visit `http://localhost:3000/setup`:
 - Trigger ingestion; watch the live SSE sync log. Resync is delta-safe:
   unchanged files are skipped, changed files are embedded before stale vectors
   are deleted, and removed files are cleaned from the configured retrieval
-  index after successful delete-by-ID.
+  index after successful delete-by-ID. Default ingest is fast raw
+  dense+BM25 indexing; LLM chunk enrichment is disabled by default and can be
+  re-enabled per config later.
 - Start a council session; watch the live deliberation
 - Approve / edit / reject the proposal at `/p/<id>/review`
 
@@ -223,7 +232,7 @@ uv run nexus delete-product --product <your-product-id> --yes
 ```
 
 This removes the product row, sources, source manifests, sync runs, proposals,
-council sessions, approved `.skill.md` files, retrieval index entries, the
+council sessions, approved `SKILL.md` files, retrieval index entries, the
 persisted repo map, and LangGraph checkpoints for that product's sessions.
 
 If the retrieval backend is offline and you only want local SQLite/filesystem cleanup:
@@ -270,13 +279,13 @@ nexus/
 ├── nexus/
 │   ├── api/           FastAPI routes (/products, /sources, /council, /skills, /setup)
 │   ├── ingest/        Delta-safe manifest sync, chunker (tree-sitter),
-│   │                  enricher (HQE + Anthropic CR), embedder,
+│   │                  optional background enricher, embedder,
 │   │                  Qdrant indexer (dense + BM25 + TurboQuant)
 │   ├── retrieval/     Hybrid pipeline (dense + BM25 → RRF → reranker),
 │   │                  repomap (aider-style symbol outline)
 │   ├── council/       LangGraph skill-pack council: planner, experts, synthesizer
 │   │                  Plus runner (SSE), queue (SQLite), skill_parser
-│   ├── skills/        Skill model, store (YAML+Markdown), approval flow
+│   ├── skills/        Skill model, Agent Skills store, approval flow
 │   ├── connectors/    local_fs + MCP client
 │   ├── mcp_server/    MCP stdio server — what Claude Desktop connects to
 │   ├── llm/           OpenAI-compatible chat client (continuation-aware)
@@ -293,14 +302,14 @@ nexus/
 
 ```bash
 uv run ruff check nexus tests
-uv run pytest -q                       # 146 tests, ~2s
+uv run pytest -q                       # unit + integration tests
 uv run pytest -m eval                  # opt-in retrieval benchmark
 make test-live-e2e                     # live Qdrant E2E
 ```
 
 The eval set under `tests/eval/queries.json` is the authoritative measure of
-retrieval quality. After any change to chunking, enrichment, hybrid, rerank,
-repo map, or contextual retrieval, run `pytest -m eval` against a populated
+retrieval quality. After any change to chunking, optional enrichment, hybrid,
+rerank, or repo map, run `pytest -m eval` against a populated
 index and confirm `recall@10` + `MRR` stay above the floors in
 `queries.json._meta`.
 

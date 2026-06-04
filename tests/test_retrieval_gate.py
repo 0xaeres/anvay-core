@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from nexus.config import ModelCfg, ModelsCfg, NexusConfig
-from nexus.council.agents.drafter import _no_evidence_error
+from nexus.council.agents.pack import _no_evidence_error
 from nexus.retrieval.hybrid import Hit
 from nexus.retrieval.pipeline import _apply_quality_gate
 
@@ -35,8 +35,6 @@ def test_drafter_empty_evidence_message_explains_quality_gate() -> None:
     err = _no_evidence_error(result, config)
     msg = err.detail
 
-    assert "20 candidate chunk(s)" in msg
     assert "quality_gate_threshold=0.3" in msg
     assert "best_score=1.86e-06" in msg
-    assert "set it to 0.0 for local Jina reranker scores" in msg
-    assert "Council stopped before drafting" in err.user_message
+    assert "Council stopped before planning" in err.user_message

@@ -83,6 +83,9 @@ async def list_sources(
     for s in registry.list_sources(product_id):
         s["config"] = _redact(s.get("config") or {})
         by_name[s["name"]] = s
+    enrichment = registry.enrichment_job_counts(product_id)
+    for source in by_name.values():
+        source["enrichment"] = enrichment
     return {"sources": list(by_name.values())}
 
 
@@ -96,9 +99,11 @@ async def get_source(
     runtime = registry.get_source(product_id, source_id)
     if runtime:
         runtime["config"] = _redact(runtime.get("config") or {})
+        runtime["enrichment"] = registry.enrichment_job_counts(product_id)
         return runtime
     for s in _config_sources(config, product_id):
         if s["name"] == source_id:
+            s["enrichment"] = registry.enrichment_job_counts(product_id)
             return s
     raise HTTPException(status_code=404, detail="source not found")
 
@@ -465,7 +470,7 @@ async def _ingest_root(
     await _emit(
         q,
         "info",
-        f"Running ingest pipeline for {root_label} (chunk → enrich → embed → index)…",
+        f"Running ingest pipeline for {root_label} (chunk → embed → index)…",
     )
     run_id = registry.start_sync_run(product_id, source_key, _now())
     try:
@@ -473,7 +478,8 @@ async def _ingest_root(
             product_id=product_id,
             source=adapter,
             config=config,
-            enrich=True,
+            enrich=False,
+            enrichment_mode="disabled",
             event_sink=_pipeline_event,
             registry=registry,
             source_key=source_key,
@@ -498,7 +504,6 @@ async def _ingest_root(
         unchanged=stats.unchanged,
         status="done" if stats.resources_failed == 0 and stats.embed_errors == 0 else "partial",
     )
-
     rm = None
     try:
         from nexus.retrieval.repomap import extract_repo_map
@@ -597,7 +602,7 @@ async def source_log_stream(
     async def event_stream():
         q = _log_queues.get(key)
         if q is None:
-            yield f"data: {json.dumps({'level': 'info', 'msg': 'No active sync. Trigger one with the Sync button.'})}\n\n"
+            yield f"data: {json.dumps({'level': 'done', 'msg': 'No active sync. Trigger one with the Sync button.'})}\n\n"
             return
         try:
             while True:

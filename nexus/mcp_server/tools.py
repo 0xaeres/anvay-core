@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
 from nexus.config import NexusConfig
+from nexus.council.queue import ProposalQueue
 from nexus.retrieval.pipeline import RetrievalContext, retrieve
 from nexus.skills.models import Skill
 from nexus.skills.store import SkillStore
@@ -32,6 +33,7 @@ class ToolState:
     config: NexusConfig
     _ctx: RetrievalContext | None = None
     _store: SkillStore | None = None
+    _queue: ProposalQueue | None = None
     _outcomes: list[dict] = field(default_factory=list)
 
     @property
@@ -48,6 +50,12 @@ class ToolState:
                 root = Path.cwd() / root
             self._store = SkillStore(root)
         return self._store
+
+    @property
+    def queue(self) -> ProposalQueue:
+        if self._queue is None:
+            self._queue = ProposalQueue(Path(self.config.storage.proposal_queue))
+        return self._queue
 
 
 # ---------------------------------------------------------------- guidance tools
@@ -73,7 +81,10 @@ async def find_skills(
         return {"skills": [], "warning": "no skills found at hierarchy_root"}
 
     product_skills = [s for s in all_skills if s.product == state.product]
-    master_skills = [s for s in product_skills if s.tier == "product_master"]
+    product_skill = next((s for s in product_skills if s.name == "product-skill"), None)
+    master_skills = [
+        s for s in product_skills if s.tier == "product_master" and s.name != "product-skill"
+    ]
     candidates = [
         s
         for s in product_skills
@@ -86,7 +97,9 @@ async def find_skills(
     q_tokens = {t for t in _tokens(ql) if len(t) >= 3}
     scored: list[tuple[float, Skill]] = []
     for s in candidates:
-        haystack = f"{s.name} {' '.join(s.applies_to.contexts or [])} {s.body}".lower()
+        haystack = (
+            f"{s.name} {s.description} {' '.join(s.applies_to.contexts or [])} {s.body}"
+        ).lower()
         h_tokens = set(_tokens(haystack))
         if not q_tokens:
             score = s.confidence
@@ -96,9 +109,11 @@ async def find_skills(
         scored.append((score, s))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    masters = sorted(master_skills, key=lambda s: s.confidence, reverse=True)[:1]
+    masters = ([product_skill] if product_skill else []) + sorted(
+        master_skills, key=lambda s: s.confidence, reverse=True
+    )[: 0 if product_skill else 1]
     remaining = max(top_k - len(masters), 0)
-    top = [*masters, *[s for _, s in scored[:remaining]]]
+    top = [*masters, *[s for _, s in scored[:remaining] if s not in masters]]
 
     out: list[dict] = []
     for s in top:
@@ -108,7 +123,7 @@ async def find_skills(
                 "name": s.name,
                 "tier": s.tier,
                 "confidence": s.confidence,
-                "summary": _first_paragraph(s.body),
+                "summary": s.description or _first_paragraph(s.body),
             }
         )
     return {
@@ -139,7 +154,7 @@ async def report_outcome(
     succeeded: bool,
     notes: str = "",
 ) -> dict:
-    """Append the outcome to an in-memory log."""
+    """Persist an outcome signal for future skill improvement."""
     record = {
         "skill_name": skill_name,
         "succeeded": succeeded,
@@ -147,6 +162,14 @@ async def report_outcome(
         "ts": time.time(),
     }
     state._outcomes.append(record)
+    signal_id = state.queue.record_skill_signal(
+        product_id=state.product,
+        source_type="mcp_outcome",
+        skill_name=skill_name,
+        text=notes or ("Skill succeeded." if succeeded else "Skill failed."),
+        metadata={"succeeded": succeeded, "ts": record["ts"]},
+    )
+    record["signal_id"] = signal_id
     log.info("outcome reported: %s", record)
     return {"ok": True, "received": record}
 
@@ -193,7 +216,13 @@ async def skill_hierarchy(state: ToolState) -> dict:
     return {
         "product": state.product,
         "skills": [
-            {"id": s.id, "name": s.name, "tier": s.tier, "confidence": s.confidence}
+            {
+                "id": s.id,
+                "name": s.name,
+                "description": s.description,
+                "tier": s.tier,
+                "confidence": s.confidence,
+            }
             for s in state.store.iter_skills()
             if s.product == state.product
         ],
