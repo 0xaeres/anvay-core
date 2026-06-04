@@ -24,9 +24,9 @@ async def list_product_skills(
         d["id"] = s.id
         skills.append(d)
         grouped.setdefault(s.tier, []).append(d)
-    skills.sort(key=lambda s: (0 if s.get("name") == "product-skill" else 1, s.get("name", "")))
+    skills.sort(key=lambda s: (0 if s.get("tier") == "product_master" else 1, s.get("name", "")))
     for items in grouped.values():
-        items.sort(key=lambda s: (0 if s.get("name") == "product-skill" else 1, s.get("name", "")))
+        items.sort(key=lambda s: (0 if s.get("tier") == "product_master" else 1, s.get("name", "")))
     return {"skills": skills, "grouped": grouped}
 
 

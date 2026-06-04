@@ -42,7 +42,11 @@ async def approve_proposal(
     if not row:
         raise ApprovalError(f"proposal not found: {proposal_id}")
     if row["status"] == "approved":
-        return {"ok": True, "skipped": "already_approved", "skill_id": row.get("name")}
+        return {
+            "ok": True,
+            "skipped": "already_approved",
+            "skill_id": f"{row.get('product_id')}/{row.get('name')}",
+        }
 
     skill = _row_to_skill(row, actor=actor)
     store = SkillStore(_resolve_root(config.hierarchy_root))

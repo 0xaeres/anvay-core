@@ -101,10 +101,10 @@ def test_approve_product_skill_writes_flat_file_and_reloads(tmp_path: Path) -> N
     queue = ProposalQueue(cfg.storage.proposal_queue)
     proposal = SkillProposal(
         id="prop_product_skill",
-        name="product-skill",
+        name="forge-skill",
         description="Use for product orientation and grounded development.",
         tier="product_master",
-        body="# product-skill\n\n## Use This Skill When\n\nUse for grounded work.\n",
+        body="# forge-skill\n\n## Use This Skill When\n\nUse for grounded work.\n",
         citations=[Citation(file="a.py", line=1, excerpt="x")],
         confidence=0.6,
         status="pending",
@@ -121,13 +121,13 @@ def test_approve_product_skill_writes_flat_file_and_reloads(tmp_path: Path) -> N
         )
     )
 
-    expected = tmp_path / "skills" / "forge" / "product-skill.md"
+    expected = tmp_path / "skills" / "forge" / "forge-skill.md"
     assert result["ok"] is True
     assert expected.exists()
     from nexus.skills.store import SkillStore
 
-    loaded = SkillStore(tmp_path / "skills").load("forge/product-skill.md")
-    assert loaded.name == "product-skill"
+    loaded = SkillStore(tmp_path / "skills").load("forge/forge-skill.md")
+    assert loaded.name == "forge-skill"
     assert loaded.product == "forge"
 
 
@@ -153,6 +153,7 @@ def test_approve_twice_is_idempotent(tmp_path: Path) -> None:
         approve_proposal(proposal_id=p.id, actor="me", config=cfg, queue=queue)
     )
     assert second.get("skipped") == "already_approved"
+    assert second.get("skill_id") == "forge/demo-skill"
 
 
 def test_wrap_markdown_body_wraps_prose_but_preserves_code_fences() -> None:

@@ -21,6 +21,8 @@ connectors: []
 # ---------------------------------------------------------------- Storage
 vector_store:
   url: http://localhost:6333
+  timeout_s: 120
+  upsert_batch_size: 16
   collections:
     code: nexus_code
     text: nexus_text

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import httpx
 import pytest
 from qdrant_client.http import models as qm
 
 from nexus.ingest.indexer import Indexer, IndexerError
+from nexus.ingest.models import Chunk, ChunkKind, EmbeddedChunk, ResourceRef
 
 
 def test_indexer_builds_qdrant_turboquant_config() -> None:
@@ -39,3 +41,73 @@ def test_indexer_rejects_unknown_quantization_bits() -> None:
 
     with pytest.raises(IndexerError, match=r"unsupported vector_store\.quantization\.bits"):
         indexer._dense_quantization_config()
+
+
+@pytest.mark.asyncio
+async def test_indexer_retries_transient_qdrant_read_error(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def upsert(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ReadError("socket closed")
+            return None
+
+    fake = FakeClient()
+    indexer = Indexer(url="http://127.0.0.1:6333")
+    indexer.client = fake  # type: ignore[assignment]
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("nexus.ingest.indexer.asyncio.sleep", fake_sleep)
+
+    ref = ResourceRef(source_id="local:test", uri="a.py", mime="text/x-python")
+    chunk = Chunk(
+        product_id="demo",
+        resource=ref,
+        content="print('x')",
+        start_line=1,
+        end_line=1,
+        kind=ChunkKind.CODE,
+    )
+    embedded = EmbeddedChunk(chunk=chunk, vector=[1.0, 0.0], vector_name="dense_code")
+
+    assert await indexer.upsert([embedded]) == 1
+    assert fake.calls == 2
+    assert sleeps == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_indexer_splits_large_upserts() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        async def upsert(self, **kwargs):
+            self.batch_sizes.append(len(kwargs["points"]))
+
+    fake = FakeClient()
+    indexer = Indexer(url="http://127.0.0.1:6333", upsert_batch_size=2)
+    indexer.client = fake  # type: ignore[assignment]
+
+    ref = ResourceRef(source_id="local:test", uri="a.py", mime="text/x-python")
+    embedded = []
+    for line in range(1, 6):
+        chunk = Chunk(
+            product_id="demo",
+            resource=ref,
+            content=f"print({line})",
+            start_line=line,
+            end_line=line,
+            kind=ChunkKind.CODE,
+        )
+        embedded.append(
+            EmbeddedChunk(chunk=chunk, vector=[1.0, 0.0], vector_name="dense_code")
+        )
+
+    assert await indexer.upsert(embedded) == 5
+    assert fake.batch_sizes == [2, 2, 1]

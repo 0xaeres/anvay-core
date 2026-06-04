@@ -55,13 +55,19 @@ def test_build_graph_has_pack_nodes() -> None:
     handles.chat_drafter = None  # type: ignore[assignment]
     handles.chat_critic = None  # type: ignore[assignment]
     handles.chat_reviser = None  # type: ignore[assignment]
+    handles.chat_architect = None  # type: ignore[assignment]
+    handles.chat_domain_expert = None  # type: ignore[assignment]
+    handles.chat_quality_expert = None  # type: ignore[assignment]
 
     graph = build_graph(_make_cfg(), handles)
     assert "planner" in graph.nodes
-    assert "experts" in graph.nodes
+    assert "architect" in graph.nodes
+    assert "domain_expert" in graph.nodes
+    assert "quality_expert" in graph.nodes
     assert "synthesizer" in graph.nodes
     assert "repair" in graph.nodes
     assert "skill_eval" in graph.nodes
     assert "finalizer" in graph.nodes
+    assert "experts" not in graph.nodes
     assert "judge" not in graph.nodes
     assert "targeted_callback" not in graph.nodes

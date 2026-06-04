@@ -1,16 +1,18 @@
 """Single generic Nexus product skill template.
 
-Every council run produces one product-scoped Agent Skill proposal named
-`product-skill`. Older approved multi-skill files remain readable in the store.
+Every council run produces one product-scoped Agent Skill proposal named after
+the product, e.g. `forge-skill`. Older approved multi-skill files remain
+readable in the store.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from nexus.skills.models import SkillTier
 
-PRODUCT_SKILL_NAME = "product-skill"
+PRODUCT_SKILL_SUFFIX = "skill"
 MAX_SKILL_NAME_CHARS = 64
 
 
@@ -69,7 +71,7 @@ class CatalogSkill:
 
 SKILL_CATALOG: tuple[CatalogSkill, ...] = (
     CatalogSkill(
-        suffix="product-skill",
+        suffix=PRODUCT_SKILL_SUFFIX,
         tier="product_master",
         purpose=(
             "Single product orientation skill covering product purpose, language, "
@@ -116,13 +118,12 @@ CITED_SECTIONS_BY_TIER: dict[SkillTier, tuple[str, ...]] = {
 
 def catalog_plan(product_id: str, topic: str = ""):
     """Build deterministic single-skill plan for a product."""
-    _ = product_id
     from nexus.council.state import SkillPlanItem
 
     topics = [*SKILL_CATALOG[0].topics, topic]
     return [
         SkillPlanItem(
-            name=PRODUCT_SKILL_NAME,
+            name=fixed_skill_name(product_slug(product_id), PRODUCT_SKILL_SUFFIX),
             description=SKILL_CATALOG[0].description,
             tier="product_master",
             purpose=SKILL_CATALOG[0].purpose,
@@ -134,9 +135,12 @@ def catalog_plan(product_id: str, topic: str = ""):
 
 
 def fixed_skill_name(product_slug_value: str, suffix: str) -> str:
-    _ = product_slug_value, suffix
-    return PRODUCT_SKILL_NAME
+    suffix = suffix.strip("-") or PRODUCT_SKILL_SUFFIX
+    max_slug_chars = MAX_SKILL_NAME_CHARS - len(suffix) - 1
+    slug = (product_slug_value[:max_slug_chars].strip("-") or "product")
+    return f"{slug}-{suffix}"
 
 
 def product_slug(product_id: str) -> str:
-    return "-".join(part for part in product_id.lower().split() if part) or "product"
+    slug = re.sub(r"[^a-z0-9]+", "-", product_id.lower()).strip("-")
+    return slug or "product"

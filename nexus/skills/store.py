@@ -3,7 +3,7 @@
 New approved skills use Agent Skills layout:
 `<product>/<name>/SKILL.md`. Legacy flat files like
 `<product>/<name>.skill.md` remain readable. The single product-master skill
-is stored as `<product>/product-skill.md`.
+is stored as `<product>/<product-name>-skill.md`.
 """
 
 from __future__ import annotations
@@ -92,15 +92,15 @@ class SkillStore:
 
     @staticmethod
     def relative_path_for(skill: Skill) -> str:
-        if skill.name == "product-skill":
-            return f"{skill.product}/product-skill.md"
+        if skill.tier == "product_master":
+            return f"{skill.product}/{skill.name}.md"
         return f"{skill.product}/{skill.name}/SKILL.md"
 
     def _skill_paths(self) -> list[Path]:
         paths = [
             *self.root.rglob("SKILL.md"),
             *self.root.rglob("*.skill.md"),
-            *self.root.rglob("product-skill.md"),
+            *self.root.glob("*/*.md"),
         ]
         return sorted({p.resolve(): p for p in paths}.values())
 

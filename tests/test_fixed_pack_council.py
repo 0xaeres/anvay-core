@@ -119,7 +119,7 @@ async def test_product_skill_creates_one_proposal_with_fake_retrieval(tmp_path, 
 
     proposals = state["proposals"]
     assert len(proposals) == 1
-    assert proposals[0].name == "product-skill"
+    assert proposals[0].name == "demo-skill"
     assert all(p.description for p in proposals)
     assert all(p.citations for p in proposals)
     assert all(p.eval_status == "passed" for p in proposals)
@@ -127,8 +127,59 @@ async def test_product_skill_creates_one_proposal_with_fake_retrieval(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_single_expert_streams_json_and_reports_own_cost(tmp_path, monkeypatch) -> None:
+    async def fake_retrieve(**_kwargs):
+        return RetrievalResult(
+            hits=[
+                Hit(
+                    id="c1",
+                    score=0.9,
+                    payload={
+                        "resource_uri": "a.py",
+                        "start_line": 1,
+                        "content": "architecture API domain pytest config security",
+                    },
+                    source="dense",
+                )
+            ],
+            seed_count=1,
+        )
+
+    class ExpertChat(_Chat):
+        model = "expert-model"
+
+        def __init__(self):
+            self.stream_values: list[bool] = []
+
+        async def chat_json(self, *_args, **kwargs):
+            self.stream_values.append(bool(kwargs.get("stream")))
+            return await super().chat_json(*_args, **kwargs)
+
+    monkeypatch.setattr(pack, "retrieve", fake_retrieve)
+    chat = ExpertChat()
+    state: CouncilState = initial_state(
+        session_id="cs_1",
+        product_id="demo",
+        topic="overview",
+        config_path="nexus.yaml",
+    )
+
+    result = await pack.expert(
+        state,
+        name="architect",
+        retrieval=None,
+        chat=chat,
+    )
+
+    assert chat.stream_values == [True]
+    assert result["expert_reports"][0].expert == "architect"
+    assert result["deliberation"][0].agent == "architect"
+    assert result["costs"][0].agent == "architect"
+
+
+@pytest.mark.asyncio
 async def test_product_skill_eval_is_deterministic_without_model_call() -> None:
-    body = _skill_body("product-skill", "product_master", file="a.py", line=1)
+    body = _skill_body("demo-skill", "product_master", file="a.py", line=1)
     state: CouncilState = {
         "topic": "overview",
         "product_id": "demo",
@@ -144,7 +195,7 @@ async def test_product_skill_eval_is_deterministic_without_model_call() -> None:
         "skill_plan": catalog_plan("demo", "overview"),
         "skill_drafts": [
             SkillDraft(
-                name="product-skill",
+                name="demo-skill",
                 description="Use for product orientation and grounded development.",
                 tier="product_master",
                 body=body,
@@ -179,7 +230,7 @@ async def test_eval_uses_repair_supplemental_evidence_beyond_initial_cap() -> No
             excerpt="supplemental citation anchor",
         )
     )
-    body = _skill_body("product-skill", "product_master", file="supplemental.py", line=42)
+    body = _skill_body("demo-skill", "product_master", file="supplemental.py", line=42)
     state: CouncilState = {
         "topic": "overview",
         "product_id": "demo",
@@ -187,7 +238,7 @@ async def test_eval_uses_repair_supplemental_evidence_beyond_initial_cap() -> No
         "skill_plan": catalog_plan("demo", "overview"),
         "skill_drafts": [
             SkillDraft(
-                name="product-skill",
+                name="demo-skill",
                 description="Use for product orientation and grounded development.",
                 tier="product_master",
                 body=body,
@@ -198,7 +249,7 @@ async def test_eval_uses_repair_supplemental_evidence_beyond_initial_cap() -> No
     result = await pack.evaluator(state, chat=_NoEvalJudgeChat())
 
     assert result["eval_results"][0].status == "passed"
-    assert [draft.name for draft in result["skill_drafts"]] == ["product-skill"]
+    assert [draft.name for draft in result["skill_drafts"]] == ["demo-skill"]
 
 
 @pytest.mark.asyncio
@@ -251,19 +302,19 @@ async def test_eval_failure_keeps_passing_skill_and_reports_failed_skill() -> No
         "skill_plan": catalog_plan("demo", "overview"),
         "skill_drafts": [
             SkillDraft(
-                name="product-skill",
+                name="demo-skill",
                 description="Use for project overview and grounding.",
                 tier="product_master",
-                body=_skill_body("product-skill", "product_master", file="a.py", line=1),
+                body=_skill_body("demo-skill", "product_master", file="a.py", line=1),
             ),
         ],
     }
 
     result = await pack.evaluator(state, chat=RepairStillBadChat())
 
-    assert [draft.name for draft in result["skill_drafts"]] == ["product-skill"]
+    assert [draft.name for draft in result["skill_drafts"]] == ["demo-skill"]
     statuses = {item.skill_name: item.status for item in result["eval_results"]}
-    assert statuses == {"product-skill": "passed"}
+    assert statuses == {"demo-skill": "passed"}
 
 
 def _line_value(text: str, name: str) -> str:

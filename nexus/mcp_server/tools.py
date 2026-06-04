@@ -18,6 +18,7 @@ from pathlib import Path, PurePath
 
 from nexus.config import NexusConfig
 from nexus.council.queue import ProposalQueue
+from nexus.council.skill_catalog import fixed_skill_name, product_slug
 from nexus.retrieval.pipeline import RetrievalContext, retrieve
 from nexus.skills.models import Skill
 from nexus.skills.store import SkillStore
@@ -81,10 +82,8 @@ async def find_skills(
         return {"skills": [], "warning": "no skills found at hierarchy_root"}
 
     product_skills = [s for s in all_skills if s.product == state.product]
-    product_skill = next((s for s in product_skills if s.name == "product-skill"), None)
-    master_skills = [
-        s for s in product_skills if s.tier == "product_master" and s.name != "product-skill"
-    ]
+    master_skills = [s for s in product_skills if s.tier == "product_master"]
+    canonical_master = fixed_skill_name(product_slug(state.product), "skill")
     candidates = [
         s
         for s in product_skills
@@ -109,9 +108,10 @@ async def find_skills(
         scored.append((score, s))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    masters = ([product_skill] if product_skill else []) + sorted(
-        master_skills, key=lambda s: s.confidence, reverse=True
-    )[: 0 if product_skill else 1]
+    masters = sorted(
+        master_skills,
+        key=lambda s: (0 if s.name == canonical_master else 1, -s.confidence, s.name),
+    )[:1]
     remaining = max(top_k - len(masters), 0)
     top = [*masters, *[s for _, s in scored[:remaining] if s not in masters]]
 

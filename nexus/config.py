@@ -58,6 +58,8 @@ class VectorQuantizationCfg(BaseModel):
 
 class VectorStoreCfg(BaseModel):
     url: str = "http://localhost:6333"
+    timeout_s: int = 120
+    upsert_batch_size: int = 16
     collections: VectorCollectionsCfg = Field(default_factory=VectorCollectionsCfg)
     quantization: VectorQuantizationCfg = Field(default_factory=VectorQuantizationCfg)
 

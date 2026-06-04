@@ -4,7 +4,7 @@ Every council role goes through `ChatClient.from_role(config, role)`. The provid
 field decides the base URL and auth header; the model field decides the request
 body. DeepInfra council clients stream token deltas for prose/markdown calls while
 still returning a complete response to callers. JSON-mode calls stay non-streamed
-because they are machine-parsed control messages.
+by default because they are machine-parsed control messages.
 """
 
 from __future__ import annotations
@@ -125,6 +125,7 @@ class ChatClient:
         top_p: float | None = None,
         max_tokens: int = 2048,
         json_mode: bool = False,
+        stream: bool | None = None,
     ) -> ChatResponse:
         """OpenAI-compatible /chat/completions. Returns the assistant content."""
         request_temperature = self.temperature if temperature is None else temperature
@@ -140,7 +141,10 @@ class ChatClient:
         if json_mode:
             body["response_format"] = {"type": "json_object"}
 
-        if self._stream_chat and not json_mode:
+        should_stream = stream is True or (
+            self._stream_chat and (stream if stream is not None else not json_mode)
+        )
+        if should_stream:
             try:
                 return await self._chat_stream(body)
             except LLMError as e:
@@ -259,6 +263,7 @@ class ChatClient:
         temperature: float | None = None,
         top_p: float | None = None,
         max_tokens: int = 2048,
+        stream: bool = False,
     ) -> tuple[Any, TokenUsage]:
         """Convenience: ask for JSON, parse it. Falls back to extracting the first JSON
         object from the text if `response_format` isn't honoured by the provider."""
@@ -268,6 +273,7 @@ class ChatClient:
             top_p=top_p,
             max_tokens=max_tokens,
             json_mode=True,
+            stream=stream,
         )
         try:
             return _parse_json_payload(resp.content), resp.usage
@@ -291,6 +297,7 @@ class ChatClient:
                 top_p=top_p,
                 max_tokens=max_tokens,
                 json_mode=True,
+                stream=False,
             )
             usage = TokenUsage(
                 prompt=resp.usage.prompt + repaired.usage.prompt,

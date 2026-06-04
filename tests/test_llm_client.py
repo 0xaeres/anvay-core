@@ -142,6 +142,49 @@ async def test_deepinfra_json_mode_does_not_stream() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_json_can_stream_when_requested() -> None:
+    lines = [
+        {"choices": [{"delta": {"content": "{\"ok\":"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": " true}"}, "finish_reason": "stop"}]},
+        {"usage": {"prompt_tokens": 2, "completion_tokens": 3}, "choices": []},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["stream"] is True
+        assert body["response_format"] == {"type": "json_object"}
+        content = "".join(f"data: {json.dumps(line)}\n\n" for line in lines)
+        content += "data: [DONE]\n\n"
+        return httpx.Response(200, content=content.encode("utf-8"))
+
+    seen: list[dict[str, str]] = []
+
+    async def token_sink(token: dict[str, str]) -> None:
+        seen.append(token)
+
+    client = ChatClient.from_cfg(
+        ModelCfg(provider="deepinfra", model="m", api_key="k"),
+        role="architect",
+        token_sink=token_sink,
+    )
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), headers=client._client.headers
+    )
+    try:
+        payload, usage = await client.chat_json(
+            [{"role": "user", "content": "go"}],
+            stream=True,
+        )
+    finally:
+        await client.aclose()
+
+    assert payload == {"ok": True}
+    assert usage.total == 5
+    assert [token["text"] for token in seen] == ["{\"ok\":", " true}"]
+    assert all(token["role"] == "architect" for token in seen)
+
+
+@pytest.mark.asyncio
 async def test_chat_uses_configured_sampling_defaults() -> None:
     seen: dict = {}
 

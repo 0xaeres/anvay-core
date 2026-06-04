@@ -1,7 +1,7 @@
-"""Single product-skill council nodes.
+"""Single product-named skill council nodes.
 
 The graph drafts one generic product context Markdown skill. Generated output
-stays a proposal until human approval writes `product-skill.md`.
+stays a proposal until human approval writes `<product-name>-skill.md`.
 """
 
 from __future__ import annotations
@@ -72,6 +72,7 @@ _EXPERTS = [
         ),
     ),
 ]
+_EXPERT_ORDER = {name: idx for idx, (name, _charter) in enumerate(_EXPERTS)}
 
 
 async def planner(
@@ -118,58 +119,10 @@ async def experts(
     retrieval: RetrievalContext,
     chat: ChatClient,
 ) -> dict:
-    async def run_expert(
-        name: str, charter: str
-    ) -> tuple[ExpertReport, list[EvidenceChunk], TokenUsage]:
-        query = _retrieval_query(state["topic"], suffix=f"{name} {charter}")
-        result = await retrieve(
-            ctx=retrieval,
-            product_id=state["product_id"],
-            query=query,
-            top_k=8,
-            mode="auto",
-        )
-        fresh = hits_to_evidence(result.hits, limit=8)
-        payload, usage = await chat.chat_json(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        f"You are the {name} expert in a bounded LLM council. "
-                        "Use only the supplied evidence. Return compact JSON only. "
-                        "Do not draft skills, Markdown sections, headings, or long prose."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Charter: {charter}\nTopic: {state['topic']}\n\n"
-                        f"{evidence_for_prompt(fresh)}\n\n"
-                        "Return JSON exactly shaped as "
-                        "{\"summary\":\"...\",\"findings\":[\"...\"],"
-                        "\"missing_questions\":[\"...\"]}. "
-                        "Constraints: summary <= 25 words; findings <= 4 plain strings, "
-                        "each <= 18 words; missing_questions <= 3 plain strings. "
-                        "No Markdown, no citations outside evidence ids, no skill drafts."
-                    ),
-                },
-            ],
-            max_tokens=500,
-        )
-        report = ExpertReport(
-            expert=name,
-            summary=str(payload.get("summary", "")).strip(),
-            findings=[str(x).strip() for x in payload.get("findings", []) if str(x).strip()],
-            missing_questions=[
-                str(x).strip()
-                for x in payload.get("missing_questions", [])
-                if str(x).strip()
-            ],
-            cite_ids=[e.chunk_id for e in fresh[:5]],
-        )
-        return report, fresh, usage
-
-    tasks = [run_expert(name, charter) for name, charter in _EXPERTS]
+    tasks = [
+        _run_expert(state, name=name, charter=charter, retrieval=retrieval, chat=chat)
+        for name, charter in _EXPERTS
+    ]
     results = await asyncio.gather(*tasks)
 
     reports: list[ExpertReport] = []
@@ -199,6 +152,95 @@ async def experts(
     }
 
 
+async def expert(
+    state: CouncilState,
+    *,
+    name: str,
+    retrieval: RetrievalContext,
+    chat: ChatClient,
+) -> dict:
+    charter = _expert_charter(name)
+    report, fresh, usage = await _run_expert(
+        state,
+        name=name,
+        charter=charter,
+        retrieval=retrieval,
+        chat=chat,
+        stream=True,
+    )
+    msg = DeliberationMessage(
+        agent=name,
+        timestamp=datetime.now(UTC).isoformat(),
+        body=f"{_expert_label(name)} report complete.",
+        cite_ids=[e.chunk_id for e in fresh[:5]],
+    )
+    return {
+        "expert_reports": [report],
+        "evidence": [],
+        "deliberation": [msg],
+        "costs": [_cost(name, usage, chat)],
+    }
+
+
+async def _run_expert(
+    state: CouncilState,
+    *,
+    name: str,
+    charter: str,
+    retrieval: RetrievalContext,
+    chat: ChatClient,
+    stream: bool = False,
+) -> tuple[ExpertReport, list[EvidenceChunk], TokenUsage]:
+    query = _retrieval_query(state["topic"], suffix=f"{name} {charter}")
+    result = await retrieve(
+        ctx=retrieval,
+        product_id=state["product_id"],
+        query=query,
+        top_k=8,
+        mode="auto",
+    )
+    fresh = hits_to_evidence(result.hits, limit=8)
+    payload, usage = await chat.chat_json(
+        [
+            {
+                "role": "system",
+                "content": (
+                    f"You are the {name} expert in a bounded LLM council. "
+                    "Use only the supplied evidence. Return compact JSON only. "
+                    "Do not draft skills, Markdown sections, headings, or long prose."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Charter: {charter}\nTopic: {state['topic']}\n\n"
+                    f"{evidence_for_prompt(fresh)}\n\n"
+                    "Return JSON exactly shaped as "
+                    "{\"summary\":\"...\",\"findings\":[\"...\"],"
+                    "\"missing_questions\":[\"...\"]}. "
+                    "Constraints: summary <= 25 words; findings <= 4 plain strings, "
+                    "each <= 18 words; missing_questions <= 3 plain strings. "
+                    "No Markdown, no citations outside evidence ids, no skill drafts."
+                ),
+            },
+        ],
+        max_tokens=500,
+        stream=stream,
+    )
+    report = ExpertReport(
+        expert=name,
+        summary=str(payload.get("summary", "")).strip(),
+        findings=[str(x).strip() for x in payload.get("findings", []) if str(x).strip()],
+        missing_questions=[
+            str(x).strip()
+            for x in payload.get("missing_questions", [])
+            if str(x).strip()
+        ],
+        cite_ids=[e.chunk_id for e in fresh[:5]],
+    )
+    return report, fresh, usage
+
+
 async def synthesizer(
     state: CouncilState,
     *,
@@ -208,7 +250,7 @@ async def synthesizer(
     evidence = _select_evidence(
         state.get("evidence") or [], limit=EVIDENCE_CHUNKS_PER_SESSION_CAP
     )
-    reports = state.get("expert_reports") or []
+    reports = _ordered_expert_reports(state.get("expert_reports") or [])
     plan = state.get("skill_plan") or catalog_plan(state["product_id"], state["topic"])
     repo_map = load_repo_map_for_product(config, state["product_id"])
     repo_map_block = repo_map.render(
@@ -279,7 +321,7 @@ async def synthesizer(
     msg = DeliberationMessage(
         agent="synthesizer",
         timestamp=datetime.now(UTC).isoformat(),
-        body="Synthesized `product-skill` draft.",
+        body="Synthesized product skill draft.",
     )
     return {
         "skill_drafts": drafts,
@@ -606,6 +648,21 @@ def _reports_for_prompt(reports: list[ExpertReport]) -> str:
             blocks.append("Missing:")
             blocks.extend(f"- {q}" for q in report.missing_questions[:4])
     return "\n".join(blocks)
+
+
+def _expert_charter(name: str) -> str:
+    for expert_name, charter in _EXPERTS:
+        if expert_name == name:
+            return charter
+    raise ValueError(f"unknown expert: {name}")
+
+
+def _expert_label(name: str) -> str:
+    return name.replace("_", " ").title()
+
+
+def _ordered_expert_reports(reports: list[ExpertReport]) -> list[ExpertReport]:
+    return sorted(reports, key=lambda report: _EXPERT_ORDER.get(report.expert, len(_EXPERTS)))
 
 
 def _drafts_for_prompt(drafts: list[SkillDraft]) -> str:

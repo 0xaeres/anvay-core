@@ -14,9 +14,14 @@ A keyword index on `product_id` makes these filters fast.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+import asyncio
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from typing import TypeVar
 
+import httpx
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http import exceptions as qex
 from qdrant_client.http import models as qm
 
 from nexus.ingest.models import Chunk, EmbeddedChunk
@@ -27,10 +32,26 @@ DEFAULT_VECTOR_DIM = 2048
 
 _CODE_COLLECTION = "nexus_code"
 _TEXT_COLLECTION = "nexus_text"
+_QDRANT_RETRY_DELAYS = (1.0, 3.0, 8.0)
+
+log = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 class IndexerError(RuntimeError):
     pass
+
+
+def _point_batches(
+    points: Sequence[qm.PointStruct], batch_size: int
+) -> list[Sequence[qm.PointStruct]]:
+    return [points[i : i + batch_size] for i in range(0, len(points), batch_size)]
+
+
+def _exception_detail(exc: Exception | None) -> str:
+    if exc is None:
+        return "unknown error"
+    return str(exc) or repr(exc)
 
 
 class Indexer:
@@ -45,15 +66,20 @@ class Indexer:
         code_collection: str = _CODE_COLLECTION,
         text_collection: str = _TEXT_COLLECTION,
         vector_dim: int = DEFAULT_VECTOR_DIM,
+        timeout_s: int = 120,
+        upsert_batch_size: int = 16,
         quantization_enabled: bool = True,
         quantization_type: str = "turboquant",
         quantization_bits: str = "bits4",
         quantization_always_ram: bool = True,
     ):
-        self.client = AsyncQdrantClient(url=url, check_compatibility=False)
+        self.client = AsyncQdrantClient(
+            url=url, check_compatibility=False, timeout=timeout_s
+        )
         self._code = code_collection
         self._text = text_collection
         self._dim = vector_dim
+        self._upsert_batch_size = max(1, upsert_batch_size)
         self._quantization_enabled = quantization_enabled
         self._quantization_type = quantization_type
         self._quantization_bits = quantization_bits
@@ -66,35 +92,47 @@ class Indexer:
 
     async def ensure_collections(self) -> None:
         """Idempotent: create collections with named vectors + custom shard key."""
-        existing = {c.name for c in (await self.client.get_collections()).collections}
+        collections = await self._retry_qdrant(
+            "get_collections", self.client.get_collections
+        )
+        existing = {c.name for c in collections.collections}
         for name in (self._code, self._text):
             if name in existing:
                 continue
-            await self.client.create_collection(
-                collection_name=name,
-                vectors_config={
-                    "dense": qm.VectorParams(
-                        size=self._dim,
-                        distance=qm.Distance.COSINE,
-                        hnsw_config=qm.HnswConfigDiff(m=16, ef_construct=128),
-                        quantization_config=self._dense_quantization_config(),
-                    ),
-                },
-                sparse_vectors_config={
-                    "bm25": qm.SparseVectorParams(
-                        modifier=qm.Modifier.IDF,
-                    ),
-                },
+            await self._retry_qdrant(
+                f"create_collection:{name}",
+                lambda name=name: self.client.create_collection(
+                    collection_name=name,
+                    vectors_config={
+                        "dense": qm.VectorParams(
+                            size=self._dim,
+                            distance=qm.Distance.COSINE,
+                            hnsw_config=qm.HnswConfigDiff(m=16, ef_construct=128),
+                            quantization_config=self._dense_quantization_config(),
+                        ),
+                    },
+                    sparse_vectors_config={
+                        "bm25": qm.SparseVectorParams(
+                            modifier=qm.Modifier.IDF,
+                        ),
+                    },
+                ),
             )
-            await self.client.create_payload_index(
-                collection_name=name,
-                field_name="product_id",
-                field_schema=qm.PayloadSchemaType.KEYWORD,
+            await self._retry_qdrant(
+                f"create_payload_index:{name}:product_id",
+                lambda name=name: self.client.create_payload_index(
+                    collection_name=name,
+                    field_name="product_id",
+                    field_schema=qm.PayloadSchemaType.KEYWORD,
+                ),
             )
-            await self.client.create_payload_index(
-                collection_name=name,
-                field_name="resource_uri",
-                field_schema=qm.PayloadSchemaType.KEYWORD,
+            await self._retry_qdrant(
+                f"create_payload_index:{name}:resource_uri",
+                lambda name=name: self.client.create_payload_index(
+                    collection_name=name,
+                    field_name="resource_uri",
+                    field_schema=qm.PayloadSchemaType.KEYWORD,
+                ),
             )
 
     # ------------------------------------------------------------ write
@@ -129,11 +167,15 @@ class Indexer:
 
         n = 0
         for (coll, _product_id), points in buckets.items():
-            await self.client.upsert(
-                collection_name=coll,
-                points=points,
-            )
-            n += len(points)
+            for batch in _point_batches(points, self._upsert_batch_size):
+                await self._retry_qdrant(
+                    f"upsert:{coll}",
+                    lambda coll=coll, batch=batch: self.client.upsert(
+                        collection_name=coll,
+                        points=batch,
+                    ),
+                )
+                n += len(batch)
         return n
 
     async def delete_points_by_ids(
@@ -150,9 +192,12 @@ class Indexer:
             unique_ids = sorted(set(ids))
             if not unique_ids:
                 continue
-            await self.client.delete(
-                collection_name=coll,
-                points_selector=qm.PointIdsList(points=list(unique_ids)),
+            await self._retry_qdrant(
+                f"delete_points:{coll}",
+                lambda coll=coll, unique_ids=unique_ids: self.client.delete(
+                    collection_name=coll,
+                    points_selector=qm.PointIdsList(points=list(unique_ids)),
+                ),
             )
             deleted += len(unique_ids)
         return deleted
@@ -208,19 +253,22 @@ class Indexer:
         using: str,
         top_k: int,
     ) -> list[dict]:
-        result = await self.client.query_points(
-            collection_name=collection,
-            query=query,
-            using=using,
-            limit=top_k,
-            query_filter=qm.Filter(
-                must=[
-                    qm.FieldCondition(
-                        key="product_id", match=qm.MatchValue(value=product_id)
-                    )
-                ]
+        result = await self._retry_qdrant(
+            f"query_points:{collection}",
+            lambda: self.client.query_points(
+                collection_name=collection,
+                query=query,
+                using=using,
+                limit=top_k,
+                query_filter=qm.Filter(
+                    must=[
+                        qm.FieldCondition(
+                            key="product_id", match=qm.MatchValue(value=product_id)
+                        )
+                    ]
+                ),
+                with_payload=True,
             ),
-            with_payload=True,
         )
         return [
             {"id": pt.id, "score": pt.score, "payload": pt.payload}
@@ -229,16 +277,19 @@ class Indexer:
 
     async def count(self, *, product_id: str, vector_kind: str) -> int:
         coll = self._code if vector_kind == "code" else self._text
-        res = await self.client.count(
-            collection_name=coll,
-            count_filter=qm.Filter(
-                must=[
-                    qm.FieldCondition(
-                        key="product_id", match=qm.MatchValue(value=product_id)
-                    )
-                ]
+        res = await self._retry_qdrant(
+            f"count:{coll}",
+            lambda: self.client.count(
+                collection_name=coll,
+                count_filter=qm.Filter(
+                    must=[
+                        qm.FieldCondition(
+                            key="product_id", match=qm.MatchValue(value=product_id)
+                        )
+                    ]
+                ),
+                exact=True,
             ),
-            exact=True,
         )
         return res.count
 
@@ -260,13 +311,16 @@ class Indexer:
         )
         offset = None
         while True:
-            points, offset = await self.client.scroll(
-                collection_name=coll,
-                scroll_filter=product_filter,
-                limit=batch_size,
-                offset=offset,
-                with_payload=True,
-                with_vectors=False,
+            points, offset = await self._retry_qdrant(
+                f"scroll:{coll}",
+                lambda offset=offset: self.client.scroll(
+                    collection_name=coll,
+                    scroll_filter=product_filter,
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                ),
             )
             for point in points:
                 yield str(point.id), point.payload or {}
@@ -281,29 +335,36 @@ class Indexer:
         deleted: list[str] = []
         for coll in (self._code, self._text):
             # Scroll for the IDs before we delete, since `delete` doesn't echo them.
-            scrolled, _ = await self.client.scroll(
-                collection_name=coll,
-                scroll_filter=qm.Filter(
-                    must=[
-                        qm.FieldCondition(
-                            key="product_id", match=qm.MatchValue(value=product_id)
-                        ),
-                        qm.FieldCondition(
-                            key="resource_uri", match=qm.MatchValue(value=resource_uri)
-                        ),
-                    ]
+            scrolled, _ = await self._retry_qdrant(
+                f"scroll_delete_resource:{coll}",
+                lambda coll=coll: self.client.scroll(
+                    collection_name=coll,
+                    scroll_filter=qm.Filter(
+                        must=[
+                            qm.FieldCondition(
+                                key="product_id", match=qm.MatchValue(value=product_id)
+                            ),
+                            qm.FieldCondition(
+                                key="resource_uri",
+                                match=qm.MatchValue(value=resource_uri),
+                            ),
+                        ]
+                    ),
+                    limit=1024,
+                    with_payload=False,
+                    with_vectors=False,
                 ),
-                limit=1024,
-                with_payload=False,
-                with_vectors=False,
             )
             if not scrolled:
                 continue
             ids = [str(pt.id) for pt in scrolled]
             deleted.extend(ids)
-            await self.client.delete(
-                collection_name=coll,
-                points_selector=qm.PointIdsList(points=[pt.id for pt in scrolled]),
+            await self._retry_qdrant(
+                f"delete_resource:{coll}",
+                lambda coll=coll, scrolled=scrolled: self.client.delete(
+                    collection_name=coll,
+                    points_selector=qm.PointIdsList(points=[pt.id for pt in scrolled]),
+                ),
             )
         return deleted
 
@@ -318,18 +379,48 @@ class Indexer:
             ]
         )
         for coll in (self._code, self._text):
-            before = await self.client.count(
-                collection_name=coll,
-                count_filter=product_filter,
-                exact=True,
+            before = await self._retry_qdrant(
+                f"count_delete_product:{coll}",
+                lambda coll=coll: self.client.count(
+                    collection_name=coll,
+                    count_filter=product_filter,
+                    exact=True,
+                ),
             )
             if before.count:
-                await self.client.delete(
-                    collection_name=coll,
-                    points_selector=qm.FilterSelector(filter=product_filter),
+                await self._retry_qdrant(
+                    f"delete_product:{coll}",
+                    lambda coll=coll: self.client.delete(
+                        collection_name=coll,
+                        points_selector=qm.FilterSelector(filter=product_filter),
+                    ),
                 )
             counts[coll] = before.count
         return counts
+
+    async def _retry_qdrant(
+        self, operation: str, call: Callable[[], Awaitable[T]]
+    ) -> T:
+        last_exc: Exception | None = None
+        for attempt, delay in enumerate((*_QDRANT_RETRY_DELAYS, None), start=1):
+            try:
+                return await call()
+            except (httpx.HTTPError, qex.ResponseHandlingException) as e:
+                last_exc = e
+                if delay is None:
+                    break
+                detail = _exception_detail(e)
+                log.warning(
+                    "qdrant %s attempt %d failed; retrying in %.0fs: %s",
+                    operation,
+                    attempt,
+                    delay,
+                    detail,
+                )
+                await asyncio.sleep(delay)
+        raise IndexerError(
+            f"qdrant {operation} failed after retries: {_exception_detail(last_exc)}"
+        ) from last_exc
 
     # ------------------------------------------------------------ helpers
 

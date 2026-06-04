@@ -2,7 +2,8 @@
 
 Topology:
 
-    START -> Planner -> Experts -> Synthesizer -> Repair -> Eval -> Finalizer -> END
+    START -> Planner -> (Architect, Domain Expert, Quality Expert)
+          -> Synthesizer -> Repair -> Eval -> Finalizer -> END
 
 The graph is bounded: three repair attempts per skill. All outputs remain
 proposals until a human approves them.
@@ -38,12 +39,18 @@ class CouncilHandles:
     chat_drafter: ChatClient
     chat_critic: ChatClient
     chat_reviser: ChatClient
+    chat_architect: ChatClient
+    chat_domain_expert: ChatClient
+    chat_quality_expert: ChatClient
 
     async def aclose(self) -> None:
         await self.retrieval.aclose()
         await self.chat_drafter.aclose()
         await self.chat_critic.aclose()
         await self.chat_reviser.aclose()
+        await self.chat_architect.aclose()
+        await self.chat_domain_expert.aclose()
+        await self.chat_quality_expert.aclose()
 
 
 @asynccontextmanager
@@ -75,6 +82,15 @@ async def council_handles(
         chat_reviser=ChatClient.from_cfg(
             reviser_cfg, role="reviser", token_sink=token_sink
         ),
+        chat_architect=ChatClient.from_cfg(
+            critic_cfg, role="architect", token_sink=token_sink
+        ),
+        chat_domain_expert=ChatClient.from_cfg(
+            critic_cfg, role="domain_expert", token_sink=token_sink
+        ),
+        chat_quality_expert=ChatClient.from_cfg(
+            critic_cfg, role="quality_expert", token_sink=token_sink
+        ),
     )
     try:
         yield handles
@@ -93,13 +109,29 @@ def build_graph(config: NexusConfig, handles: CouncilHandles):
         except Exception as e:
             raise CouncilAgentError("planner", e) from e
 
-    async def experts_node(state: CouncilState) -> dict:
+    async def architect_node(state: CouncilState) -> dict:
         try:
-            return await pack.experts(
-                state, retrieval=handles.retrieval, chat=handles.chat_critic
+            return await pack.expert(
+                state, name="architect", retrieval=handles.retrieval, chat=handles.chat_architect
             )
         except Exception as e:
-            raise CouncilAgentError("experts", e) from e
+            raise CouncilAgentError("architect", e) from e
+
+    async def domain_expert_node(state: CouncilState) -> dict:
+        try:
+            return await pack.expert(
+                state, name="domain_expert", retrieval=handles.retrieval, chat=handles.chat_domain_expert
+            )
+        except Exception as e:
+            raise CouncilAgentError("domain_expert", e) from e
+
+    async def quality_expert_node(state: CouncilState) -> dict:
+        try:
+            return await pack.expert(
+                state, name="quality_expert", retrieval=handles.retrieval, chat=handles.chat_quality_expert
+            )
+        except Exception as e:
+            raise CouncilAgentError("quality_expert", e) from e
 
     async def synthesizer_node(state: CouncilState) -> dict:
         try:
@@ -131,15 +163,19 @@ def build_graph(config: NexusConfig, handles: CouncilHandles):
 
     graph: StateGraph = StateGraph(CouncilState)
     graph.add_node("planner", planner_node)
-    graph.add_node("experts", experts_node)
+    graph.add_node("architect", architect_node)
+    graph.add_node("domain_expert", domain_expert_node)
+    graph.add_node("quality_expert", quality_expert_node)
     graph.add_node("synthesizer", synthesizer_node)
     graph.add_node("repair", repair_node)
     graph.add_node("skill_eval", evaluator_node)
     graph.add_node("finalizer", finalizer_node)
 
     graph.add_edge(START, "planner")
-    graph.add_edge("planner", "experts")
-    graph.add_edge("experts", "synthesizer")
+    graph.add_edge("planner", "architect")
+    graph.add_edge("planner", "domain_expert")
+    graph.add_edge("planner", "quality_expert")
+    graph.add_edge(["architect", "domain_expert", "quality_expert"], "synthesizer")
     graph.add_edge("synthesizer", "repair")
     graph.add_edge("repair", "skill_eval")
     graph.add_edge("skill_eval", "finalizer")

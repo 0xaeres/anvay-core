@@ -165,13 +165,13 @@ def test_find_skills_includes_master_before_targeted_skills() -> None:
 
 
 def test_find_skills_returns_product_skill_first() -> None:
-    product = _skill("product-skill", tier="product_master", body="# product-skill\n\nProduct map.")
+    product = _skill("test-skill", tier="product_master", body="# test-skill\n\nProduct map.")
     legacy = _skill("test-master", tier="product_master", body="# Master\n\nLegacy map.")
     state = _state_with_skills([legacy, product])
 
     result = asyncio.run(find_skills(state, query="anything"))
 
-    assert [s["id"] for s in result["skills"]][:1] == ["test/product-skill"]
+    assert [s["id"] for s in result["skills"]][:1] == ["test/test-skill"]
 
 
 def test_find_skills_ranks_description_matches() -> None:

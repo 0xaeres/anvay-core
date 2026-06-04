@@ -73,6 +73,35 @@ def test_loads_legacy_flat_skill_file(tmp_path: Path) -> None:
 def test_iter_loads_flat_product_skill_file(tmp_path: Path) -> None:
     store = SkillStore(tmp_path)
     skill = Skill(
+        name="forge-skill",
+        description="Use for product orientation and grounded development.",
+        product="forge",
+        tier="product_master",
+        parent=None,
+        related=[],
+        coverage={},
+        version=1,
+        confidence=0.8,
+        applies_to=AppliesTo(),
+        provenance=Provenance(
+            validated_by="me@example.com",
+            validated_at="2026-05-18T00:00:00Z",
+            evidence_chunks=["c1"],
+            revision_count=0,
+        ),
+        body="# forge-skill\n\nBody here.\n",
+    )
+    path = store.save(skill)
+
+    assert path == tmp_path / "forge" / "forge-skill.md"
+    assert [(s.product, s.name) for s in store.iter_skills()] == [
+        ("forge", "forge-skill")
+    ]
+
+
+def test_iter_still_loads_legacy_product_skill_file(tmp_path: Path) -> None:
+    store = SkillStore(tmp_path)
+    skill = Skill(
         name="product-skill",
         description="Use for product orientation and grounded development.",
         product="forge",
@@ -91,9 +120,8 @@ def test_iter_loads_flat_product_skill_file(tmp_path: Path) -> None:
         ),
         body="# product-skill\n\nBody here.\n",
     )
-    path = store.save(skill)
+    store.save(skill, relative_path="forge/product-skill.md")
 
-    assert path == tmp_path / "forge" / "product-skill.md"
     assert [(s.product, s.name) for s in store.iter_skills()] == [
         ("forge", "product-skill")
     ]
