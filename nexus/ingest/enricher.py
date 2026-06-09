@@ -26,9 +26,8 @@ import asyncio
 import logging
 from collections.abc import Iterable
 
-import httpx
-
 from nexus.ingest.models import Chunk, ChunkKind
+from nexus.llm.client import ChatClient, LLMError
 
 log = logging.getLogger(__name__)
 
@@ -74,14 +73,19 @@ class ContextualEnricher:
         self.model = model
         self.enrich_code = enrich_code
         self.enrich_docs = enrich_docs
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        self._client = httpx.AsyncClient(
-            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout_s
+        self._chat_client = ChatClient(
+            provider="openai-compatible",
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            role="enricher",
+            timeout_s=timeout_s,
+            temperature=0.2,
         )
         self._sem = asyncio.Semaphore(concurrency)
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await self._chat_client.aclose()
 
     # ------------------------------------------------------------------ batch
 
@@ -161,32 +165,22 @@ class ContextualEnricher:
     async def _chat(self, prompt: str, *, max_tokens: int) -> str | None:
         async with self._sem:
             try:
-                resp = await self._client.post(
-                    "/chat/completions",
-                    json={
-                        "model": self.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": max_tokens,
-                        "temperature": 0.2,
-                    },
+                resp = await self._chat_client.chat(
+                    [{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=0.2,
                 )
-            except httpx.HTTPError as e:
-                log.debug("enricher: http error: %s", e)
+            except LLMError as e:
+                log.debug("enricher: chat error: %s", e)
                 return None
-            if resp.status_code != 200:
-                log.debug("enricher: non-200 %s: %s", resp.status_code, resp.text[:200])
-                return None
-            choices = resp.json().get("choices") or []
-            if not choices:
-                return None
-            text = (choices[0].get("message") or {}).get("content", "").strip()
+            text = resp.content.strip()
             return text or None
 
     async def health(self) -> bool:
         try:
-            r = await self._client.get("/models")
-            return r.status_code == 200
-        except httpx.HTTPError:
+            await self._chat_client._client.models.list()
+            return True
+        except Exception:
             return False
 
 

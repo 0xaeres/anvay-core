@@ -1,8 +1,7 @@
-"""Remote MCP client — JSON-RPC 2.0 over Streamable HTTP.
+"""Remote MCP client — MCP SDK over Streamable HTTP.
 
 `mcp_client.py` speaks stdio for local connector subprocesses. This module is
-the small HTTP transport for remote MCP servers: JSON-RPC requests are POSTed to
-one endpoint, and the server may reply as JSON or as an SSE stream.
+the remote HTTP transport for remote MCP servers.
 
 The client exposes only `initialize`, `tools/list`, and `tools/call`. The
 `token_provider` callable is invoked per request so credential refresh stays
@@ -12,14 +11,13 @@ outside the transport layer.
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 
 import httpx
+from mcp.client.session import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 
-log = logging.getLogger(__name__)
-
-_PROTOCOL_VERSION = "2025-06-18"
 TokenProvider = Callable[[], Awaitable[str]]
 
 
@@ -27,25 +25,17 @@ class RemoteMCPError(RuntimeError):
     pass
 
 
-def _extract_jsonrpc(resp: httpx.Response, request_id: int) -> dict:
-    """Pull the JSON-RPC message matching `request_id` from a JSON or SSE response."""
-    ctype = resp.headers.get("content-type", "")
-    if "text/event-stream" in ctype:
-        for line in resp.text.splitlines():
-            line = line.strip()
-            if not line.startswith("data:"):
-                continue
-            try:
-                msg = json.loads(line[5:].strip())
-            except json.JSONDecodeError:
-                continue
-            if isinstance(msg, dict) and msg.get("id") == request_id:
-                return msg
-        raise RemoteMCPError("no matching JSON-RPC response found in SSE stream")
-    try:
-        return resp.json()
-    except json.JSONDecodeError as e:
-        raise RemoteMCPError(f"non-JSON response: {resp.text[:200]!r}") from e
+class _BearerAuth(httpx.Auth):
+    requires_request_body = False
+    requires_response_body = False
+
+    def __init__(self, token_provider: TokenProvider):
+        self._token_provider = token_provider
+
+    async def async_auth_flow(self, request: httpx.Request):
+        token = await self._token_provider()
+        request.headers["Authorization"] = f"Bearer {token}"
+        yield request
 
 
 class RemoteMCPClient:
@@ -54,93 +44,64 @@ class RemoteMCPClient:
         *,
         endpoint: str,
         token_provider: TokenProvider,
-        http_client: httpx.AsyncClient | None = None,
     ):
         self.endpoint = endpoint
         self._token_provider = token_provider
-        self._client = http_client or httpx.AsyncClient(timeout=60.0)
-        self._owns_client = http_client is None
-        self._session_id: str | None = None
-        self._req_id = 0
+        self._stack = AsyncExitStack()
+        self._session: ClientSession | None = None
         self._initialized = False
 
     async def aclose(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
+        await self._stack.aclose()
+        self._session = None
+        self._initialized = False
 
-    def _next_id(self) -> int:
-        self._req_id += 1
-        return self._req_id
-
-    async def _headers(self) -> dict[str, str]:
-        token = await self._token_provider()
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
-        if self._session_id:
-            headers["Mcp-Session-Id"] = self._session_id
-        return headers
-
-    async def _rpc(self, method: str, params: dict | None = None) -> dict:
-        request_id = self._next_id()
-        body: dict = {"jsonrpc": "2.0", "id": request_id, "method": method}
-        if params is not None:
-            body["params"] = params
+    async def _ensure_session(self) -> ClientSession:
+        if self._session is not None:
+            return self._session
         try:
-            resp = await self._client.post(
-                self.endpoint, json=body, headers=await self._headers()
+            read, write, _session_id = await self._stack.enter_async_context(
+                streamablehttp_client(
+                    self.endpoint,
+                    auth=_BearerAuth(self._token_provider),
+                )
             )
-        except httpx.HTTPError as e:
-            raise RemoteMCPError(f"{method}: transport error: {e}") from e
-        if resp.status_code >= 400:
-            raise RemoteMCPError(
-                f"{method}: HTTP {resp.status_code}: {resp.text[:300]}"
+            self._session = await self._stack.enter_async_context(
+                ClientSession(read, write)
             )
-        sid = resp.headers.get("Mcp-Session-Id")
-        if sid:
-            self._session_id = sid
-        payload = _extract_jsonrpc(resp, request_id)
-        if "error" in payload:
-            raise RemoteMCPError(f"{method}: JSON-RPC error: {payload['error']}")
-        return payload.get("result", {})
-
-    async def _notify(self, method: str) -> None:
-        """Fire-and-forget JSON-RPC notification (no id, no response expected)."""
-        try:
-            await self._client.post(
-                self.endpoint,
-                json={"jsonrpc": "2.0", "method": method},
-                headers=await self._headers(),
-            )
-        except httpx.HTTPError as e:  # best-effort — don't fail the whole call
-            log.debug("remote-mcp notification %s failed: %s", method, e)
+            return self._session
+        except Exception as e:
+            raise RemoteMCPError(f"connect: {e}") from e
 
     async def initialize(self) -> dict:
-        result = await self._rpc(
-            "initialize",
-            {
-                "protocolVersion": _PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "nexus", "version": "0.1"},
-            },
-        )
-        await self._notify("notifications/initialized")
+        session = await self._ensure_session()
+        try:
+            result = await session.initialize()
+        except Exception as e:
+            raise RemoteMCPError(f"initialize: {e}") from e
         self._initialized = True
-        return result
+        return result.model_dump(mode="json")
 
     async def list_tools(self) -> list[dict]:
         if not self._initialized:
             await self.initialize()
-        result = await self._rpc("tools/list")
-        return result.get("tools", [])
+        assert self._session is not None
+        try:
+            result = await self._session.list_tools()
+        except Exception as e:
+            raise RemoteMCPError(f"tools/list: {e}") from e
+        return [tool.model_dump(mode="json") for tool in result.tools]
 
     async def call_tool(self, name: str, arguments: dict) -> dict:
         """Invoke a tool. Returns the raw MCP `tools/call` result envelope."""
         if not self._initialized:
             await self.initialize()
-        return await self._rpc("tools/call", {"name": name, "arguments": arguments})
+        assert self._session is not None
+        try:
+            result = await self._session.call_tool(name, arguments)
+        except Exception as e:
+            raise RemoteMCPError(f"tools/call: {e}") from e
+        return result.model_dump(mode="json")
 
 
 def extract_tool_text(result: dict) -> str:

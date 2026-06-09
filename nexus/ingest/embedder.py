@@ -20,6 +20,7 @@ import logging
 from typing import Literal
 
 import httpx
+from openai import APIStatusError, AsyncOpenAI, OpenAIError
 
 from nexus.config import ModelCfg
 from nexus.ingest.models import Chunk, EmbeddedChunk
@@ -78,10 +79,18 @@ class EmbedderClient:
         self.base_url = base_url.rstrip("/")
         self.batch_size = batch_size
         self.instruction_profile = (instruction_profile or "").lower()
-        headers: dict[str, str] = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        self._client = httpx.AsyncClient(base_url=self.base_url, headers=headers, timeout=timeout_s)
+        sdk_base_url = self.base_url
+        if self.provider == "jina-local" and not sdk_base_url.rstrip("/").endswith("/v1"):
+            sdk_base_url = f"{sdk_base_url}/v1"
+        self._http_client = httpx.AsyncClient(timeout=timeout_s)
+        self._client = AsyncOpenAI(
+            api_key=api_key or "unused",
+            base_url=sdk_base_url,
+            timeout=timeout_s,
+            max_retries=0,
+            http_client=self._http_client,
+        )
+        self._health_client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout_s)
 
     @classmethod
     def from_cfg(cls, cfg: ModelCfg, *, batch_size: int = 32) -> EmbedderClient:
@@ -103,7 +112,8 @@ class EmbedderClient:
         )
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await self._client.close()
+        await self._health_client.aclose()
 
     # ------------------------------------------------------------------ core
 
@@ -124,33 +134,26 @@ class EmbedderClient:
         last_exc: Exception | None = None
         for attempt, delay in enumerate((*_RETRY_DELAYS, None)):
             try:
-                resp = await self._client.post(
-                    self._embeddings_path(),
-                    json={"input": inputs, "model": self.model},
+                resp = await self._client.embeddings.create(
+                    input=inputs,
+                    model=self.model,
                 )
-            except httpx.HTTPError as e:
+            except APIStatusError as e:
+                msg = f"embedder returned {e.status_code}: {str(e)[:300]}"
+                if e.status_code < 500 or _is_nonretryable_server_error(msg):
+                    raise EmbedderError(msg) from e
+                last_exc = EmbedderError(msg)
+            except OpenAIError as e:
                 last_exc = EmbedderError(f"embedder request failed: {e}")
             else:
-                if resp.status_code == 200:
-                    data = resp.json().get("data", [])
-                    ordered = sorted(data, key=lambda d: d.get("index", 0))
-                    return [d["embedding"] for d in ordered]
-                msg = f"embedder returned {resp.status_code}: {resp.text[:300]}"
-                # 4xx = bad request (e.g. token limit) — don't retry
-                if resp.status_code < 500 or _is_nonretryable_server_error(msg):
-                    raise EmbedderError(msg)
-                last_exc = EmbedderError(msg)
+                ordered = sorted(resp.data, key=lambda d: d.index)
+                return [list(d.embedding) for d in ordered]
 
             if delay is not None:
                 log.warning("embedder attempt %d failed; retrying in %.0fs", attempt + 1, delay)
                 await asyncio.sleep(delay)
 
         raise last_exc or EmbedderError("embedder failed after retries")
-
-    def _embeddings_path(self) -> str:
-        if self.provider == "jina-local":
-            return "/v1/embeddings"
-        return "/embeddings"
 
     def _prefix(self, vector: VectorName, modality: Modality) -> str:
         if self.instruction_profile == "jina-v4":
@@ -183,7 +186,7 @@ class EmbedderClient:
 
     async def health(self) -> bool:
         try:
-            r = await self._client.get("/health")
+            r = await self._health_client.get("/health")
             return r.status_code == 200
         except httpx.HTTPError:
             return False

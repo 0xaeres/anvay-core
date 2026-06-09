@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
+from openai import AsyncOpenAI
 
 from nexus.ingest.enricher import (
     _DOC_TRUNCATE_CHARS,
@@ -31,7 +32,7 @@ def _chunk(content: str, kind: ChunkKind, *, uri: str = "f.py", ctx: str = "") -
 
 
 def _build(handler) -> ContextualEnricher:
-    """Return an enricher whose httpx client uses MockTransport(handler)."""
+    """Return an enricher whose SDK client uses MockTransport(handler)."""
     transport = httpx.MockTransport(handler)
     enricher = ContextualEnricher(
         base_url="http://test.local/v1",
@@ -41,12 +42,15 @@ def _build(handler) -> ContextualEnricher:
         enrich_docs=True,
         concurrency=4,
     )
-    # Swap the real client for one wired to the mock transport, preserving headers.
-    enricher._client = httpx.AsyncClient(
-        base_url="http://test.local/v1",
-        headers={"Authorization": "Bearer k"},
+    enricher._chat_client._http_client = httpx.AsyncClient(
         transport=transport,
         timeout=5.0,
+    )
+    enricher._chat_client._client = AsyncOpenAI(
+        api_key="k",
+        base_url="http://test.local/v1",
+        max_retries=0,
+        http_client=enricher._chat_client._http_client,
     )
     return enricher
 
