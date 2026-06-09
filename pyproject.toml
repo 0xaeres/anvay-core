@@ -2,7 +2,7 @@
 name = "nexus"
 version = "0.0.1"
 description = "Sovereign, MCP-native skill server for codebases"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Nexus" }]

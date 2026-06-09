@@ -264,7 +264,11 @@ def _matches_file_globs(file_path: str | None, globs: list[str]) -> bool:
     if file_path is None:
         return True
     p = PurePath(file_path)
-    return any(p.full_match(g) for g in globs)
+    # Keep this helper usable in older local envs even though CI targets 3.13+.
+    full_match = getattr(p, "full_match", None)
+    if full_match is not None:
+        return any(full_match(g) for g in globs)
+    return any(p.match(g) for g in globs)
 
 
 def _matches_context(requested: str, skill_contexts: list[str]) -> bool:

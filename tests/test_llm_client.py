@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 import httpx
 import pytest
@@ -10,7 +11,7 @@ from nexus.llm.client import ChatClient, LLMError, _parse_json_payload, _parse_s
 
 async def _use_mock_transport(
     client: ChatClient,
-    handler: httpx.MockTransport | httpx.SyncHandler | httpx.AsyncHandler,
+    handler: Any,
 ) -> None:
     await client.aclose()
     client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))

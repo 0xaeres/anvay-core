@@ -125,8 +125,8 @@ async def run(
         items = items[:limit]
 
     ctx = RetrievalContext.from_config(config)
-    judge = ChatClient.from_cfg(config.models.synthesizer, role="ragas_judge")
-    answerer = ChatClient.from_cfg(config.models.synthesizer, role="ragas_answerer")
+    judge = ChatClient.from_cfg(config.models.council, role="ragas_judge")
+    answerer = ChatClient.from_cfg(config.models.council, role="ragas_answerer")
 
     try:
         results = await asyncio.gather(
