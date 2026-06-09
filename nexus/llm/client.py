@@ -78,6 +78,21 @@ class ChatClient:
         temperature: float = 0.0,
         top_p: float | None = None,
     ):
+        """
+        Initialize the client with provider/model configuration and create the underlying AsyncOpenAI and HTTP clients.
+        
+        Parameters:
+            provider (str): Provider identifier (e.g., "deepinfra", "openai").
+            model (str): Model name to use for requests.
+            base_url (str): Provider base URL; any trailing slash is removed.
+            api_key (str | None): API key to supply to the SDK; when None the SDK receives the sentinel "unused".
+            role (str): Role label used in emitted token payloads and error messages.
+            timeout_s (float): Timeout in seconds for the HTTP client and SDK.
+            stream_chat (bool): When True, enable provider-specific streaming behavior by default.
+            token_sink (TokenSink | None): Optional async callable invoked for each emitted token; ignored if None.
+            temperature (float): Sampling temperature for generated completions.
+            top_p (float | None): Nucleus sampling parameter to pass through to requests.
+        """
         self.provider = provider
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -103,6 +118,20 @@ class ChatClient:
         role: str,
         token_sink: TokenSink | None = None,
     ) -> ChatClient:
+        """
+        Create a ChatClient configured from the provided ModelCfg and role.
+        
+        Parameters:
+            cfg (ModelCfg): Configuration containing provider, model, API key, and sampling settings.
+            role (str): Role identifier used for logging and error messages.
+            token_sink (TokenSink | None): Optional async callable to receive emitted token events.
+        
+        Returns:
+            ChatClient: An instance configured with the resolved base URL, model, credentials, and streaming/sampling settings.
+        
+        Raises:
+            LLMError: If no base URL can be resolved for the configured provider.
+        """
         provider = cfg.provider.lower()
         base = cfg.base_url or cfg.url or _PROVIDER_BASES.get(provider)
         if not base:
@@ -120,6 +149,11 @@ class ChatClient:
         )
 
     async def aclose(self) -> None:
+        """
+        Close the underlying OpenAI SDK client and release associated network resources.
+        
+        This asynchronously closes the internal AsyncOpenAI client used by this ChatClient; the instance must not be used for further requests after calling this method.
+        """
         await self._client.close()
 
     async def chat(
@@ -132,7 +166,25 @@ class ChatClient:
         json_mode: bool = False,
         stream: bool | None = None,
     ) -> ChatResponse:
-        """OpenAI-compatible /chat/completions. Returns the assistant content."""
+        """
+        Send a chat completion request and return the assembled assistant response.
+        
+        Builds an SDK-style request from the provided messages and sampling parameters, chooses streaming or non-streaming execution based on the `stream` argument and the client's streaming configuration, and retries once without streaming if a streaming attempt fails.
+        
+        Parameters:
+            messages (list[dict[str, str]]): Conversation messages in OpenAI chat format (each item with 'role' and 'content').
+            temperature (float | None): Sampling temperature to use for this call; falls back to the client's default when `None`.
+            top_p (float | None): Nucleus sampling parameter to use for this call; omitted when `None`.
+            max_tokens (int): Maximum tokens to generate for the completion.
+            json_mode (bool): When True, requests the model to return a single JSON object (response_format={"type":"json_object"}).
+            stream (bool | None): When True forces streaming; when False forces non-streaming; when None uses the client's streaming preference (suppressed for JSON mode unless explicitly allowed).
+        
+        Returns:
+            ChatResponse: Assembled assistant content, token usage, model name, normalized finish reason, and raw response payload.
+        
+        Raises:
+            LLMError: If the underlying chat call fails (after retry logic for streaming failures).
+        """
         request_temperature = self.temperature if temperature is None else temperature
         request_top_p = self.top_p if top_p is None else top_p
         kwargs: dict[str, Any] = {
@@ -163,6 +215,20 @@ class ChatClient:
         return await self._chat_non_stream(kwargs)
 
     async def _chat_non_stream(self, kwargs: dict[str, Any]) -> ChatResponse:
+        """
+        Convert a non-streaming SDK chat completion into a ChatResponse.
+        
+        Calls the OpenAI-compatible SDK's chat completions create method with the provided keyword arguments, extracts the first choice's message content, finish reason, and token usage, and returns a ChatResponse containing the assembled fields and the raw payload.
+        
+        Parameters:
+            kwargs (dict[str, Any]): Keyword arguments forwarded to the SDK call (e.g., model, messages, temperature, max_tokens, response_format).
+        
+        Returns:
+            ChatResponse: Assembled response with `content`, `usage` (prompt and completion token counts), `model`, `finish_reason`, and `raw` payload.
+        
+        Raises:
+            LLMError: If the SDK call fails or the response contains no choices.
+        """
         try:
             resp = await self._client.chat.completions.create(**kwargs)
         except OpenAIError as e:
@@ -186,7 +252,15 @@ class ChatClient:
         )
 
     async def _chat_stream(self, kwargs: dict[str, Any]) -> ChatResponse:
-        """OpenAI-compatible streaming chat; collect text while emitting deltas."""
+        """
+        Stream a chat completion from the configured provider, collect emitted text deltas, and forward each delta to the token sink.
+        
+        Parameters:
+            kwargs (dict[str, Any]): Keyword arguments forwarded to the underlying chat completion call (e.g., model, messages, temperature, max_tokens, response_format).
+        
+        Returns:
+            ChatResponse: Assembled response where `content` is the concatenation of all streamed text deltas, `usage` reflects the latest reported token counts, `model` is the model used, `finish_reason` is the normalized finish reason, and `raw` contains the collected stream chunks.
+        """
         content_parts: list[str] = []
         finish_reason = "stop"
         usage = TokenUsage()

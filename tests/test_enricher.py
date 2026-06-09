@@ -32,7 +32,15 @@ def _chunk(content: str, kind: ChunkKind, *, uri: str = "f.py", ctx: str = "") -
 
 
 def _build(handler) -> ContextualEnricher:
-    """Return an enricher whose SDK client uses MockTransport(handler)."""
+    """
+    Create a ContextualEnricher whose chat client sends HTTP requests to a mocked transport.
+    
+    Parameters:
+        handler: A callable used by httpx.MockTransport to produce httpx.Response objects for incoming requests.
+    
+    Returns:
+        ContextualEnricher: An enricher instance configured to route its chat SDK HTTP traffic through the MockTransport backed AsyncClient.
+    """
     transport = httpx.MockTransport(handler)
     enricher = ContextualEnricher(
         base_url="http://test.local/v1",

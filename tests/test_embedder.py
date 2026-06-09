@@ -11,6 +11,19 @@ from nexus.ingest.embedder import EmbedderClient, EmbedderError
 
 
 async def _use_mock_transport(client: EmbedderClient, handler) -> None:
+    """
+    Install a MockTransport-backed HTTP client on an EmbedderClient for tests.
+    
+    Replaces the client's existing HTTP clients with ones that use httpx.MockTransport(handler),
+    adjusting the OpenAI-compatible base URL for the "jina-local" provider when needed,
+    and recreating the client's internal OpenAI and health clients so subsequent requests
+    use the provided mock handler.
+    
+    Parameters:
+        client (EmbedderClient): The embedder client to modify; its existing connections will be closed.
+        handler (Callable): A synchronous httpx mock transport handler that receives httpx.Request
+            and returns httpx.Response.
+    """
     await client.aclose()
     client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     base_url = client.base_url
@@ -30,6 +43,12 @@ async def test_physical_batch_size_error_is_not_retried() -> None:
     calls = 0
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        """
+        Simulated handler that returns an HTTP 500 error indicating the input exceeds the physical batch size.
+        
+        Returns:
+            httpx.Response: A response with status code 500 and JSON body containing an `error.message` that includes the input token count and the phrase "physical batch size".
+        """
         nonlocal calls
         calls += 1
         return httpx.Response(
@@ -68,6 +87,15 @@ async def test_deepinfra_embedder_uses_openai_embeddings_path() -> None:
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        """
+        Record the incoming request's path and JSON body into `seen`, and return a mock OpenAI-style embeddings response.
+        
+        Parameters:
+            request (httpx.Request): The incoming HTTP request to inspect.
+        
+        Returns:
+            httpx.Response: A 200 response containing an OpenAI-compatible embeddings payload with one embedding `[1.0, 2.0]` and the model `"Qwen/Qwen3-Embedding-4B"`.
+        """
         seen["path"] = request.url.path
         seen["json"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
