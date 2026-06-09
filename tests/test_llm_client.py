@@ -2,9 +2,24 @@ import json
 
 import httpx
 import pytest
+from openai import AsyncOpenAI
 
 from nexus.config import ModelCfg
 from nexus.llm.client import ChatClient, LLMError, _parse_json_payload, _parse_sse_line
+
+
+async def _use_mock_transport(
+    client: ChatClient,
+    handler: httpx.MockTransport | httpx.SyncHandler | httpx.AsyncHandler,
+) -> None:
+    await client.aclose()
+    client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client._client = AsyncOpenAI(
+        api_key="test",
+        base_url=client.base_url,
+        max_retries=0,
+        http_client=client._http_client,
+    )
 
 
 def test_provider_routing_deepinfra() -> None:
@@ -92,9 +107,7 @@ async def test_deepinfra_chat_stream_collects_and_emits_tokens() -> None:
         role="drafter",
         token_sink=token_sink,
     )
-    client._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), headers=client._client.headers
-    )
+    await _use_mock_transport(client, handler)
     try:
         response = await client.chat([{"role": "user", "content": "go"}])
     finally:
@@ -129,9 +142,7 @@ async def test_deepinfra_json_mode_does_not_stream() -> None:
         ModelCfg(provider="deepinfra", model="m", api_key="k"),
         role="critic",
     )
-    client._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), headers=client._client.headers
-    )
+    await _use_mock_transport(client, handler)
     try:
         payload, usage = await client.chat_json([{"role": "user", "content": "go"}])
     finally:
@@ -167,9 +178,7 @@ async def test_chat_json_can_stream_when_requested() -> None:
         role="architect",
         token_sink=token_sink,
     )
-    client._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), headers=client._client.headers
-    )
+    await _use_mock_transport(client, handler)
     try:
         payload, usage = await client.chat_json(
             [{"role": "user", "content": "go"}],
@@ -211,9 +220,7 @@ async def test_chat_uses_configured_sampling_defaults() -> None:
         ),
         role="drafter",
     )
-    client._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), headers=client._client.headers
-    )
+    await _use_mock_transport(client, handler)
     try:
         await client.chat_markdown([{"role": "user", "content": "go"}])
     finally:
@@ -250,9 +257,7 @@ async def test_chat_json_repairs_invalid_json_once() -> None:
         ModelCfg(provider="openai", model="m", api_key="k", base_url="https://example.test/v1"),
         role="critic",
     )
-    client._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), headers=client._client.headers
-    )
+    await _use_mock_transport(client, handler)
     try:
         payload, usage = await client.chat_json([{"role": "user", "content": "go"}])
     finally:
@@ -287,9 +292,7 @@ async def test_stream_failure_retries_non_stream() -> None:
         ModelCfg(provider="deepinfra", model="m", api_key="k"),
         role="drafter",
     )
-    client._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), headers=client._client.headers
-    )
+    await _use_mock_transport(client, handler)
     try:
         response = await client.chat([{"role": "user", "content": "go"}])
     finally:

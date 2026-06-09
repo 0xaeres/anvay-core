@@ -1,4 +1,4 @@
-"""LLM client - thin OpenAI-compatible HTTP wrapper with multi-provider routing.
+"""LLM client - thin OpenAI-compatible SDK wrapper with multi-provider routing.
 
 Every council role goes through `ChatClient.from_role(config, role)`. The provider
 field decides the base URL and auth header; the model field decides the request
@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+from openai import AsyncOpenAI, OpenAIError
 
 from nexus.config import ModelCfg
 
@@ -85,10 +86,14 @@ class ChatClient:
         self._token_sink = token_sink
         self.temperature = temperature
         self.top_p = top_p
-        headers: dict[str, str] = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        self._client = httpx.AsyncClient(headers=headers, timeout=timeout_s)
+        self._http_client = httpx.AsyncClient(timeout=timeout_s)
+        self._client = AsyncOpenAI(
+            api_key=api_key or "unused",
+            base_url=self.base_url,
+            timeout=timeout_s,
+            max_retries=0,
+            http_client=self._http_client,
+        )
 
     @classmethod
     def from_cfg(
@@ -115,7 +120,7 @@ class ChatClient:
         )
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await self._client.close()
 
     async def chat(
         self,
@@ -130,107 +135,89 @@ class ChatClient:
         """OpenAI-compatible /chat/completions. Returns the assistant content."""
         request_temperature = self.temperature if temperature is None else temperature
         request_top_p = self.top_p if top_p is None else top_p
-        body: dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": request_temperature,
             "max_tokens": max_tokens,
         }
         if request_top_p is not None:
-            body["top_p"] = request_top_p
+            kwargs["top_p"] = request_top_p
         if json_mode:
-            body["response_format"] = {"type": "json_object"}
+            kwargs["response_format"] = {"type": "json_object"}
 
         should_stream = stream is True or (
             self._stream_chat and (stream if stream is not None else not json_mode)
         )
         if should_stream:
             try:
-                return await self._chat_stream(body)
+                return await self._chat_stream(kwargs)
             except LLMError as e:
                 log.warning(
                     "%s: streaming chat failed; retrying without stream: %s",
                     self.role,
                     e,
                 )
-                return await self._chat_non_stream(body)
+                return await self._chat_non_stream(kwargs)
 
-        return await self._chat_non_stream(body)
+        return await self._chat_non_stream(kwargs)
 
-    async def _chat_non_stream(self, body: dict[str, Any]) -> ChatResponse:
+    async def _chat_non_stream(self, kwargs: dict[str, Any]) -> ChatResponse:
         try:
-            resp = await self._client.post(f"{self.base_url}/chat/completions", json=body)
-        except httpx.HTTPError as e:
+            resp = await self._client.chat.completions.create(**kwargs)
+        except OpenAIError as e:
             raise LLMError(f"{self.role}: chat call failed: {e}") from e
-        if resp.status_code != 200:
-            raise LLMError(
-                f"{self.role}: chat returned {resp.status_code}: {resp.text[:200]}"
-            )
-        payload = resp.json()
-        choices = payload.get("choices", [])
+        payload = resp.model_dump(mode="json")
+        choices = resp.choices
         if not choices:
             raise LLMError(f"{self.role}: empty choices in response")
-        content = choices[0].get("message", {}).get("content", "")
-        finish_reason = str(choices[0].get("finish_reason") or "stop").lower()
-        usage_obj = payload.get("usage", {}) or {}
+        content = choices[0].message.content or ""
+        finish_reason = str(choices[0].finish_reason or "stop").lower()
+        usage = resp.usage
         return ChatResponse(
-            content=content or "",
+            content=content,
             usage=TokenUsage(
-                prompt=int(usage_obj.get("prompt_tokens", 0)),
-                completion=int(usage_obj.get("completion_tokens", 0)),
+                prompt=int(usage.prompt_tokens if usage else 0),
+                completion=int(usage.completion_tokens if usage else 0),
             ),
             model=self.model,
             finish_reason=finish_reason,
             raw=payload,
         )
 
-    async def _chat_stream(self, body: dict[str, Any]) -> ChatResponse:
+    async def _chat_stream(self, kwargs: dict[str, Any]) -> ChatResponse:
         """OpenAI-compatible streaming chat; collect text while emitting deltas."""
-        stream_body = {
-            **body,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
         content_parts: list[str] = []
         finish_reason = "stop"
         usage = TokenUsage()
         raw_chunks: list[dict[str, Any]] = []
         try:
-            async with self._client.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
-                json=stream_body,
-            ) as resp:
-                if resp.status_code != 200:
-                    text = await resp.aread()
-                    raise LLMError(
-                        f"{self.role}: streaming chat returned {resp.status_code}: "
-                        f"{text.decode('utf-8', errors='replace')[:200]}"
+            stream = await self._client.chat.completions.create(
+                **kwargs,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            async for chunk in stream:
+                payload = chunk.model_dump(mode="json")
+                raw_chunks.append(payload)
+                if chunk.usage:
+                    usage = TokenUsage(
+                        prompt=int(chunk.usage.prompt_tokens or usage.prompt),
+                        completion=int(
+                            chunk.usage.completion_tokens or usage.completion
+                        ),
                     )
-                async for line in resp.aiter_lines():
-                    payload = _parse_sse_line(line)
-                    if payload is None:
+                for choice in chunk.choices or []:
+                    choice_finish = choice.finish_reason
+                    if choice_finish:
+                        finish_reason = str(choice_finish).lower()
+                    delta = choice.delta
+                    text = delta.content or ""
+                    if not text:
                         continue
-                    raw_chunks.append(payload)
-                    usage_obj = payload.get("usage") or {}
-                    if usage_obj:
-                        usage = TokenUsage(
-                            prompt=int(usage_obj.get("prompt_tokens", usage.prompt)),
-                            completion=int(
-                                usage_obj.get("completion_tokens", usage.completion)
-                            ),
-                        )
-                    for choice in payload.get("choices", []) or []:
-                        choice_finish = choice.get("finish_reason")
-                        if choice_finish:
-                            finish_reason = str(choice_finish).lower()
-                        delta = choice.get("delta") or {}
-                        text = delta.get("content") or ""
-                        if not text:
-                            continue
-                        content_parts.append(text)
-                        await self._emit_token(text)
-        except httpx.HTTPError as e:
+                    content_parts.append(text)
+                    await self._emit_token(text)
+        except OpenAIError as e:
             raise LLMError(f"{self.role}: streaming chat call failed: {e}") from e
 
         return ChatResponse(

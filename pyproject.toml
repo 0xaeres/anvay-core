@@ -52,6 +52,7 @@ dependencies = [
     "fastembed>=0.7",
     # Skills: YAML frontmatter
     "python-frontmatter>=1.1",
+    "openai>=2.0",
 ]
 
 [project.optional-dependencies]
