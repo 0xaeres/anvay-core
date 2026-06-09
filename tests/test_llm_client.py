@@ -12,6 +12,15 @@ async def _use_mock_transport(
     client: ChatClient,
     handler: httpx.MockTransport | httpx.SyncHandler | httpx.AsyncHandler,
 ) -> None:
+    """
+    Replace the ChatClient's HTTP stack with an httpx.AsyncClient using a MockTransport driven by the given handler.
+    
+    Closes the client's existing connection, installs a new httpx.AsyncClient configured with httpx.MockTransport(handler), and reinitializes the client's underlying AsyncOpenAI instance for testing.
+    
+    Parameters:
+        client (ChatClient): The chat client to reconfigure.
+        handler (httpx.MockTransport | httpx.SyncHandler | httpx.AsyncHandler): A mock transport handler that will supply responses for the client's HTTP calls.
+    """
     await client.aclose()
     client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     client._client = AsyncOpenAI(

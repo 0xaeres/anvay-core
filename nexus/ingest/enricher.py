@@ -70,6 +70,18 @@ class ContextualEnricher:
         concurrency: int = 4,
         timeout_s: float = 30.0,
     ):
+        """
+        Initialize the ContextualEnricher with model selection, feature toggles, and an internal chat client.
+        
+        Parameters:
+            base_url (str): Base URL for the OpenAI-compatible API endpoint used by the internal chat client.
+            model (str): Model identifier to use for enrichment requests.
+            api_key (str | None): Optional API key for authenticating to the backend; if None, the client will rely on other configured credentials.
+            enrich_code (bool): Enable high-quality enrichment for code chunks when True.
+            enrich_docs (bool): Enable contextual enrichment for document chunks when True.
+            concurrency (int): Maximum number of concurrent chat requests; used to initialize an internal semaphore.
+            timeout_s (float): Request timeout, in seconds, applied to the internal chat client.
+        """
         self.model = model
         self.enrich_code = enrich_code
         self.enrich_docs = enrich_docs
@@ -85,6 +97,9 @@ class ContextualEnricher:
         self._sem = asyncio.Semaphore(concurrency)
 
     async def aclose(self) -> None:
+        """
+        Close the internal ChatClient and release its resources.
+        """
         await self._chat_client.aclose()
 
     # ------------------------------------------------------------------ batch
@@ -163,6 +178,17 @@ class ContextualEnricher:
     # ---------------------------------------------------------------- transport
 
     async def _chat(self, prompt: str, *, max_tokens: int) -> str | None:
+        """
+        Send a prompt to the configured chat client under the enricher's concurrency limit and return the trimmed model response.
+        
+        Parameters:
+            prompt (str): The user-facing prompt to send to the chat model.
+            max_tokens (int): Maximum number of tokens the model is allowed to generate for the response.
+        
+        Returns:
+            str: The model's response with surrounding whitespace removed, or
+            None: if the response is empty after trimming or an LLMError occurred while calling the chat client.
+        """
         async with self._sem:
             try:
                 resp = await self._chat_client.chat(
@@ -177,6 +203,14 @@ class ContextualEnricher:
             return text or None
 
     async def health(self) -> bool:
+        """
+        Check whether the configured chat client can successfully list available models.
+        
+        Performs a probe by calling the underlying chat client's model-listing endpoint; returns `True` when the call succeeds and `False` on any exception.
+        
+        Returns:
+            bool: `True` if the model list call succeeds, `False` otherwise.
+        """
         try:
             await self._chat_client._client.models.list()
             return True
