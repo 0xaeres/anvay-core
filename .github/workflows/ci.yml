@@ -67,11 +67,11 @@ jobs:
         if: steps.ragas_credentials.outputs.available == 'true'
         run: |
           cp nexus.yaml.example nexus.yaml
-          sed -i 's|hierarchy_root: ./skills|hierarchy_root: ./nexus/skills/seed|' nexus.yaml
+          sed -i 's|hierarchy_root: ./skills|hierarchy_root: ./evals/fixtures/skills/seed|' nexus.yaml
 
       - name: Ingest seed skills
         if: steps.ragas_credentials.outputs.available == 'true'
-        run: uv run nexus ingest --product forge --path nexus/skills/seed --no-enrich
+        run: uv run nexus ingest --product forge --path evals/fixtures/skills/seed --no-enrich
 
       - name: Run RAGAS eval
         if: steps.ragas_credentials.outputs.available == 'true'
