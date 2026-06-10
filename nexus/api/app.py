@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import secrets
 import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from nexus.api.deps import get_config_dep, get_registry
+from nexus.api.deps import get_auth_store, get_config_dep, get_registry
 from nexus.api.routes import (
+    auth,
     council,
     dashboard,
     products,
@@ -21,6 +26,7 @@ from nexus.api.routes import (
     skills,
     sources,
 )
+from nexus.auth.store import CSRF_COOKIE, SESSION_COOKIE
 from nexus.ingest.enrichment_worker import EnrichmentWorker
 from nexus.logging_config import setup_logging
 
@@ -90,7 +96,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        origin.strip()
+        for origin in os.getenv(
+            "NEXUS_ALLOWED_ORIGINS",
+            "http://localhost:3000",
+        ).split(",")
+        if origin.strip()
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -98,12 +111,27 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
+async def security_and_auth(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+    request.state.request_id = request_id
+
+    if request.method == "OPTIONS":
+        response = await call_next(request)
+        _set_security_headers(response, request_id)
+        return response
+
+    auth_response = _authenticate_request(request)
+    if auth_response is not None:
+        _set_security_headers(auth_response, request_id)
+        return auth_response
+
     start = time.perf_counter()
     response = await call_next(request)
     elapsed_ms = (time.perf_counter() - start) * 1000
+    _set_security_headers(response, request_id)
     log.info(
-        "request method=%s path=%s status=%s elapsed_ms=%.1f",
+        "request id=%s method=%s path=%s status=%s elapsed_ms=%.1f",
+        request_id,
         request.method,
         request.url.path,
         response.status_code,
@@ -112,12 +140,81 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+def _authenticate_request(request: Request) -> JSONResponse | None:
+    if not _auth_enabled() or _is_public_path(request.url.path):
+        return None
+
+    bearer = request.headers.get("authorization", "")
+    prefix = "Bearer "
+    admin_key = os.getenv("NEXUS_ADMIN_API_KEY") or ""
+    if bearer.startswith(prefix) and admin_key:
+        token = bearer.removeprefix(prefix)
+        if secrets.compare_digest(token, admin_key):
+            request.state.user = {
+                "id": "admin-api-key",
+                "email": "admin-api-key@nexus.local",
+                "role": "admin",
+                "status": "approved",
+            }
+            request.state.auth_via = "api_key"
+            return None
+
+    store = get_auth_store()
+    session_token = request.cookies.get(SESSION_COOKIE, "")
+    resolved = store.user_for_session(session_token)
+    if resolved is None:
+        return JSONResponse({"detail": "authentication required"}, status_code=401)
+    user, session = resolved
+    request.state.user = user
+    request.state.session = session
+    request.state.auth_via = "session"
+
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        header_token = request.headers.get("x-nexus-csrf", "")
+        cookie_token = request.cookies.get(CSRF_COOKIE, "")
+        expected = str(session.get("csrf_token") or "")
+        if not (
+            header_token
+            and cookie_token
+            and secrets.compare_digest(header_token, cookie_token)
+            and secrets.compare_digest(header_token, expected)
+        ):
+            return JSONResponse({"detail": "CSRF validation failed"}, status_code=403)
+    return None
+
+
+def _auth_enabled() -> bool:
+    return bool(os.getenv("NEXUS_SECRET_KEY"))
+
+
+def _is_public_path(path: str) -> bool:
+    public = {
+        "/health",
+        "/auth/login",
+        "/auth/request-access",
+        "/setup/status",
+    }
+    return path in public
+
+
+def _set_security_headers(response, request_id: str) -> None:
+    response.headers["x-request-id"] = request_id
+    response.headers.setdefault("x-content-type-options", "nosniff")
+    response.headers.setdefault("x-frame-options", "DENY")
+    response.headers.setdefault("referrer-policy", "no-referrer")
+    response.headers.setdefault(
+        "permissions-policy",
+        "camera=(), microphone=(), geolocation=()",
+    )
+
+
 @app.get("/health", tags=["meta"])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
 app.include_router(products.router)
+app.include_router(auth.router)
 app.include_router(dashboard.router)
 app.include_router(sources.router)
 app.include_router(council.router)

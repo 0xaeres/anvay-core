@@ -158,7 +158,11 @@ async def _run_session(
             await HUB.publish(session_id, {"event": "llm_token", "data": token})
 
         async with (
-            council_handles(config, token_sink=token_sink) as handles,
+            council_handles(
+                config,
+                token_sink=token_sink,
+                trace_context={"session_id": session_id, "product_id": product_id},
+            ) as handles,
             open_checkpointer(config.storage.council_checkpoint) as saver,
         ):
             graph = build_graph(config, handles)

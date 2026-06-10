@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 import httpx
 
 from nexus.config import ModelCfg
+from nexus.llm.tracing import record_generation
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +78,7 @@ class ChatClient:
         token_sink: TokenSink | None = None,
         temperature: float = 0.0,
         top_p: float | None = None,
+        trace_context: dict[str, Any] | None = None,
     ):
         self.provider = provider
         self.model = model
@@ -85,6 +88,7 @@ class ChatClient:
         self._token_sink = token_sink
         self.temperature = temperature
         self.top_p = top_p
+        self.trace_context = trace_context or {}
         headers: dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -97,6 +101,7 @@ class ChatClient:
         *,
         role: str,
         token_sink: TokenSink | None = None,
+        trace_context: dict[str, Any] | None = None,
     ) -> ChatClient:
         provider = cfg.provider.lower()
         base = cfg.base_url or cfg.url or _PROVIDER_BASES.get(provider)
@@ -112,6 +117,7 @@ class ChatClient:
             token_sink=token_sink,
             temperature=cfg.temperature,
             top_p=cfg.top_p,
+            trace_context=trace_context,
         )
 
     async def aclose(self) -> None:
@@ -144,18 +150,48 @@ class ChatClient:
         should_stream = stream is True or (
             self._stream_chat and (stream if stream is not None else not json_mode)
         )
-        if should_stream:
-            try:
-                return await self._chat_stream(body)
-            except LLMError as e:
-                log.warning(
-                    "%s: streaming chat failed; retrying without stream: %s",
-                    self.role,
-                    e,
-                )
-                return await self._chat_non_stream(body)
+        start = time.perf_counter()
+        try:
+            if should_stream:
+                try:
+                    resp = await self._chat_stream(body)
+                except LLMError as e:
+                    log.warning(
+                        "%s: streaming chat failed; retrying without stream: %s",
+                        self.role,
+                        e,
+                    )
+                    resp = await self._chat_non_stream(body)
+            else:
+                resp = await self._chat_non_stream(body)
+        except Exception as e:
+            self._trace(messages, None, TokenUsage(), start, error=str(e))
+            raise
+        self._trace(messages, resp.content, resp.usage, start, finish_reason=resp.finish_reason)
+        return resp
 
-        return await self._chat_non_stream(body)
+    def _trace(
+        self,
+        messages: list[dict[str, str]],
+        output: str | None,
+        usage: TokenUsage,
+        start: float,
+        *,
+        finish_reason: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        record_generation(
+            name=self.role,
+            model=self.model,
+            provider=self.provider,
+            messages=messages,
+            output=output,
+            usage={"prompt": usage.prompt, "completion": usage.completion},
+            latency_ms=(time.perf_counter() - start) * 1000,
+            finish_reason=finish_reason,
+            error=error,
+            metadata=self.trace_context,
+        )
 
     async def _chat_non_stream(self, body: dict[str, Any]) -> ChatResponse:
         try:

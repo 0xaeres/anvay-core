@@ -58,6 +58,7 @@ async def council_handles(
     config: NexusConfig,
     *,
     token_sink: TokenSink | None = None,
+    trace_context: dict[str, str] | None = None,
 ) -> AsyncIterator[CouncilHandles]:
     drafter_cfg = config.models.drafter or config.models.council
     critic_cfg = config.models.critic or config.models.council
@@ -73,29 +74,50 @@ async def council_handles(
     )
     handles = CouncilHandles(
         retrieval=RetrievalContext.from_config(config),
-        chat_drafter=ChatClient.from_cfg(
-            drafter_cfg, role="drafter", token_sink=token_sink
+        chat_drafter=_chat_from_cfg(
+            drafter_cfg, role="drafter", token_sink=token_sink, trace_context=trace_context
         ),
-        chat_critic=ChatClient.from_cfg(
-            critic_cfg, role="critic", token_sink=token_sink
+        chat_critic=_chat_from_cfg(
+            critic_cfg, role="critic", token_sink=token_sink, trace_context=trace_context
         ),
-        chat_reviser=ChatClient.from_cfg(
-            reviser_cfg, role="reviser", token_sink=token_sink
+        chat_reviser=_chat_from_cfg(
+            reviser_cfg, role="reviser", token_sink=token_sink, trace_context=trace_context
         ),
-        chat_architect=ChatClient.from_cfg(
-            critic_cfg, role="architect", token_sink=token_sink
+        chat_architect=_chat_from_cfg(
+            critic_cfg, role="architect", token_sink=token_sink, trace_context=trace_context
         ),
-        chat_domain_expert=ChatClient.from_cfg(
-            critic_cfg, role="domain_expert", token_sink=token_sink
+        chat_domain_expert=_chat_from_cfg(
+            critic_cfg,
+            role="domain_expert",
+            token_sink=token_sink,
+            trace_context=trace_context,
         ),
-        chat_quality_expert=ChatClient.from_cfg(
-            critic_cfg, role="quality_expert", token_sink=token_sink
+        chat_quality_expert=_chat_from_cfg(
+            critic_cfg,
+            role="quality_expert",
+            token_sink=token_sink,
+            trace_context=trace_context,
         ),
     )
     try:
         yield handles
     finally:
         await handles.aclose()
+
+
+def _chat_from_cfg(
+    cfg,
+    *,
+    role: str,
+    token_sink: TokenSink | None,
+    trace_context: dict[str, str] | None,
+) -> ChatClient:
+    try:
+        return ChatClient.from_cfg(
+            cfg, role=role, token_sink=token_sink, trace_context=trace_context
+        )
+    except TypeError:
+        return ChatClient.from_cfg(cfg, role=role, token_sink=token_sink)
 
 
 def build_graph(config: NexusConfig, handles: CouncilHandles):

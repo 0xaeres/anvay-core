@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from nexus.api.deps import get_proposal_queue, get_registry, get_skill_store
 from nexus.council.queue import ProposalQueue
@@ -15,9 +15,25 @@ router = APIRouter(tags=["products"])
 
 
 @router.get("/me")
-async def me(registry: Registry = Depends(get_registry)) -> dict:
-    # Single dev user until real authentication is wired in.
-    user = registry.get_user("jl")
+async def me(request: Request, registry: Registry = Depends(get_registry)) -> dict:
+    auth_user = getattr(request.state, "user", None)
+    if auth_user:
+        auth_user.setdefault("name", auth_user.get("email", ""))
+        auth_user.setdefault("products", [])
+        role = auth_user.get("role")
+        return {
+            "user": auth_user,
+            "permissions": {
+                "canManageSources": role in {"admin", "editor"},
+                "canRunCouncil": role in {"admin", "editor"},
+                "canOnboard": role in {"admin", "editor"},
+                "isOrgAdmin": role == "admin",
+                "settingsReadOnly": role != "admin",
+            },
+        }
+
+    # Single dev user until deployed auth is enabled.
+    user = registry.get_user("admin")
     if not user:
         raise HTTPException(status_code=404, detail="current user not provisioned")
     return {

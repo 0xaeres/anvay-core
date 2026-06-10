@@ -1,4 +1,4 @@
-"""Proposal approval flow: queue row -> Skill model -> .skill.md -> git -> Qdrant.
+"""Proposal approval flow: queue row -> Skill model -> SKILL.md -> git -> Qdrant.
 
 One async function `approve_proposal` is the source of truth. The API and CLI
 both call it. Idempotent within a session (re-approving an already-approved
@@ -58,11 +58,26 @@ async def approve_proposal(
         message=f"skill: {skill.name} approved by {actor}",
         push=True,
     )
+    if not pushed:
+        raise ApprovalError(
+            "skill file was written, but Git commit/push did not complete; "
+            "proposal remains pending"
+        )
 
     chunks_indexed = await _embed_skill_body(
         skill, source_uri=str(path), config=config
     )
+    index_status = "indexed" if chunks_indexed > 0 else "pending"
 
+    queue.record_publish_result(
+        proposal_id,
+        skill_path=str(path),
+        git_committed=pushed,
+        skill_index_status=index_status,
+        skill_index_error=(
+            "" if chunks_indexed > 0 else "approved skill was not embedded; retry indexing"
+        ),
+    )
     queue.update_status(proposal_id, status="approved", actor=actor)
     queue.record_skill_signal(
         product_id=skill.product,
@@ -79,6 +94,7 @@ async def approve_proposal(
         "path": str(path),
         "git_committed": pushed,
         "chunks_indexed": chunks_indexed,
+        "skill_index_status": index_status,
     }
 
 

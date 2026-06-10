@@ -48,7 +48,11 @@ def commit_and_push(root: Path, message: str, *, push: bool = True) -> bool:
     if push and repo.remotes:
         try:
             origin = repo.remotes.origin
-            origin.push()
+            infos = origin.push()
+            if any(info.flags & info.ERROR for info in infos):
+                log.warning("git push failed: %s", "; ".join(info.summary for info in infos))
+                return False
         except GitError as e:
             log.warning("git push failed (commit retained locally): %s", e)
+            return False
     return True
