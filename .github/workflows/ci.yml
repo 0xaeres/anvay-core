@@ -31,6 +31,8 @@ jobs:
   ragas-regression:
     runs-on: ubuntu-latest
     needs: lint-and-test
+    env:
+      DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
     services:
       qdrant:
         image: qdrant/qdrant:v1.18.0
@@ -51,25 +53,32 @@ jobs:
       - name: Install deps
         run: uv sync --all-extras
 
-      - name: Prepare config
-        env:
-          DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
+      - name: Check RAGAS credentials
+        id: ragas_credentials
         run: |
-          test -n "$DEEPINFRA_API_KEY" || (echo "DEEPINFRA_API_KEY secret is required for RAGAS regression" && exit 1)
+          if [ -n "$DEEPINFRA_API_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "RAGAS regression skipped: DEEPINFRA_API_KEY secret is not configured." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Prepare config
+        if: steps.ragas_credentials.outputs.available == 'true'
+        run: |
           cp nexus.yaml.example nexus.yaml
           sed -i 's|hierarchy_root: ./skills|hierarchy_root: ./nexus/skills/seed|' nexus.yaml
 
       - name: Ingest seed skills
-        env:
-          DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
+        if: steps.ragas_credentials.outputs.available == 'true'
         run: uv run nexus ingest --product forge --path nexus/skills/seed --no-enrich
 
       - name: Run RAGAS eval
-        env:
-          DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
+        if: steps.ragas_credentials.outputs.available == 'true'
         run: uv run python -m evals.run_ragas --limit 10 --out evals/ci_ragas.json
 
       - name: Compare to baseline
+        if: steps.ragas_credentials.outputs.available == 'true'
         run: |
           python - <<'PY'
           import json, sys, os
@@ -87,6 +96,7 @@ jobs:
           PY
 
       - name: Upload eval report
+        if: steps.ragas_credentials.outputs.available == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ragas-report
