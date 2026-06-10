@@ -35,7 +35,10 @@ async def _use_mock_transport(client: EmbedderClient, handler) -> None:
         max_retries=0,
         http_client=client._http_client,
     )
-    client._health_client = httpx.AsyncClient(base_url=client.base_url)
+    client._health_client = httpx.AsyncClient(
+        base_url=client.base_url,
+        transport=httpx.MockTransport(handler),
+    )
 
 
 @pytest.mark.asyncio

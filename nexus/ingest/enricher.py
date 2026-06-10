@@ -203,19 +203,8 @@ class ContextualEnricher:
             return text or None
 
     async def health(self) -> bool:
-        """
-        Check whether the configured chat client can successfully list available models.
-        
-        Performs a probe by calling the underlying chat client's model-listing endpoint; returns `True` when the call succeeds and `False` on any exception.
-        
-        Returns:
-            bool: `True` if the model list call succeeds, `False` otherwise.
-        """
-        try:
-            await self._chat_client._client.models.list()
-            return True
-        except Exception:
-            return False
+        """Return whether the configured chat provider is reachable."""
+        return await self._chat_client.health()
 
 
 def _truncate_doc(full_doc: str, *, around_chunk: str) -> str:

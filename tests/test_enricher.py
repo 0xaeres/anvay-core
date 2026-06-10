@@ -50,6 +50,7 @@ def _build(handler) -> ContextualEnricher:
         enrich_docs=True,
         concurrency=4,
     )
+    asyncio.run(enricher.aclose())
     enricher._chat_client._http_client = httpx.AsyncClient(
         transport=transport,
         timeout=5.0,

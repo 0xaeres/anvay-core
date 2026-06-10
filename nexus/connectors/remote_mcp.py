@@ -10,13 +10,14 @@ outside the transport layer.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 
 import httpx
 from mcp.client.session import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 TokenProvider = Callable[[], Awaitable[str]]
 
@@ -70,8 +71,10 @@ class RemoteMCPClient:
         self.endpoint = endpoint
         self._token_provider = token_provider
         self._stack = AsyncExitStack()
+        self._session_lock = asyncio.Lock()
         self._session: ClientSession | None = None
         self._initialized = False
+        self._init_result: dict | None = None
 
     async def aclose(self) -> None:
         """
@@ -80,8 +83,10 @@ class RemoteMCPClient:
         Closes the internal AsyncExitStack (shutting down transport and session resources), sets the cached session to None, and marks the client as not initialized.
         """
         await self._stack.aclose()
+        self._stack = AsyncExitStack()
         self._session = None
         self._initialized = False
+        self._init_result = None
 
     async def _ensure_session(self) -> ClientSession:
         """
@@ -95,11 +100,29 @@ class RemoteMCPClient:
         """
         if self._session is not None:
             return self._session
+        async with self._session_lock:
+            if self._session is not None:
+                return self._session
+            return await self._connect_session()
+
+    async def _connect_session(self) -> ClientSession:
+        """
+        Create and cache a ClientSession using the MCP streamable HTTP transport.
+        
+        Returns:
+            ClientSession: The newly connected session.
+        
+        Raises:
+            RemoteMCPError: If transport or session setup fails.
+        """
         try:
+            http_client = await self._stack.enter_async_context(
+                httpx.AsyncClient(auth=_BearerAuth(self._token_provider))
+            )
             read, write, _session_id = await self._stack.enter_async_context(
-                streamablehttp_client(
+                streamable_http_client(
                     self.endpoint,
-                    auth=_BearerAuth(self._token_provider),
+                    http_client=http_client,
                 )
             )
             self._session = await self._stack.enter_async_context(
@@ -121,13 +144,19 @@ class RemoteMCPClient:
         Raises:
             RemoteMCPError: If the session initialization fails.
         """
-        session = await self._ensure_session()
-        try:
-            result = await session.initialize()
-        except Exception as e:
-            raise RemoteMCPError(f"initialize: {e}") from e
-        self._initialized = True
-        return result.model_dump(mode="json")
+        if self._initialized and self._init_result is not None:
+            return self._init_result
+        async with self._session_lock:
+            if self._initialized and self._init_result is not None:
+                return self._init_result
+            session = self._session or await self._connect_session()
+            try:
+                result = await session.initialize()
+            except Exception as e:
+                raise RemoteMCPError(f"initialize: {e}") from e
+            self._init_result = result.model_dump(mode="json")
+            self._initialized = True
+            return self._init_result
 
     async def list_tools(self) -> list[dict]:
         """
@@ -138,7 +167,8 @@ class RemoteMCPClient:
         """
         if not self._initialized:
             await self.initialize()
-        assert self._session is not None
+        if self._session is None:
+            raise RemoteMCPError("session not initialized")
         try:
             result = await self._session.list_tools()
         except Exception as e:
@@ -161,7 +191,8 @@ class RemoteMCPClient:
         """
         if not self._initialized:
             await self.initialize()
-        assert self._session is not None
+        if self._session is None:
+            raise RemoteMCPError("session not initialized")
         try:
             result = await self._session.call_tool(name, arguments)
         except Exception as e:

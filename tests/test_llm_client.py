@@ -1,17 +1,17 @@
 import json
-from typing import Any
+from collections.abc import Awaitable, Callable
 
 import httpx
 import pytest
 from openai import AsyncOpenAI
 
 from nexus.config import ModelCfg
-from nexus.llm.client import ChatClient, LLMError, _parse_json_payload, _parse_sse_line
+from nexus.llm.client import ChatClient, LLMError, _parse_json_payload
 
 
 async def _use_mock_transport(
     client: ChatClient,
-    handler: Any,
+    handler: Callable[[httpx.Request], httpx.Response | Awaitable[httpx.Response]],
 ) -> None:
     """
     Replace the ChatClient's HTTP stack with an httpx.AsyncClient using a MockTransport driven by the given handler.
@@ -20,7 +20,7 @@ async def _use_mock_transport(
     
     Parameters:
         client (ChatClient): The chat client to reconfigure.
-        handler (httpx.MockTransport | httpx.SyncHandler | httpx.AsyncHandler): A mock transport handler that will supply responses for the client's HTTP calls.
+        handler: A mock transport handler that will supply responses for the client's HTTP calls.
     """
     await client.aclose()
     client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -74,17 +74,6 @@ def test_parse_json_payload_empty_returns_empty_dict() -> None:
 def test_parse_json_payload_unparseable_raises() -> None:
     with pytest.raises(LLMError):
         _parse_json_payload("not json at all")
-
-
-def test_parse_sse_line_reads_openai_delta() -> None:
-    payload = _parse_sse_line(
-        'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}'
-    )
-
-    assert payload == {
-        "choices": [{"delta": {"content": "hi"}, "finish_reason": None}]
-    }
-    assert _parse_sse_line("data: [DONE]") is None
 
 
 @pytest.mark.asyncio

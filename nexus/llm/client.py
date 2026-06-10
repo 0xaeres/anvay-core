@@ -156,6 +156,19 @@ class ChatClient:
         """
         await self._client.close()
 
+    async def health(self) -> bool:
+        """
+        Return whether the provider's model-list endpoint is reachable.
+        
+        The check is intentionally broad because OpenAI-compatible providers vary
+        in their exact model-list response shape.
+        """
+        try:
+            await self._client.models.list()
+            return True
+        except Exception:
+            return False
+
     async def chat(
         self,
         messages: list[dict[str, str]],
@@ -452,17 +465,3 @@ def _parse_json_payload(text: str) -> Any:
             pass
     raise LLMError(f"failed to parse JSON from model output: {text[:200]!r}")
 
-
-def _parse_sse_line(line: str) -> dict[str, Any] | None:
-    line = line.strip()
-    if not line or line.startswith(":"):
-        return None
-    if not line.startswith("data:"):
-        return None
-    data = line.removeprefix("data:").strip()
-    if not data or data == "[DONE]":
-        return None
-    try:
-        return json.loads(data)
-    except json.JSONDecodeError as e:
-        raise LLMError(f"failed to parse streaming chat chunk: {data[:200]!r}") from e

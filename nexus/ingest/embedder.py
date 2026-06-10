@@ -143,9 +143,11 @@ class EmbedderClient:
         """
         Close the embedder client's underlying network clients and release associated resources.
         
-        Closes the OpenAI-compatible SDK client used for embeddings and the separate HTTP client used for health checks.
+        Closes the OpenAI-compatible SDK client used for embeddings, the injected HTTP client, and the separate HTTP client used for health checks.
         """
         await self._client.close()
+        if not self._http_client.is_closed:
+            await self._http_client.aclose()
         await self._health_client.aclose()
 
     # ------------------------------------------------------------------ core
