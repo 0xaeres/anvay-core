@@ -26,9 +26,8 @@ import asyncio
 import logging
 from collections.abc import Iterable
 
-import httpx
-
 from nexus.ingest.models import Chunk, ChunkKind
+from nexus.llm.client import ChatClient, LLMError
 
 log = logging.getLogger(__name__)
 
@@ -71,17 +70,37 @@ class ContextualEnricher:
         concurrency: int = 4,
         timeout_s: float = 30.0,
     ):
+        """
+        Initialize the ContextualEnricher with model selection, feature toggles, and an internal chat client.
+        
+        Parameters:
+            base_url (str): Base URL for the OpenAI-compatible API endpoint used by the internal chat client.
+            model (str): Model identifier to use for enrichment requests.
+            api_key (str | None): Optional API key for authenticating to the backend; if None, the client will rely on other configured credentials.
+            enrich_code (bool): Enable high-quality enrichment for code chunks when True.
+            enrich_docs (bool): Enable contextual enrichment for document chunks when True.
+            concurrency (int): Maximum number of concurrent chat requests; used to initialize an internal semaphore.
+            timeout_s (float): Request timeout, in seconds, applied to the internal chat client.
+        """
         self.model = model
         self.enrich_code = enrich_code
         self.enrich_docs = enrich_docs
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        self._client = httpx.AsyncClient(
-            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout_s
+        self._chat_client = ChatClient(
+            provider="openai-compatible",
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            role="enricher",
+            timeout_s=timeout_s,
+            temperature=0.2,
         )
         self._sem = asyncio.Semaphore(concurrency)
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        """
+        Close the internal ChatClient and release its resources.
+        """
+        await self._chat_client.aclose()
 
     # ------------------------------------------------------------------ batch
 
@@ -159,35 +178,33 @@ class ContextualEnricher:
     # ---------------------------------------------------------------- transport
 
     async def _chat(self, prompt: str, *, max_tokens: int) -> str | None:
+        """
+        Send a prompt to the configured chat client under the enricher's concurrency limit and return the trimmed model response.
+        
+        Parameters:
+            prompt (str): The user-facing prompt to send to the chat model.
+            max_tokens (int): Maximum number of tokens the model is allowed to generate for the response.
+        
+        Returns:
+            str: The model's response with surrounding whitespace removed, or
+            None: if the response is empty after trimming or an LLMError occurred while calling the chat client.
+        """
         async with self._sem:
             try:
-                resp = await self._client.post(
-                    "/chat/completions",
-                    json={
-                        "model": self.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": max_tokens,
-                        "temperature": 0.2,
-                    },
+                resp = await self._chat_client.chat(
+                    [{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=0.2,
                 )
-            except httpx.HTTPError as e:
-                log.debug("enricher: http error: %s", e)
+            except LLMError as e:
+                log.debug("enricher: chat error: %s", e)
                 return None
-            if resp.status_code != 200:
-                log.debug("enricher: non-200 %s: %s", resp.status_code, resp.text[:200])
-                return None
-            choices = resp.json().get("choices") or []
-            if not choices:
-                return None
-            text = (choices[0].get("message") or {}).get("content", "").strip()
+            text = resp.content.strip()
             return text or None
 
     async def health(self) -> bool:
-        try:
-            r = await self._client.get("/models")
-            return r.status_code == 200
-        except httpx.HTTPError:
-            return False
+        """Return whether the configured chat provider is reachable."""
+        return await self._chat_client.health()
 
 
 def _truncate_doc(full_doc: str, *, around_chunk: str) -> str:

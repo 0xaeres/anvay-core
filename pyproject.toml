@@ -2,7 +2,7 @@
 name = "nexus"
 version = "0.0.1"
 description = "Sovereign, MCP-native skill server for codebases"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Nexus" }]
@@ -52,6 +52,7 @@ dependencies = [
     "fastembed>=0.7",
     # Skills: YAML frontmatter
     "python-frontmatter>=1.1",
+    "openai>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -83,7 +84,7 @@ packages = ["nexus"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
