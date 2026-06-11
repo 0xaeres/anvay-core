@@ -1,4 +1,4 @@
-"""LLM client - thin OpenAI-compatible HTTP wrapper with multi-provider routing.
+"""LLM client - thin OpenAI-compatible SDK wrapper with multi-provider routing.
 
 Every council role goes through `ChatClient.from_role(config, role)`. The provider
 field decides the base URL and auth header; the model field decides the request
@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+from openai import AsyncOpenAI, OpenAIError
 
 from nexus.config import ModelCfg
 from nexus.llm.tracing import record_generation
@@ -80,6 +81,21 @@ class ChatClient:
         top_p: float | None = None,
         trace_context: dict[str, Any] | None = None,
     ):
+        """
+        Initialize the client with provider/model configuration and create the underlying AsyncOpenAI and HTTP clients.
+
+        Parameters:
+            provider (str): Provider identifier (e.g., "deepinfra", "openai").
+            model (str): Model name to use for requests.
+            base_url (str): Provider base URL; any trailing slash is removed.
+            api_key (str | None): API key to supply to the SDK; when None the SDK receives the sentinel "unused".
+            role (str): Role label used in emitted token payloads and error messages.
+            timeout_s (float): Timeout in seconds for the HTTP client and SDK.
+            stream_chat (bool): When True, enable provider-specific streaming behavior by default.
+            token_sink (TokenSink | None): Optional async callable invoked for each emitted token; ignored if None.
+            temperature (float): Sampling temperature for generated completions.
+            top_p (float | None): Nucleus sampling parameter to pass through to requests.
+        """
         self.provider = provider
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -89,10 +105,14 @@ class ChatClient:
         self.temperature = temperature
         self.top_p = top_p
         self.trace_context = trace_context or {}
-        headers: dict[str, str] = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        self._client = httpx.AsyncClient(headers=headers, timeout=timeout_s)
+        self._http_client = httpx.AsyncClient(timeout=timeout_s)
+        self._client = AsyncOpenAI(
+            api_key=api_key or "unused",
+            base_url=self.base_url,
+            timeout=timeout_s,
+            max_retries=0,
+            http_client=self._http_client,
+        )
 
     @classmethod
     def from_cfg(
@@ -103,6 +123,20 @@ class ChatClient:
         token_sink: TokenSink | None = None,
         trace_context: dict[str, Any] | None = None,
     ) -> ChatClient:
+        """
+        Create a ChatClient configured from the provided ModelCfg and role.
+
+        Parameters:
+            cfg (ModelCfg): Configuration containing provider, model, API key, and sampling settings.
+            role (str): Role identifier used for logging and error messages.
+            token_sink (TokenSink | None): Optional async callable to receive emitted token events.
+
+        Returns:
+            ChatClient: An instance configured with the resolved base URL, model, credentials, and streaming/sampling settings.
+
+        Raises:
+            LLMError: If no base URL can be resolved for the configured provider.
+        """
         provider = cfg.provider.lower()
         base = cfg.base_url or cfg.url or _PROVIDER_BASES.get(provider)
         if not base:
@@ -121,7 +155,25 @@ class ChatClient:
         )
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        """
+        Close the underlying OpenAI SDK client and release associated network resources.
+
+        This asynchronously closes the internal AsyncOpenAI client used by this ChatClient; the instance must not be used for further requests after calling this method.
+        """
+        await self._client.close()
+
+    async def health(self) -> bool:
+        """
+        Return whether the provider's model-list endpoint is reachable.
+
+        The check is intentionally broad because OpenAI-compatible providers vary
+        in their exact model-list response shape.
+        """
+        try:
+            await self._client.models.list()
+            return True
+        except Exception:
+            return False
 
     async def chat(
         self,
@@ -133,19 +185,37 @@ class ChatClient:
         json_mode: bool = False,
         stream: bool | None = None,
     ) -> ChatResponse:
-        """OpenAI-compatible /chat/completions. Returns the assistant content."""
+        """
+        Send a chat completion request and return the assembled assistant response.
+
+        Builds an SDK-style request from the provided messages and sampling parameters, chooses streaming or non-streaming execution based on the `stream` argument and the client's streaming configuration, and retries once without streaming if a streaming attempt fails.
+
+        Parameters:
+            messages (list[dict[str, str]]): Conversation messages in OpenAI chat format (each item with 'role' and 'content').
+            temperature (float | None): Sampling temperature to use for this call; falls back to the client's default when `None`.
+            top_p (float | None): Nucleus sampling parameter to use for this call; omitted when `None`.
+            max_tokens (int): Maximum tokens to generate for the completion.
+            json_mode (bool): When True, requests the model to return a single JSON object (response_format={"type":"json_object"}).
+            stream (bool | None): When True forces streaming; when False forces non-streaming; when None uses the client's streaming preference (suppressed for JSON mode unless explicitly allowed).
+
+        Returns:
+            ChatResponse: Assembled assistant content, token usage, model name, normalized finish reason, and raw response payload.
+
+        Raises:
+            LLMError: If the underlying chat call fails (after retry logic for streaming failures).
+        """
         request_temperature = self.temperature if temperature is None else temperature
         request_top_p = self.top_p if top_p is None else top_p
-        body: dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": request_temperature,
             "max_tokens": max_tokens,
         }
         if request_top_p is not None:
-            body["top_p"] = request_top_p
+            kwargs["top_p"] = request_top_p
         if json_mode:
-            body["response_format"] = {"type": "json_object"}
+            kwargs["response_format"] = {"type": "json_object"}
 
         should_stream = stream is True or (
             self._stream_chat and (stream if stream is not None else not json_mode)
@@ -154,16 +224,16 @@ class ChatClient:
         try:
             if should_stream:
                 try:
-                    resp = await self._chat_stream(body)
+                    resp = await self._chat_stream(kwargs)
                 except LLMError as e:
                     log.warning(
                         "%s: streaming chat failed; retrying without stream: %s",
                         self.role,
                         e,
                     )
-                    resp = await self._chat_non_stream(body)
+                    resp = await self._chat_non_stream(kwargs)
             else:
-                resp = await self._chat_non_stream(body)
+                resp = await self._chat_non_stream(kwargs)
         except Exception as e:
             self._trace(messages, None, TokenUsage(), start, error=str(e))
             raise
@@ -193,80 +263,84 @@ class ChatClient:
             metadata=self.trace_context,
         )
 
-    async def _chat_non_stream(self, body: dict[str, Any]) -> ChatResponse:
+    async def _chat_non_stream(self, kwargs: dict[str, Any]) -> ChatResponse:
+        """
+        Convert a non-streaming SDK chat completion into a ChatResponse.
+
+        Calls the OpenAI-compatible SDK's chat completions create method with the provided keyword arguments, extracts the first choice's message content, finish reason, and token usage, and returns a ChatResponse containing the assembled fields and the raw payload.
+
+        Parameters:
+            kwargs (dict[str, Any]): Keyword arguments forwarded to the SDK call (e.g., model, messages, temperature, max_tokens, response_format).
+
+        Returns:
+            ChatResponse: Assembled response with `content`, `usage` (prompt and completion token counts), `model`, `finish_reason`, and `raw` payload.
+
+        Raises:
+            LLMError: If the SDK call fails or the response contains no choices.
+        """
         try:
-            resp = await self._client.post(f"{self.base_url}/chat/completions", json=body)
-        except httpx.HTTPError as e:
+            resp = await self._client.chat.completions.create(**kwargs)
+        except OpenAIError as e:
             raise LLMError(f"{self.role}: chat call failed: {e}") from e
-        if resp.status_code != 200:
-            raise LLMError(
-                f"{self.role}: chat returned {resp.status_code}: {resp.text[:200]}"
-            )
-        payload = resp.json()
-        choices = payload.get("choices", [])
+        payload = resp.model_dump(mode="json")
+        choices = resp.choices
         if not choices:
             raise LLMError(f"{self.role}: empty choices in response")
-        content = choices[0].get("message", {}).get("content", "")
-        finish_reason = str(choices[0].get("finish_reason") or "stop").lower()
-        usage_obj = payload.get("usage", {}) or {}
+        content = choices[0].message.content or ""
+        finish_reason = str(choices[0].finish_reason or "stop").lower()
+        usage = resp.usage
         return ChatResponse(
-            content=content or "",
+            content=content,
             usage=TokenUsage(
-                prompt=int(usage_obj.get("prompt_tokens", 0)),
-                completion=int(usage_obj.get("completion_tokens", 0)),
+                prompt=int(usage.prompt_tokens if usage else 0),
+                completion=int(usage.completion_tokens if usage else 0),
             ),
             model=self.model,
             finish_reason=finish_reason,
             raw=payload,
         )
 
-    async def _chat_stream(self, body: dict[str, Any]) -> ChatResponse:
-        """OpenAI-compatible streaming chat; collect text while emitting deltas."""
-        stream_body = {
-            **body,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
+    async def _chat_stream(self, kwargs: dict[str, Any]) -> ChatResponse:
+        """
+        Stream a chat completion from the configured provider, collect emitted text deltas, and forward each delta to the token sink.
+
+        Parameters:
+            kwargs (dict[str, Any]): Keyword arguments forwarded to the underlying chat completion call (e.g., model, messages, temperature, max_tokens, response_format).
+
+        Returns:
+            ChatResponse: Assembled response where `content` is the concatenation of all streamed text deltas, `usage` reflects the latest reported token counts, `model` is the model used, `finish_reason` is the normalized finish reason, and `raw` contains the collected stream chunks.
+        """
         content_parts: list[str] = []
         finish_reason = "stop"
         usage = TokenUsage()
         raw_chunks: list[dict[str, Any]] = []
         try:
-            async with self._client.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
-                json=stream_body,
-            ) as resp:
-                if resp.status_code != 200:
-                    text = await resp.aread()
-                    raise LLMError(
-                        f"{self.role}: streaming chat returned {resp.status_code}: "
-                        f"{text.decode('utf-8', errors='replace')[:200]}"
+            stream = await self._client.chat.completions.create(
+                **kwargs,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            async for chunk in stream:
+                payload = chunk.model_dump(mode="json")
+                raw_chunks.append(payload)
+                if chunk.usage:
+                    usage = TokenUsage(
+                        prompt=int(chunk.usage.prompt_tokens or usage.prompt),
+                        completion=int(
+                            chunk.usage.completion_tokens or usage.completion
+                        ),
                     )
-                async for line in resp.aiter_lines():
-                    payload = _parse_sse_line(line)
-                    if payload is None:
+                for choice in chunk.choices or []:
+                    choice_finish = choice.finish_reason
+                    if choice_finish:
+                        finish_reason = str(choice_finish).lower()
+                    delta = choice.delta
+                    text = delta.content or ""
+                    if not text:
                         continue
-                    raw_chunks.append(payload)
-                    usage_obj = payload.get("usage") or {}
-                    if usage_obj:
-                        usage = TokenUsage(
-                            prompt=int(usage_obj.get("prompt_tokens", usage.prompt)),
-                            completion=int(
-                                usage_obj.get("completion_tokens", usage.completion)
-                            ),
-                        )
-                    for choice in payload.get("choices", []) or []:
-                        choice_finish = choice.get("finish_reason")
-                        if choice_finish:
-                            finish_reason = str(choice_finish).lower()
-                        delta = choice.get("delta") or {}
-                        text = delta.get("content") or ""
-                        if not text:
-                            continue
-                        content_parts.append(text)
-                        await self._emit_token(text)
-        except httpx.HTTPError as e:
+                    content_parts.append(text)
+                    await self._emit_token(text)
+        except OpenAIError as e:
             raise LLMError(f"{self.role}: streaming chat call failed: {e}") from e
 
         return ChatResponse(
@@ -426,18 +500,3 @@ def _parse_json_payload(text: str) -> Any:
         except json.JSONDecodeError:
             pass
     raise LLMError(f"failed to parse JSON from model output: {text[:200]!r}")
-
-
-def _parse_sse_line(line: str) -> dict[str, Any] | None:
-    line = line.strip()
-    if not line or line.startswith(":"):
-        return None
-    if not line.startswith("data:"):
-        return None
-    data = line.removeprefix("data:").strip()
-    if not data or data == "[DONE]":
-        return None
-    try:
-        return json.loads(data)
-    except json.JSONDecodeError as e:
-        raise LLMError(f"failed to parse streaming chat chunk: {data[:200]!r}") from e

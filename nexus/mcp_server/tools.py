@@ -263,12 +263,22 @@ async def corpus_summary(state: ToolState, *, product_id: str) -> dict:
 
 
 def _matches_file_globs(file_path: str | None, globs: list[str]) -> bool:
+    """Match `applies_to.files` globs against a repo-relative path.
+
+    Skill authors should prefer recursive patterns such as `**/*.py`; those
+    preserve the same intent under Python 3.13 `PurePath.full_match()` and the
+    older `PurePath.match()` fallback.
+    """
     if not globs:
         return True
     if file_path is None:
         return True
     p = PurePath(file_path)
-    return any(p.full_match(g) for g in globs)
+    # Keep this helper usable in older local envs even though CI targets 3.13+.
+    full_match = getattr(p, "full_match", None)
+    if full_match is not None:
+        return any(full_match(g) for g in globs)
+    return any(p.match(g) for g in globs)
 
 
 def _matches_context(requested: str, skill_contexts: list[str]) -> bool:
