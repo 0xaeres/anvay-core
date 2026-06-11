@@ -10,12 +10,13 @@ from fastapi.testclient import TestClient
 
 import nexus.api.app as api_app
 from nexus.api.app import app
-from nexus.api.deps import get_auth_store, get_proposal_queue, get_registry
+from nexus.api.deps import get_auth_store, get_proposal_queue, get_registry, get_skill_store
 from nexus.auth.auth0 import Auth0Error, Auth0Verifier
 from nexus.auth.store import AuthStore
 from nexus.council.queue import ProposalQueue
 from nexus.registry import Registry
 from nexus.skills.models import Citation, SkillProposal
+from nexus.skills.store import SkillStore
 
 
 def _rsa_key():
@@ -96,8 +97,8 @@ def test_auth0_bootstrap_admin_only_for_matching_email(tmp_path: Path, monkeypat
 
 def test_product_owner_can_manage_only_their_product(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
-    store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
-    user = store.create_user(
+    auth_store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
+    user = auth_store.create_user(
         email="owner@example.com",
         password="correct horse battery staple",
         role="viewer",
@@ -110,10 +111,14 @@ def test_product_owner_can_manage_only_their_product(tmp_path: Path, monkeypatch
         {"id": "other", "name": "Other", "tagline": "", "owner": {}, "onboardedAt": "now"}
     )
     registry.grant_product_role("own", user["id"], "owner")
+    queue = ProposalQueue(tmp_path / "queue.db")
+    skill_store = SkillStore(tmp_path / "skills")
 
-    monkeypatch.setattr(api_app, "get_auth_store", lambda: store)
-    app.dependency_overrides[get_auth_store] = lambda: store
+    monkeypatch.setattr(api_app, "get_auth_store", lambda: auth_store)
+    app.dependency_overrides[get_auth_store] = lambda: auth_store
     app.dependency_overrides[get_registry] = lambda: registry
+    app.dependency_overrides[get_proposal_queue] = lambda: queue
+    app.dependency_overrides[get_skill_store] = lambda: skill_store
     try:
         client = TestClient(app, base_url="https://testserver")
         login = client.post(
@@ -142,6 +147,8 @@ def test_product_owner_can_manage_only_their_product(tmp_path: Path, monkeypatch
     finally:
         app.dependency_overrides.pop(get_auth_store, None)
         app.dependency_overrides.pop(get_registry, None)
+        app.dependency_overrides.pop(get_proposal_queue, None)
+        app.dependency_overrides.pop(get_skill_store, None)
 
     assert own.status_code == 200
     assert other.status_code == 403

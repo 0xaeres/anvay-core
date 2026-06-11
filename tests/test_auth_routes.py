@@ -6,8 +6,11 @@ from fastapi.testclient import TestClient
 
 import nexus.api.app as api_app
 from nexus.api.app import app
-from nexus.api.deps import get_auth_store
+from nexus.api.deps import get_auth_store, get_proposal_queue, get_registry, get_skill_store
 from nexus.auth.store import CSRF_COOKIE, SESSION_COOKIE, AuthStore
+from nexus.council.queue import ProposalQueue
+from nexus.registry import Registry
+from nexus.skills.store import SkillStore
 
 
 def test_login_sets_secure_session_and_csrf(tmp_path: Path, monkeypatch) -> None:
@@ -43,15 +46,31 @@ def test_login_sets_secure_session_and_csrf(tmp_path: Path, monkeypatch) -> None
         app.dependency_overrides.pop(get_auth_store, None)
 
 
-def test_admin_api_key_allows_protected_route(monkeypatch) -> None:
+def test_admin_api_key_allows_protected_route(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
     monkeypatch.setenv("NEXUS_ADMIN_API_KEY", "admin-key")
-    client = TestClient(app, base_url="https://testserver")
+    auth_store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
+    registry = Registry(tmp_path / "registry.db")
+    queue = ProposalQueue(tmp_path / "queue.db")
+    store = SkillStore(tmp_path / "skills")
+    monkeypatch.setattr(api_app, "get_auth_store", lambda: auth_store)
+    app.dependency_overrides[get_auth_store] = lambda: auth_store
+    app.dependency_overrides[get_registry] = lambda: registry
+    app.dependency_overrides[get_proposal_queue] = lambda: queue
+    app.dependency_overrides[get_skill_store] = lambda: store
+    try:
+        client = TestClient(app, base_url="https://testserver")
 
-    unauth = client.get("/products")
-    assert unauth.status_code == 401
+        unauth = client.get("/products")
+        assert unauth.status_code == 401
 
-    authed = client.get("/products", headers={"Authorization": "Bearer admin-key"})
+        authed = client.get("/products", headers={"Authorization": "Bearer admin-key"})
+    finally:
+        app.dependency_overrides.pop(get_auth_store, None)
+        app.dependency_overrides.pop(get_registry, None)
+        app.dependency_overrides.pop(get_proposal_queue, None)
+        app.dependency_overrides.pop(get_skill_store, None)
+
     assert authed.status_code == 200
 
 
