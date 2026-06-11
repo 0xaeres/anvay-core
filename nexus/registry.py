@@ -185,6 +185,7 @@ class Registry:
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
             _ensure_registry_columns(conn)
+            _backfill_product_members(conn)
         self._seed_defaults()
 
     @contextmanager
@@ -270,6 +271,29 @@ def _ensure_registry_columns(conn: sqlite3.Connection) -> None:
             "ALTER TABLE source_resources "
             "ADD COLUMN enrichment_status TEXT NOT NULL DEFAULT ''"
         )
+
+
+def _backfill_product_members(conn: sqlite3.Connection) -> None:
+    rows = conn.execute("SELECT id, products_js FROM users").fetchall()
+    now = _now_iso()
+    for row in rows:
+        try:
+            products = json.loads(row["products_js"] or "[]")
+        except json.JSONDecodeError:
+            continue
+        for entry in products:
+            product_id = entry.get("id") if isinstance(entry, dict) else entry
+            role = entry.get("role", "owner") if isinstance(entry, dict) else "owner"
+            if not product_id:
+                continue
+            if role not in {"owner", "editor", "viewer"}:
+                role = "owner"
+            conn.execute(
+                """INSERT OR IGNORE INTO product_members
+                   (product_id, user_id, role, created_at)
+                   VALUES (?,?,?,?)""",
+                (str(product_id), row["id"], role, now),
+            )
 
 
 def _row_to_product(row: sqlite3.Row) -> dict:

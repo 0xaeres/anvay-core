@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from nexus.api.authz import (
     assert_product_access,
+    auth_enabled,
     filter_products_for_user,
     product_permissions,
     public_user,
@@ -25,7 +26,7 @@ router = APIRouter(tags=["products"])
 @router.get("/me")
 async def me(request: Request, registry: Registry = Depends(get_registry)) -> dict:
     auth_user = getattr(request.state, "user", None)
-    if auth_user:
+    if auth_user is not None:
         memberships = registry.list_product_memberships(auth_user["id"])
         role = next(iter(memberships.values()), None)
         return {
@@ -33,6 +34,9 @@ async def me(request: Request, registry: Registry = Depends(get_registry)) -> di
             "permissions": product_permissions(auth_user, role),
             "memberships": memberships,
         }
+
+    if auth_enabled():
+        raise HTTPException(status_code=401, detail="authentication required")
 
     # Single dev user until deployed auth is enabled.
     user = registry.get_user("admin")

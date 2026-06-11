@@ -183,10 +183,31 @@ class AuthStore:
 
         existing = self.get_user_by_email(email)
         if existing:
+            bootstrap = _normalize_email(os.getenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL") or "")
+            promote = bool(bootstrap and email == bootstrap)
+            now = _now()
             with self._conn() as conn:
                 conn.execute(
-                    "UPDATE auth_users SET auth_sub = ?, name = ?, last_login_at = ? WHERE id = ?",
-                    (auth_sub, name or existing.get("name") or email, _now(), existing["id"]),
+                    """UPDATE auth_users
+                       SET auth_sub = ?,
+                           name = ?,
+                           last_login_at = ?,
+                           role = CASE WHEN ? THEN 'admin' ELSE role END,
+                           status = CASE WHEN ? THEN 'approved' ELSE status END,
+                           approved_at = CASE WHEN ? THEN ? ELSE approved_at END,
+                           revoked_at = CASE WHEN ? THEN NULL ELSE revoked_at END
+                       WHERE id = ?""",
+                    (
+                        auth_sub,
+                        name or existing.get("name") or email,
+                        now,
+                        promote,
+                        promote,
+                        promote,
+                        now,
+                        promote,
+                        existing["id"],
+                    ),
                 )
             return self.get_user(existing["id"]) or existing
 
@@ -419,27 +440,55 @@ class AuthStore:
         if not req:
             raise AuthError("request not found")
         now = _now()
+        if role not in ROLES:
+            raise AuthError(f"unsupported role: {role}")
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if status == "approved":
+                existing = conn.execute(
+                    "SELECT * FROM auth_users WHERE email = ?",
+                    (_normalize_email(req["email"]),),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        """UPDATE auth_users
+                           SET status = 'approved',
+                               role = ?,
+                               approved_at = ?,
+                               revoked_at = NULL
+                           WHERE email = ?""",
+                        (role, now, _normalize_email(req["email"])),
+                    )
+                else:
+                    if require_password and not password:
+                        raise AuthError("password is required to approve a new user")
+                    if len(password or "") < 12:
+                        raise AuthError("password must be at least 12 characters")
+                    conn.execute(
+                        """INSERT INTO auth_users
+                           (id, email, name, password_hash, role, status, created_at, approved_at)
+                           VALUES (?,?,?,?,?,?,?,?)""",
+                        (
+                            secrets.token_urlsafe(16),
+                            _normalize_email(req["email"]),
+                            str(req.get("name") or "").strip(),
+                            hash_password(password or secrets.token_urlsafe(24)),
+                            role,
+                            "approved",
+                            now,
+                            now,
+                        ),
+                    )
+            else:
+                if status != "rejected":
+                    raise AuthError("status must be approved or rejected")
             conn.execute(
                 """UPDATE auth_access_requests
                    SET status = ?, decided_at = ?, decided_by = ?
                    WHERE id = ?""",
                 (status, now, decided_by, request_id),
             )
-        if status == "approved":
-            existing = self.get_user_by_email(req["email"])
-            if existing:
-                self.approve_user(req["email"], role=role)
-            else:
-                if require_password and not password:
-                    raise AuthError("password is required to approve a new user")
-                self.create_user(
-                    email=req["email"],
-                    password=password or secrets.token_urlsafe(24),
-                    name=req.get("name") or "",
-                    role=role,
-                    status="approved",
-                )
+            conn.execute("COMMIT")
         return self.get_access_request(request_id) or req
 
     # ------------------------------------------------------------ rate limits
@@ -451,6 +500,7 @@ class AuthStore:
         cutoff = (now_dt - timedelta(seconds=window_s)).isoformat()
         now = now_dt.isoformat()
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "DELETE FROM auth_rate_limits WHERE bucket = ? AND subject = ? AND ts <= ?",
                 (bucket, subject, cutoff),
@@ -465,6 +515,7 @@ class AuthStore:
                 "INSERT INTO auth_rate_limits (bucket, subject, ts) VALUES (?,?,?)",
                 (bucket, subject, now),
             )
+            conn.execute("COMMIT")
 
 
 def hash_password(password: str) -> str:

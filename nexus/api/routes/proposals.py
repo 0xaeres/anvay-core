@@ -11,7 +11,7 @@ from nexus.config import NexusConfig
 from nexus.council.queue import ProposalQueue
 from nexus.council.runner import kick_off
 from nexus.registry import Registry
-from nexus.skills.approval import ApprovalError, approve_proposal
+from nexus.skills.approval import ApprovalError, ApprovalPublishError, approve_proposal
 
 router = APIRouter(prefix="/proposals", tags=["proposals"])
 
@@ -87,6 +87,8 @@ async def approve(
         return await approve_proposal(
             proposal_id=proposal_id, actor=actor, config=config, queue=queue
         )
+    except ApprovalPublishError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
     except ApprovalError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 

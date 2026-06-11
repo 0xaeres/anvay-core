@@ -13,6 +13,7 @@ State is checkpointed to SQLite so a process kill mid-session can resume.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -112,12 +113,12 @@ def _chat_from_cfg(
     token_sink: TokenSink | None,
     trace_context: dict[str, str] | None,
 ) -> ChatClient:
-    try:
+    sig = inspect.signature(ChatClient.from_cfg)
+    if "trace_context" in sig.parameters:
         return ChatClient.from_cfg(
             cfg, role=role, token_sink=token_sink, trace_context=trace_context
         )
-    except TypeError:
-        return ChatClient.from_cfg(cfg, role=role, token_sink=token_sink)
+    return ChatClient.from_cfg(cfg, role=role, token_sink=token_sink)
 
 
 def build_graph(config: NexusConfig, handles: CouncilHandles):

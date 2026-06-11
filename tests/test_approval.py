@@ -180,6 +180,28 @@ def test_approve_fails_without_git_commit_and_keeps_pending(tmp_path: Path) -> N
     assert not (Path(cfg.hierarchy_root) / "forge" / "demo-skill" / "SKILL.md").exists()
 
 
+def test_approve_failed_push_keeps_pending_without_local_commit(tmp_path: Path) -> None:
+    from nexus.skills.approval import ApprovalPublishError
+
+    cfg = _make_cfg(tmp_path)
+    repo = Repo.init(cfg.hierarchy_root)
+    repo.create_remote("origin", str(tmp_path / "missing-remote.git"))
+    queue = ProposalQueue(cfg.storage.proposal_queue)
+    p = _seed_proposal(queue)
+
+    with pytest.raises(ApprovalPublishError):
+        asyncio.run(
+            approve_proposal(proposal_id=p.id, actor="me", config=cfg, queue=queue)
+        )
+
+    row = queue.get(p.id)
+    assert row is not None
+    assert row["status"] == "pending"
+    assert not (Path(cfg.hierarchy_root) / "forge" / "demo-skill" / "SKILL.md").exists()
+    with pytest.raises(ValueError):
+        list(repo.iter_commits())
+
+
 def test_wrap_markdown_body_wraps_prose_but_preserves_code_fences() -> None:
     long_sentence = " ".join(["Nexus keeps generated skill prose readable"] * 8)
     body = (

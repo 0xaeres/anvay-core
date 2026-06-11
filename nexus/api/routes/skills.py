@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from nexus.api.authz import assert_product_access
+from nexus.api.authz import assert_product_access, auth_enabled, current_user
 from nexus.api.deps import get_proposal_queue, get_registry, get_skill_store
 from nexus.council.queue import ProposalQueue
 from nexus.registry import Registry
@@ -36,12 +36,35 @@ async def list_product_skills(
     return {"skills": skills, "grouped": grouped}
 
 
-def _find_skill(store: SkillStore, skill_id: str):
+def _accessible_products(request: Request, registry: Registry) -> set[str] | None:
+    if not auth_enabled():
+        return None
+    user = current_user(request)
+    if user.get("role") == "admin":
+        return None
+    return set(registry.list_product_ids_for_user(str(user["id"])))
+
+
+def _find_skill(
+    store: SkillStore,
+    skill_id: str,
+    *,
+    products: set[str] | None = None,
+):
+    if "/" in skill_id:
+        for s in store.iter_skills():
+            if s.id == skill_id and (products is None or s.product in products):
+                return s
+        return None
+
     target_name = skill_id.split("/")[-1]
+    matches = []
     for s in store.iter_skills():
-        if s.id == skill_id or s.name == target_name:
-            return s
-    return None
+        if s.name == target_name and (products is None or s.product in products):
+            matches.append(s)
+    if len(matches) > 1:
+        raise HTTPException(status_code=409, detail="ambiguous skill name; use product/name")
+    return matches[0] if matches else None
 
 
 @router.get("/skills/{skill_id:path}/corrections")
@@ -52,7 +75,7 @@ async def get_skill_corrections(
     store: SkillStore = Depends(get_skill_store),
     queue: ProposalQueue = Depends(get_proposal_queue),
 ) -> dict:
-    skill = _find_skill(store, skill_id)
+    skill = _find_skill(store, skill_id, products=_accessible_products(request, registry))
     if skill is None:
         raise HTTPException(status_code=404, detail="skill not found")
     assert_product_access(request, registry, skill.product)
@@ -81,7 +104,7 @@ async def get_skill_rejections(
     store: SkillStore = Depends(get_skill_store),
     queue: ProposalQueue = Depends(get_proposal_queue),
 ) -> dict:
-    skill = _find_skill(store, skill_id)
+    skill = _find_skill(store, skill_id, products=_accessible_products(request, registry))
     if skill is None:
         raise HTTPException(status_code=404, detail="skill not found")
     assert_product_access(request, registry, skill.product)
@@ -98,7 +121,7 @@ async def get_skill_council_history(
     store: SkillStore = Depends(get_skill_store),
     queue: ProposalQueue = Depends(get_proposal_queue),
 ) -> dict:
-    skill = _find_skill(store, skill_id)
+    skill = _find_skill(store, skill_id, products=_accessible_products(request, registry))
     if skill is None:
         raise HTTPException(status_code=404, detail="skill not found")
     assert_product_access(request, registry, skill.product)
@@ -115,7 +138,7 @@ async def get_skill_quality(
     store: SkillStore = Depends(get_skill_store),
     queue: ProposalQueue = Depends(get_proposal_queue),
 ) -> dict:
-    skill = _find_skill(store, skill_id)
+    skill = _find_skill(store, skill_id, products=_accessible_products(request, registry))
     if skill is None:
         raise HTTPException(status_code=404, detail="skill not found")
     assert_product_access(request, registry, skill.product)
@@ -147,7 +170,7 @@ async def get_skill(
     registry: Registry = Depends(get_registry),
     store: SkillStore = Depends(get_skill_store),
 ) -> dict:
-    skill = _find_skill(store, skill_id)
+    skill = _find_skill(store, skill_id, products=_accessible_products(request, registry))
     if skill is None:
         raise HTTPException(status_code=404, detail="skill not found")
     assert_product_access(request, registry, skill.product)

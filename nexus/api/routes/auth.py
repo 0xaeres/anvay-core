@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
@@ -19,7 +19,6 @@ from nexus.auth.store import CSRF_COOKIE, SESSION_COOKIE, SESSION_TTL_DAYS, Auth
 from nexus.registry import Registry
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-_RATE_LIMITS: dict[str, list[datetime]] = {}
 
 
 class LoginRequest(BaseModel):
@@ -33,13 +32,15 @@ class LoginRequest(BaseModel):
 
 
 class AccessRequestBody(BaseModel):
-    email: str
+    email: str | None = None
     name: str = ""
     reason: str = ""
 
     @field_validator("email")
     @classmethod
-    def _email(cls, value: str) -> str:
+    def _email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return _valid_email(value)
 
 
@@ -57,7 +58,15 @@ async def login(
 ) -> dict:
     if auth_mode() == "auth0":
         raise HTTPException(status_code=404, detail="local login disabled")
-    _rate_limit(_client_key(request, "login"), limit=8, window_s=300)
+    try:
+        store.check_rate_limit(
+            bucket="login",
+            subject=_client_key(request, "login"),
+            limit=8,
+            window_s=300,
+        )
+    except AuthError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
     try:
         result = store.login(email=str(body.email), password=body.password)
     except AuthError as e:
@@ -117,6 +126,9 @@ async def request_access(
     body: AccessRequestBody,
     store: AuthStore = Depends(get_auth_store),
 ) -> dict:
+    requester = getattr(request.state, "user", None)
+    if requester is None and not body.email:
+        raise HTTPException(status_code=422, detail="email is required")
     try:
         store.check_rate_limit(
             bucket="access_request",
@@ -126,7 +138,6 @@ async def request_access(
         )
     except AuthError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
-    requester = getattr(request.state, "user", None)
     email = requester.get("email") if requester else str(body.email)
     name = requester.get("name") if requester else body.name
     req = store.request_access(
@@ -218,16 +229,5 @@ def _valid_email(value: str) -> str:
 
 
 def _client_key(request: Request, bucket: str) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
-    host = forwarded or (request.client.host if request.client else "unknown")
+    host = request.client.host if request.client else "unknown"
     return f"{bucket}:{host}"
-
-
-def _rate_limit(key: str, *, limit: int, window_s: int) -> None:
-    now = datetime.now(UTC)
-    cutoff = now - timedelta(seconds=window_s)
-    hits = [ts for ts in _RATE_LIMITS.get(key, []) if ts > cutoff]
-    if len(hits) >= limit:
-        raise HTTPException(status_code=429, detail="rate limit exceeded")
-    hits.append(now)
-    _RATE_LIMITS[key] = hits

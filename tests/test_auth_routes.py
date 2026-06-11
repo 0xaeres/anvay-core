@@ -89,3 +89,17 @@ def test_access_request_public_when_auth_enabled(tmp_path: Path, monkeypatch) ->
         assert store.list_access_requests(status="pending")[0]["email"] == "dev@example.com"
     finally:
         app.dependency_overrides.pop(get_auth_store, None)
+
+
+def test_access_request_requires_email_for_anonymous(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
+    monkeypatch.setattr(api_app, "get_auth_store", lambda: store)
+    app.dependency_overrides[get_auth_store] = lambda: store
+    try:
+        client = TestClient(app, base_url="https://testserver")
+        res = client.post("/auth/request-access", json={})
+    finally:
+        app.dependency_overrides.pop(get_auth_store, None)
+
+    assert res.status_code == 422

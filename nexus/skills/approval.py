@@ -32,6 +32,10 @@ class ApprovalError(RuntimeError):
     pass
 
 
+class ApprovalPublishError(ApprovalError):
+    pass
+
+
 async def approve_proposal(
     *,
     proposal_id: str,
@@ -57,12 +61,12 @@ async def approve_proposal(
     path = store.save(skill)
     log.info("approval: wrote %s", path)
 
-    pushed = commit_and_push(
+    publish = commit_and_push(
         store.root,
         message=f"skill: {skill.name} approved by {actor}",
         push=True,
     )
-    if not pushed:
+    if not publish.committed or not publish.pushed:
         if previous is None:
             path.unlink(missing_ok=True)
             if path.name == "SKILL.md":
@@ -70,9 +74,10 @@ async def approve_proposal(
                     path.parent.rmdir()
         else:
             path.write_text(previous, encoding="utf-8")
-        raise ApprovalError(
+        detail = f": {publish.error}" if publish.error else ""
+        raise ApprovalPublishError(
             "skill file was written, but Git commit/push did not complete; "
-            "proposal remains pending"
+            f"proposal remains pending{detail}"
         )
 
     chunks_indexed = await _embed_skill_body(
@@ -80,10 +85,11 @@ async def approve_proposal(
     )
     index_status = "indexed" if chunks_indexed > 0 else "pending"
 
+    relative_path = rel
     queue.record_publish_result(
         proposal_id,
-        skill_path=str(path),
-        git_committed=pushed,
+        skill_path=relative_path,
+        git_committed=publish.committed,
         skill_index_status=index_status,
         skill_index_error=(
             "" if chunks_indexed > 0 else "approved skill was not embedded; retry indexing"
@@ -102,8 +108,8 @@ async def approve_proposal(
     return {
         "ok": True,
         "skill_id": skill.id,
-        "path": str(path),
-        "git_committed": pushed,
+        "path": relative_path,
+        "git_committed": publish.committed,
         "chunks_indexed": chunks_indexed,
         "skill_index_status": index_status,
     }

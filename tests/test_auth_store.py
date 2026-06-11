@@ -50,6 +50,7 @@ def test_access_request_approval_creates_approved_user(tmp_path: Path) -> None:
         store.decide_access_request(
             req["id"], status="approved", decided_by="owner@example.com"
         )
+    assert store.get_access_request(req["id"])["status"] == "pending"
 
     store.decide_access_request(
         req["id"],
@@ -62,3 +63,24 @@ def test_access_request_approval_creates_approved_user(tmp_path: Path) -> None:
     assert user is not None
     assert user["status"] == "approved"
     assert user["role"] == "viewer"
+
+
+def test_existing_auth0_user_matching_bootstrap_email_is_promoted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL", "owner@example.com")
+    store = AuthStore(tmp_path / "auth.db", secret_key="session-secret")
+    store.create_user(
+        email="owner@example.com",
+        password="correct horse battery staple",
+        role="viewer",
+        status="pending",
+    )
+
+    user = store.get_or_create_auth0_user(
+        auth_sub="auth0|owner", email="owner@example.com", name="Owner"
+    )
+
+    assert user["role"] == "admin"
+    assert user["status"] == "approved"
+    assert user["auth_sub"] == "auth0|owner"

@@ -27,6 +27,7 @@ from nexus.api.routes import (
     skills,
     sources,
 )
+from nexus.auth.auth0 import Auth0Error
 from nexus.auth.store import CSRF_COOKIE, SESSION_COOKIE
 from nexus.ingest.enrichment_worker import EnrichmentWorker
 from nexus.logging_config import setup_logging
@@ -122,7 +123,7 @@ async def security_and_auth(request: Request, call_next):
         _set_security_headers(response, request_id)
         return response
 
-    auth_response = _authenticate_request(request)
+    auth_response = await _authenticate_request(request)
     if auth_response is not None:
         _set_security_headers(auth_response, request_id)
         return auth_response
@@ -142,7 +143,7 @@ async def security_and_auth(request: Request, call_next):
     return response
 
 
-def _authenticate_request(request: Request) -> JSONResponse | None:
+async def _authenticate_request(request: Request) -> JSONResponse | None:
     if not auth_enabled() or _is_public_path(request.url.path):
         return None
 
@@ -166,15 +167,15 @@ def _authenticate_request(request: Request) -> JSONResponse | None:
             return JSONResponse({"detail": "authentication required"}, status_code=401)
         token = bearer.removeprefix(prefix)
         try:
-            claims = get_auth0_verifier().verify(token)
-            user = get_auth_store().get_or_create_auth0_user(
-                auth_sub=claims.sub,
-                email=claims.email,
-                name=claims.name,
-            )
-        except Exception:
+            claims = await asyncio.to_thread(get_auth0_verifier().verify, token)
+        except Auth0Error:
             log.exception("auth0 token validation failed")
             return JSONResponse({"detail": "invalid bearer token"}, status_code=401)
+        user = get_auth_store().get_or_create_auth0_user(
+            auth_sub=claims.sub,
+            email=claims.email,
+            name=claims.name,
+        )
         request.state.user = user
         request.state.auth_via = "auth0"
         request.state.auth0_claims = claims.raw
@@ -243,8 +244,10 @@ def _validate_production_config() -> None:
     ]
     if auth_mode() == "auth0":
         required_env.extend(["AUTH0_DOMAIN", "AUTH0_AUDIENCE"])
-    elif not os.getenv("NEXUS_SECRET_KEY"):
-        required_env.append("NEXUS_SECRET_KEY")
+    else:
+        required_env.append("NEXUS_BOOTSTRAP_ADMIN_PASSWORD")
+        if not os.getenv("NEXUS_SECRET_KEY"):
+            required_env.append("NEXUS_SECRET_KEY")
     missing = [name for name in required_env if not os.getenv(name)]
     cfg = get_config_dep()
     if not cfg.skills_repo:
