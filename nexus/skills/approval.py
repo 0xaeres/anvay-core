@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import textwrap
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -50,6 +51,9 @@ async def approve_proposal(
 
     skill = _row_to_skill(row, actor=actor)
     store = SkillStore(_resolve_root(config.hierarchy_root))
+    rel = SkillStore.relative_path_for(skill)
+    target = store.root / rel
+    previous = target.read_text(encoding="utf-8") if target.exists() else None
     path = store.save(skill)
     log.info("approval: wrote %s", path)
 
@@ -59,6 +63,13 @@ async def approve_proposal(
         push=True,
     )
     if not pushed:
+        if previous is None:
+            path.unlink(missing_ok=True)
+            if path.name == "SKILL.md":
+                with suppress(OSError):
+                    path.parent.rmdir()
+        else:
+            path.write_text(previous, encoding="utf-8")
         raise ApprovalError(
             "skill file was written, but Git commit/push did not complete; "
             "proposal remains pending"

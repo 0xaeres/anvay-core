@@ -104,6 +104,18 @@ async def kick_off(
 ) -> str:
     """Schedule a council run as an asyncio task. Returns the session_id."""
     sid = session_id or make_session_id()
+    queue.record_session(
+        session_id=sid,
+        product_id=product_id,
+        topic=topic,
+        proposal_id=None,
+        proposal_ids=[],
+        deliberation=[],
+        costs=[],
+        started_at=datetime.now(UTC).isoformat(),
+        completed_at="",
+        status="running",
+    )
     await HUB.start(sid)
     task = asyncio.create_task(
         _run_session(

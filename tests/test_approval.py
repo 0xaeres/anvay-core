@@ -177,6 +177,7 @@ def test_approve_fails_without_git_commit_and_keeps_pending(tmp_path: Path) -> N
     row = queue.get(p.id)
     assert row is not None
     assert row["status"] == "pending"
+    assert not (Path(cfg.hierarchy_root) / "forge" / "demo-skill" / "SKILL.md").exists()
 
 
 def test_wrap_markdown_body_wraps_prose_but_preserves_code_fences() -> None:

@@ -32,7 +32,9 @@ _HASHER = PasswordHasher(
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS auth_users (
     id              TEXT PRIMARY KEY,
+    auth_sub        TEXT,
     email           TEXT NOT NULL UNIQUE,
+    name            TEXT NOT NULL DEFAULT '',
     password_hash   TEXT NOT NULL,
     role            TEXT NOT NULL DEFAULT 'viewer',
     status          TEXT NOT NULL DEFAULT 'approved',
@@ -56,7 +58,6 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_token
     ON auth_sessions(token_hash);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user
     ON auth_sessions(user_id);
-
 CREATE TABLE IF NOT EXISTS auth_access_requests (
     id              TEXT PRIMARY KEY,
     email           TEXT NOT NULL,
@@ -70,6 +71,15 @@ CREATE TABLE IF NOT EXISTS auth_access_requests (
 
 CREATE INDEX IF NOT EXISTS idx_auth_access_requests_status
     ON auth_access_requests(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
+    bucket      TEXT NOT NULL,
+    subject     TEXT NOT NULL,
+    ts          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_rate_limits_bucket
+    ON auth_rate_limits(bucket, subject, ts);
 """
 
 
@@ -92,6 +102,7 @@ class AuthStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
+            _ensure_columns(conn)
         self.bootstrap_admin_from_env()
 
     @contextmanager
@@ -121,6 +132,7 @@ class AuthStore:
         *,
         email: str,
         password: str,
+        name: str = "",
         role: str = "viewer",
         status: str = "approved",
     ) -> dict:
@@ -134,11 +146,12 @@ class AuthStore:
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO auth_users
-                   (id, email, password_hash, role, status, created_at, approved_at)
-                   VALUES (?,?,?,?,?,?,?)""",
+                   (id, email, name, password_hash, role, status, created_at, approved_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
                 (
                     user_id,
                     email,
+                    name.strip(),
                     hash_password(password),
                     role,
                     status,
@@ -151,6 +164,61 @@ class AuthStore:
             raise AuthError("failed to create user")
         return user
 
+    def get_or_create_auth0_user(
+        self, *, auth_sub: str, email: str, name: str = ""
+    ) -> dict:
+        auth_sub = auth_sub.strip()
+        email = _normalize_email(email)
+        name = name.strip()
+        if not auth_sub:
+            raise AuthError("auth_sub is required")
+        by_sub = self.get_user_by_auth_sub(auth_sub)
+        if by_sub:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE auth_users SET email = ?, name = ?, last_login_at = ? WHERE id = ?",
+                    (email, name or by_sub.get("name") or email, _now(), by_sub["id"]),
+                )
+            return self.get_user(by_sub["id"]) or by_sub
+
+        existing = self.get_user_by_email(email)
+        if existing:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE auth_users SET auth_sub = ?, name = ?, last_login_at = ? WHERE id = ?",
+                    (auth_sub, name or existing.get("name") or email, _now(), existing["id"]),
+                )
+            return self.get_user(existing["id"]) or existing
+
+        bootstrap = _normalize_email(os.getenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL") or "")
+        role = "admin" if bootstrap and email == bootstrap else "viewer"
+        status = "approved" if role == "admin" else "pending"
+        now = _now()
+        user_id = secrets.token_urlsafe(16)
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO auth_users
+                   (id, auth_sub, email, name, password_hash, role, status, created_at, approved_at,
+                    last_login_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    user_id,
+                    auth_sub,
+                    email,
+                    name or email,
+                    "",
+                    role,
+                    status,
+                    now,
+                    now if status == "approved" else None,
+                    now,
+                ),
+            )
+        user = self.get_user(user_id)
+        if user is None:
+            raise AuthError("failed to create Auth0 user")
+        return user
+
     def get_user(self, user_id: str) -> dict | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM auth_users WHERE id = ?", (user_id,)).fetchone()
@@ -160,6 +228,13 @@ class AuthStore:
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM auth_users WHERE email = ?", (_normalize_email(email),)
+            ).fetchone()
+        return _row_to_user(row) if row else None
+
+    def get_user_by_auth_sub(self, auth_sub: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM auth_users WHERE auth_sub = ?", (auth_sub,)
             ).fetchone()
         return _row_to_user(row) if row else None
 
@@ -336,6 +411,7 @@ class AuthStore:
         decided_by: str,
         password: str | None = None,
         role: str = "viewer",
+        require_password: bool = True,
     ) -> dict:
         if status not in {"approved", "rejected"}:
             raise AuthError("status must be approved or rejected")
@@ -355,15 +431,40 @@ class AuthStore:
             if existing:
                 self.approve_user(req["email"], role=role)
             else:
-                if not password:
+                if require_password and not password:
                     raise AuthError("password is required to approve a new user")
                 self.create_user(
                     email=req["email"],
-                    password=password,
+                    password=password or secrets.token_urlsafe(24),
+                    name=req.get("name") or "",
                     role=role,
                     status="approved",
                 )
         return self.get_access_request(request_id) or req
+
+    # ------------------------------------------------------------ rate limits
+
+    def check_rate_limit(
+        self, *, bucket: str, subject: str, limit: int, window_s: int
+    ) -> None:
+        now_dt = datetime.now(UTC)
+        cutoff = (now_dt - timedelta(seconds=window_s)).isoformat()
+        now = now_dt.isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "DELETE FROM auth_rate_limits WHERE bucket = ? AND subject = ? AND ts <= ?",
+                (bucket, subject, cutoff),
+            )
+            count = conn.execute(
+                "SELECT COUNT(*) FROM auth_rate_limits WHERE bucket = ? AND subject = ? AND ts > ?",
+                (bucket, subject, cutoff),
+            ).fetchone()[0]
+            if count >= limit:
+                raise AuthError("rate limit exceeded")
+            conn.execute(
+                "INSERT INTO auth_rate_limits (bucket, subject, ts) VALUES (?,?,?)",
+                (bucket, subject, now),
+            )
 
 
 def hash_password(password: str) -> str:
@@ -380,3 +481,15 @@ def _normalize_email(email: str) -> str:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(auth_users)").fetchall()}
+    if "auth_sub" not in cols:
+        conn.execute("ALTER TABLE auth_users ADD COLUMN auth_sub TEXT")
+    if "name" not in cols:
+        conn.execute("ALTER TABLE auth_users ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_auth_sub "
+        "ON auth_users(auth_sub) WHERE auth_sub IS NOT NULL AND auth_sub != ''"
+    )

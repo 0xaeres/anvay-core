@@ -15,7 +15,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from nexus.api.deps import get_auth_store, get_config_dep, get_registry
+from nexus.api.authz import auth_enabled, auth_mode, prod_enabled
+from nexus.api.deps import get_auth0_verifier, get_auth_store, get_config_dep, get_registry
 from nexus.api.routes import (
     auth,
     council,
@@ -80,6 +81,7 @@ async def stop_enrichment_worker() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    _validate_production_config()
     await start_enrichment_worker()
     try:
         yield
@@ -141,7 +143,7 @@ async def security_and_auth(request: Request, call_next):
 
 
 def _authenticate_request(request: Request) -> JSONResponse | None:
-    if not _auth_enabled() or _is_public_path(request.url.path):
+    if not auth_enabled() or _is_public_path(request.url.path):
         return None
 
     bearer = request.headers.get("authorization", "")
@@ -158,6 +160,25 @@ def _authenticate_request(request: Request) -> JSONResponse | None:
             }
             request.state.auth_via = "api_key"
             return None
+
+    if auth_mode() == "auth0":
+        if not bearer.startswith(prefix):
+            return JSONResponse({"detail": "authentication required"}, status_code=401)
+        token = bearer.removeprefix(prefix)
+        try:
+            claims = get_auth0_verifier().verify(token)
+            user = get_auth_store().get_or_create_auth0_user(
+                auth_sub=claims.sub,
+                email=claims.email,
+                name=claims.name,
+            )
+        except Exception:
+            log.exception("auth0 token validation failed")
+            return JSONResponse({"detail": "invalid bearer token"}, status_code=401)
+        request.state.user = user
+        request.state.auth_via = "auth0"
+        request.state.auth0_claims = claims.raw
+        return None
 
     store = get_auth_store()
     session_token = request.cookies.get(SESSION_COOKIE, "")
@@ -184,10 +205,12 @@ def _authenticate_request(request: Request) -> JSONResponse | None:
 
 
 def _auth_enabled() -> bool:
-    return bool(os.getenv("NEXUS_SECRET_KEY"))
+    return auth_enabled()
 
 
 def _is_public_path(path: str) -> bool:
+    if path == "/auth/request-access" and auth_mode() == "auth0":
+        return False
     public = {
         "/health",
         "/auth/login",
@@ -206,6 +229,30 @@ def _set_security_headers(response, request_id: str) -> None:
         "permissions-policy",
         "camera=(), microphone=(), geolocation=()",
     )
+
+
+def _validate_production_config() -> None:
+    if not prod_enabled():
+        return
+    required_env = [
+        "NEXUS_AUTH_MODE",
+        "NEXUS_TOKEN_KEY",
+        "NEXUS_BOOTSTRAP_ADMIN_EMAIL",
+        "NEXUS_ALLOWED_ORIGINS",
+        "NEXUS_API_DOMAIN",
+    ]
+    if auth_mode() == "auth0":
+        required_env.extend(["AUTH0_DOMAIN", "AUTH0_AUDIENCE"])
+    elif not os.getenv("NEXUS_SECRET_KEY"):
+        required_env.append("NEXUS_SECRET_KEY")
+    missing = [name for name in required_env if not os.getenv(name)]
+    cfg = get_config_dep()
+    if not cfg.skills_repo:
+        missing.append("skills_repo/NEXUS_SKILLS_REPO")
+    if missing:
+        raise RuntimeError(
+            "production config missing required values: " + ", ".join(sorted(missing))
+        )
 
 
 @app.get("/health", tags=["meta"])

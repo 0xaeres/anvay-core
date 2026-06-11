@@ -6,6 +6,14 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
+from nexus.api.authz import (
+    assert_product_access,
+    filter_products_for_user,
+    product_permissions,
+    public_user,
+    rate_limit,
+    require_user,
+)
 from nexus.api.deps import get_proposal_queue, get_registry, get_skill_store
 from nexus.council.queue import ProposalQueue
 from nexus.registry import Registry
@@ -18,18 +26,12 @@ router = APIRouter(tags=["products"])
 async def me(request: Request, registry: Registry = Depends(get_registry)) -> dict:
     auth_user = getattr(request.state, "user", None)
     if auth_user:
-        auth_user.setdefault("name", auth_user.get("email", ""))
-        auth_user.setdefault("products", [])
-        role = auth_user.get("role")
+        memberships = registry.list_product_memberships(auth_user["id"])
+        role = next(iter(memberships.values()), None)
         return {
-            "user": auth_user,
-            "permissions": {
-                "canManageSources": role in {"admin", "editor"},
-                "canRunCouncil": role in {"admin", "editor"},
-                "canOnboard": role in {"admin", "editor"},
-                "isOrgAdmin": role == "admin",
-                "settingsReadOnly": role != "admin",
-            },
+            "user": public_user(auth_user, registry),
+            "permissions": product_permissions(auth_user, role),
+            "memberships": memberships,
         }
 
     # Single dev user until deployed auth is enabled.
@@ -50,11 +52,12 @@ async def me(request: Request, registry: Registry = Depends(get_registry)) -> di
 
 @router.get("/products")
 async def list_products(
+    request: Request,
     registry: Registry = Depends(get_registry),
     queue: ProposalQueue = Depends(get_proposal_queue),
     store: SkillStore = Depends(get_skill_store),
 ) -> dict:
-    products = registry.list_products()
+    products = filter_products_for_user(request, registry, registry.list_products())
     enriched: list[dict] = []
     for p in products:
         sessions = queue.list_sessions(product_id=p["id"])
@@ -72,8 +75,11 @@ async def list_products(
 
 @router.get("/products/{product_id}")
 async def get_product(
-    product_id: str, registry: Registry = Depends(get_registry)
+    product_id: str,
+    request: Request,
+    registry: Registry = Depends(get_registry),
 ) -> dict:
+    assert_product_access(request, registry, product_id)
     p = registry.get_product(product_id)
     if not p:
         raise HTTPException(status_code=404, detail="product not found")
@@ -87,6 +93,7 @@ _TERMINAL_SESSION_STATUSES = {"completed", "failed", "stopped"}
 @router.get("/products/{product_id}/status")
 async def get_product_status(
     product_id: str,
+    request: Request,
     registry: Registry = Depends(get_registry),
     queue: ProposalQueue = Depends(get_proposal_queue),
     store: SkillStore = Depends(get_skill_store),
@@ -99,6 +106,7 @@ async def get_product_status(
     """
     if not registry.get_product(product_id):
         raise HTTPException(status_code=404, detail="product not found")
+    assert_product_access(request, registry, product_id)
 
     sources = registry.list_sources(product_id)
     has_sources = bool(sources)
@@ -139,12 +147,15 @@ async def get_product_status(
 
 @router.post("/products")
 async def create_product(
+    request: Request,
     id: str = Body(..., embed=True),
     name: str = Body(..., embed=True),
     tagline: str = Body("", embed=True),
     owner: dict = Body(default_factory=dict, embed=True),
     registry: Registry = Depends(get_registry),
 ) -> dict:
+    user = require_user(request)
+    rate_limit(request, bucket="product_create", limit=20, window_s=86400)
     if not id.replace("-", "").replace("_", "").isalnum():
         raise HTTPException(status_code=400, detail="product id must be alphanumeric / - / _")
     existing = registry.get_product(id)
@@ -157,4 +168,6 @@ async def create_product(
         "owner": owner,
         "onboardedAt": datetime.now(UTC).isoformat(),
     })
+    if user.get("role") != "admin":
+        registry.grant_product_role(id, user["id"], "owner")
     return registry.get_product(id)

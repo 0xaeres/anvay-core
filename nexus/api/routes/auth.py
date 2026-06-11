@@ -7,8 +7,16 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
-from nexus.api.deps import get_auth_store
+from nexus.api.authz import (
+    auth_mode,
+    current_user,
+    product_permissions,
+    public_user,
+    require_admin,
+)
+from nexus.api.deps import get_auth_store, get_registry
 from nexus.auth.store import CSRF_COOKIE, SESSION_COOKIE, SESSION_TTL_DAYS, AuthError, AuthStore
+from nexus.registry import Registry
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 _RATE_LIMITS: dict[str, list[datetime]] = {}
@@ -40,20 +48,6 @@ class DecideAccessBody(BaseModel):
     password: str | None = Field(None, min_length=12)
 
 
-def current_user(request: Request) -> dict:
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="authentication required")
-    return user
-
-
-def require_admin(request: Request) -> dict:
-    user = current_user(request)
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="admin required")
-    return user
-
-
 @router.post("/login")
 async def login(
     request: Request,
@@ -61,6 +55,8 @@ async def login(
     response: Response,
     store: AuthStore = Depends(get_auth_store),
 ) -> dict:
+    if auth_mode() == "auth0":
+        raise HTTPException(status_code=404, detail="local login disabled")
     _rate_limit(_client_key(request, "login"), limit=8, window_s=300)
     try:
         result = store.login(email=str(body.email), password=body.password)
@@ -101,8 +97,18 @@ async def logout(
 
 
 @router.get("/me")
-async def me(request: Request) -> dict:
-    return {"user": _public_user(current_user(request))}
+async def me(
+    request: Request,
+    registry: Registry = Depends(get_registry),
+) -> dict:
+    user = current_user(request)
+    role_by_product = registry.list_product_memberships(user["id"]) if user.get("id") else {}
+    current_role = next(iter(role_by_product.values()), None)
+    return {
+        "user": public_user(user, registry),
+        "permissions": product_permissions(user, current_role),
+        "memberships": role_by_product,
+    }
 
 
 @router.post("/request-access")
@@ -111,9 +117,20 @@ async def request_access(
     body: AccessRequestBody,
     store: AuthStore = Depends(get_auth_store),
 ) -> dict:
-    _rate_limit(_client_key(request, "access"), limit=5, window_s=3600)
+    try:
+        store.check_rate_limit(
+            bucket="access_request",
+            subject=_client_key(request, "access"),
+            limit=5,
+            window_s=3600,
+        )
+    except AuthError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+    requester = getattr(request.state, "user", None)
+    email = requester.get("email") if requester else str(body.email)
+    name = requester.get("name") if requester else body.name
     req = store.request_access(
-        email=str(body.email), name=body.name, reason=body.reason
+        email=str(email), name=str(name or ""), reason=body.reason
     )
     return {"ok": True, "request": req}
 
@@ -143,6 +160,7 @@ async def approve_access_request(
             decided_by=admin["email"],
             password=body.password,
             role=body.role,
+            require_password=auth_mode() != "auth0",
         )
     except AuthError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -189,14 +207,7 @@ async def revoke_user(
 
 
 def _public_user(user: dict) -> dict:
-    out = {
-        k: v
-        for k, v in user.items()
-        if k not in {"password_hash"}
-    }
-    out.setdefault("name", out.get("email", ""))
-    out.setdefault("products", [])
-    return out
+    return public_user(user)
 
 
 def _valid_email(value: str) -> str:
