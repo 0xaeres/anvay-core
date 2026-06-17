@@ -298,6 +298,7 @@ uv run pytest -q
 Retrieval/eval checks are opt-in:
 
 ```bash
+uv run nexus eval run --suite retrieval
 uv run pytest -m eval
 uv run python -m evals.run_ragas
 uv run python -m evals.run_code_eval
@@ -306,6 +307,7 @@ make test-live-e2e
 
 Run retrieval evals after changes to chunking, embedding, optional enrichment,
 hybrid search, reranking, or repo map generation. See
+[evals/README.md](./evals/README.md) for eval harness details and
 [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor workflow.
 
 ## Documentation Map

@@ -771,13 +771,25 @@ background enrichment when enabled.
 
 ## 10. Eval Strategy
 
-Nexus has three eval surfaces:
+Nexus has four eval surfaces:
 
 | Surface | Runner | Scope | CI status |
 |---|---|---|---|
+| Unified eval harness | `nexus eval run --suite all` / `python -m evals.harness` | Runs suite defaults, optionally ingests fixtures, writes JSON + Markdown artifacts | CI uses retrieval on PRs; RAG/code on main/scheduled/manual when credentials exist |
 | Retrieval quality | `pytest -m eval` / `python -m tests.eval.harness` | Production retrieval over `tests/eval/queries.json`; includes local, global, relational, and negative questions | Opt-in; skips when Qdrant/embedder/reranker are absent |
-| RAGAS-style golden eval | `python -m evals.run_ragas` | Golden skill queries over `evals/golden.jsonl`; LLM-judged faithfulness and answer quality | CI `ragas-regression` job when `DEEPINFRA_API_KEY` is configured |
-| Code retrieval eval | `python -m evals.run_code_eval` | Golden-set nDCG/recall and pairwise answer preference | Manual, not wired into CI |
+| RAGAS-style golden eval | `python -m evals.run_ragas` | Golden skill queries over `evals/golden.jsonl`; LLM-judged faithfulness and answer quality | CI via unified harness on main/scheduled/manual when `DEEPINFRA_API_KEY` is configured |
+| Code retrieval eval | `python -m evals.run_code_eval` | Golden-set nDCG/recall and pairwise answer preference | CI via unified harness on main/scheduled/manual when `DEEPINFRA_API_KEY` is configured |
+
+The preferred entrypoint is:
+
+```bash
+uv run nexus eval run --suite retrieval
+uv run nexus eval run --suite rag,code --limit 10
+```
+
+Each run writes `artifacts/evals/<run_id>/summary.{json,md}` plus per-suite
+JSON. Suite defaults ingest the Nexus repo for retrieval and the Forge seed
+skills fixture for RAG/code unless `--no-ingest-fixture` is passed.
 
 ### Retrieval Eval (`tests/eval/`)
 
