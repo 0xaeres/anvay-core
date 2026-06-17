@@ -65,6 +65,26 @@ def test_access_request_approval_creates_approved_user(tmp_path: Path) -> None:
     assert user["role"] == "viewer"
 
 
+def test_auth_store_migrates_legacy_user_roles(tmp_path: Path) -> None:
+    store = AuthStore(tmp_path / "auth.db", secret_key="session-secret")
+    user = store.create_user(
+        email="legacy@example.com",
+        password="correct horse battery staple",
+        role="viewer",
+    )
+    with sqlite3.connect(tmp_path / "auth.db") as conn:
+        conn.execute("UPDATE auth_users SET role = 'org_admin' WHERE id = ?", (user["id"],))
+
+    migrated = AuthStore(tmp_path / "auth.db", secret_key="session-secret")
+    loaded = migrated.get_user(user["id"])
+
+    assert loaded is not None
+    assert loaded["role"] == "admin"
+    with sqlite3.connect(tmp_path / "auth.db") as conn:
+        role = conn.execute("SELECT role FROM auth_users WHERE id = ?", (user["id"],)).fetchone()[0]
+    assert role == "admin"
+
+
 def test_bootstrap_admin_repairs_existing_matching_user(
     tmp_path: Path, monkeypatch
 ) -> None:

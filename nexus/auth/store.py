@@ -20,6 +20,11 @@ SESSION_COOKIE = "nexus_session"
 CSRF_COOKIE = "nexus_csrf"
 SESSION_TTL_DAYS = 14
 ROLES = {"admin", "editor", "viewer"}
+LEGACY_ROLE_MAP = {
+    "org_admin": "admin",
+    "product_admin": "editor",
+    "sme": "viewer",
+}
 
 _HASHER = PasswordHasher(
     time_cost=3,
@@ -103,6 +108,7 @@ class AuthStore:
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
             _ensure_columns(conn)
+            _migrate_legacy_roles(conn)
         self.bootstrap_admin_from_env()
 
     @contextmanager
@@ -167,6 +173,7 @@ class AuthStore:
         status: str = "approved",
     ) -> dict:
         email = _normalize_email(email)
+        role = normalize_user_role(role)
         if role not in ROLES:
             raise AuthError(f"unsupported role: {role}")
         if len(password) < 12:
@@ -213,6 +220,7 @@ class AuthStore:
 
     def approve_user(self, email: str, *, role: str = "viewer") -> dict:
         email = _normalize_email(email)
+        role = normalize_user_role(role)
         if role not in ROLES:
             raise AuthError(f"unsupported role: {role}")
         now = _now()
@@ -387,6 +395,7 @@ class AuthStore:
         if not req:
             raise AuthError("request not found")
         now = _now()
+        role = normalize_user_role(role)
         if role not in ROLES:
             raise AuthError(f"unsupported role: {role}")
         with self._conn() as conn:
@@ -469,8 +478,14 @@ def hash_password(password: str) -> str:
     return _HASHER.hash(password)
 
 
+def normalize_user_role(role: str) -> str:
+    return LEGACY_ROLE_MAP.get(role, role)
+
+
 def _row_to_user(row: sqlite3.Row) -> dict:
-    return dict(row)
+    user = dict(row)
+    user["role"] = normalize_user_role(str(user.get("role") or "viewer"))
+    return user
 
 
 def _normalize_email(email: str) -> str:
@@ -491,3 +506,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_auth_sub "
         "ON auth_users(auth_sub) WHERE auth_sub IS NOT NULL AND auth_sub != ''"
     )
+
+
+def _migrate_legacy_roles(conn: sqlite3.Connection) -> None:
+    for old, new in LEGACY_ROLE_MAP.items():
+        conn.execute("UPDATE auth_users SET role = ? WHERE role = ?", (new, old))

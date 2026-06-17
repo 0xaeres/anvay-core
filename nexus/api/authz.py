@@ -70,16 +70,16 @@ def public_user(user: dict, registry: Registry | None = None) -> dict:
 
 
 def product_permissions(user: dict, product_role: str | None = None) -> dict:
-    org_admin = user.get("role") == "admin"
-    can_write = org_admin or product_role in WRITE_ROLES
+    is_admin = user.get("role") == "admin"
+    can_write = is_admin or product_role in WRITE_ROLES
     can_read = can_write or product_role == "viewer"
     return {
         "canManageSources": can_write,
         "canRunCouncil": can_write,
         "canOnboard": user.get("status") == "approved",
         "canReadProduct": can_read,
-        "isOrgAdmin": org_admin,
-        "settingsReadOnly": not org_admin,
+        "isOrgAdmin": is_admin,
+        "settingsReadOnly": not is_admin,
     }
 
 
