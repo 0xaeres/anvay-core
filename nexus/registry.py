@@ -131,6 +131,10 @@ CREATE TABLE IF NOT EXISTS source_resources (
     embedding_version TEXT NOT NULL DEFAULT '',
     enrichment_version TEXT NOT NULL DEFAULT '',
     enrichment_status TEXT NOT NULL DEFAULT '',
+    graph_extraction_version TEXT NOT NULL DEFAULT '',
+    graph_status TEXT NOT NULL DEFAULT '',
+    graph_fact_ids_js TEXT NOT NULL DEFAULT '[]',
+    graph_indexed_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (product_id, source_key, resource_uri)
 );
 
@@ -270,6 +274,26 @@ def _ensure_registry_columns(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE source_resources "
             "ADD COLUMN enrichment_status TEXT NOT NULL DEFAULT ''"
+        )
+    if "graph_extraction_version" not in existing:
+        conn.execute(
+            "ALTER TABLE source_resources "
+            "ADD COLUMN graph_extraction_version TEXT NOT NULL DEFAULT ''"
+        )
+    if "graph_status" not in existing:
+        conn.execute(
+            "ALTER TABLE source_resources "
+            "ADD COLUMN graph_status TEXT NOT NULL DEFAULT ''"
+        )
+    if "graph_fact_ids_js" not in existing:
+        conn.execute(
+            "ALTER TABLE source_resources "
+            "ADD COLUMN graph_fact_ids_js TEXT NOT NULL DEFAULT '[]'"
+        )
+    if "graph_indexed_at" not in existing:
+        conn.execute(
+            "ALTER TABLE source_resources "
+            "ADD COLUMN graph_indexed_at TEXT NOT NULL DEFAULT ''"
         )
 
 
@@ -468,6 +492,10 @@ def _row_to_resource_manifest(row: sqlite3.Row) -> dict:
     d["embeddingVersion"] = d.pop("embedding_version")
     d["enrichmentVersion"] = d.pop("enrichment_version", "")
     d["enrichmentStatus"] = d.pop("enrichment_status", "")
+    d["graphExtractionVersion"] = d.pop("graph_extraction_version", "")
+    d["graphStatus"] = d.pop("graph_status", "")
+    d["graphFactIds"] = json.loads(d.pop("graph_fact_ids_js", None) or "[]")
+    d["graphIndexedAt"] = d.pop("graph_indexed_at", "")
     d["contentHash"] = d.pop("content_hash")
     d["resourceUri"] = d.pop("resource_uri")
     d["sourceKey"] = d.pop("source_key")
@@ -505,8 +533,9 @@ def add_manifest_methods(cls):
                 """INSERT OR REPLACE INTO source_resources
                    (product_id, source_key, resource_uri, content_hash, mime, size_bytes,
                     last_seen_sync, chunk_ids_js, indexed_at, embedding_version,
-                    enrichment_version, enrichment_status)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    enrichment_version, enrichment_status, graph_extraction_version,
+                    graph_status, graph_fact_ids_js, graph_indexed_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     row["product"],
                     row["sourceKey"],
@@ -520,6 +549,10 @@ def add_manifest_methods(cls):
                     row.get("embeddingVersion", ""),
                     row.get("enrichmentVersion", ""),
                     row.get("enrichmentStatus", ""),
+                    row.get("graphExtractionVersion", ""),
+                    row.get("graphStatus", ""),
+                    json.dumps(row.get("graphFactIds", [])),
+                    row.get("graphIndexedAt", ""),
                 ),
             )
 

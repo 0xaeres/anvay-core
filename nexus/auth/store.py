@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 SESSION_COOKIE = "nexus_session"
 CSRF_COOKIE = "nexus_csrf"
@@ -123,9 +123,39 @@ class AuthStore:
         password = os.getenv("NEXUS_BOOTSTRAP_ADMIN_PASSWORD") or ""
         if not email or not password:
             return
-        if self.get_user_by_email(email):
+        existing = self.get_user_by_email(email)
+        if existing:
+            now = _now()
+            with self._conn() as conn:
+                conn.execute(
+                    """UPDATE auth_users
+                       SET password_hash = ?,
+                           role = 'admin',
+                           status = 'approved',
+                           approved_at = COALESCE(approved_at, ?),
+                           revoked_at = NULL
+                       WHERE email = ?""",
+                    (hash_password(password), now, email),
+                )
             return
-        self.create_user(email=email, password=password, role="admin", status="approved")
+        now = _now()
+        user_id = secrets.token_urlsafe(16)
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO auth_users
+                   (id, email, name, password_hash, role, status, created_at, approved_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    user_id,
+                    email,
+                    "",
+                    hash_password(password),
+                    "admin",
+                    "approved",
+                    now,
+                    now,
+                ),
+            )
 
     def create_user(
         self,
@@ -164,82 +194,6 @@ class AuthStore:
             raise AuthError("failed to create user")
         return user
 
-    def get_or_create_auth0_user(
-        self, *, auth_sub: str, email: str, name: str = ""
-    ) -> dict:
-        auth_sub = auth_sub.strip()
-        email = _normalize_email(email)
-        name = name.strip()
-        if not auth_sub:
-            raise AuthError("auth_sub is required")
-        by_sub = self.get_user_by_auth_sub(auth_sub)
-        if by_sub:
-            with self._conn() as conn:
-                conn.execute(
-                    "UPDATE auth_users SET email = ?, name = ?, last_login_at = ? WHERE id = ?",
-                    (email, name or by_sub.get("name") or email, _now(), by_sub["id"]),
-                )
-            return self.get_user(by_sub["id"]) or by_sub
-
-        existing = self.get_user_by_email(email)
-        if existing:
-            bootstrap = _normalize_email(os.getenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL") or "")
-            promote = bool(bootstrap and email == bootstrap)
-            now = _now()
-            with self._conn() as conn:
-                conn.execute(
-                    """UPDATE auth_users
-                       SET auth_sub = ?,
-                           name = ?,
-                           last_login_at = ?,
-                           role = CASE WHEN ? THEN 'admin' ELSE role END,
-                           status = CASE WHEN ? THEN 'approved' ELSE status END,
-                           approved_at = CASE WHEN ? THEN ? ELSE approved_at END,
-                           revoked_at = CASE WHEN ? THEN NULL ELSE revoked_at END
-                       WHERE id = ?""",
-                    (
-                        auth_sub,
-                        name or existing.get("name") or email,
-                        now,
-                        promote,
-                        promote,
-                        promote,
-                        now,
-                        promote,
-                        existing["id"],
-                    ),
-                )
-            return self.get_user(existing["id"]) or existing
-
-        bootstrap = _normalize_email(os.getenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL") or "")
-        role = "admin" if bootstrap and email == bootstrap else "viewer"
-        status = "approved" if role == "admin" else "pending"
-        now = _now()
-        user_id = secrets.token_urlsafe(16)
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO auth_users
-                   (id, auth_sub, email, name, password_hash, role, status, created_at, approved_at,
-                    last_login_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    user_id,
-                    auth_sub,
-                    email,
-                    name or email,
-                    "",
-                    role,
-                    status,
-                    now,
-                    now if status == "approved" else None,
-                    now,
-                ),
-            )
-        user = self.get_user(user_id)
-        if user is None:
-            raise AuthError("failed to create Auth0 user")
-        return user
-
     def get_user(self, user_id: str) -> dict | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM auth_users WHERE id = ?", (user_id,)).fetchone()
@@ -249,13 +203,6 @@ class AuthStore:
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM auth_users WHERE email = ?", (_normalize_email(email),)
-            ).fetchone()
-        return _row_to_user(row) if row else None
-
-    def get_user_by_auth_sub(self, auth_sub: str) -> dict | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM auth_users WHERE auth_sub = ?", (auth_sub,)
             ).fetchone()
         return _row_to_user(row) if row else None
 
@@ -312,7 +259,7 @@ class AuthStore:
             raise AuthError("invalid credentials")
         try:
             ok = _HASHER.verify(user["password_hash"], password)
-        except VerifyMismatchError as e:
+        except (InvalidHashError, VerifyMismatchError) as e:
             raise AuthError("invalid credentials") from e
         if not ok:
             raise AuthError("invalid credentials")

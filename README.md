@@ -116,7 +116,9 @@ Edit `nexus.yaml`:
 
 Edit `.env`:
 - `DEEPINFRA_API_KEY` — council LLMs (and optional enrichment, if enabled)
-- `GITHUB_TOKEN` — for the GitHub connector
+- `NEXUS_SKILLS_REPO_TOKEN` — org-wide skills repo create/clone/push token
+- Product GitHub PATs are entered during product onboarding and stored encrypted
+  per product source. They are separate from `NEXUS_SKILLS_REPO_TOKEN`.
 - `NEXUS_TOKEN_KEY` — Fernet key for encrypting connector tokens at rest
 
 ### Start dev stack
@@ -219,14 +221,16 @@ Langfuse tracing is enabled when `LANGFUSE_PUBLIC_KEY` and
 ### 1. First-run setup (one-time, org-wide)
 
 Visit `http://localhost:3000/setup`:
-- **Create new repo** — Nexus uses `GITHUB_TOKEN` to mint a fresh repo.
+- **Create new repo** — Nexus uses `NEXUS_SKILLS_REPO_TOKEN` to mint a fresh
+  org-wide skills repo.
 - **Use existing repo** — paste a clone URL; Nexus verifies it can clone.
 
 ### 2. Onboard a product via the UI
 
 - Create the product (`/new`)
 - Provide the product service-account GitHub PAT and one or more GitHub repo
-  URLs; Nexus creates the product-scoped GitHub source and starts ingest
+  URLs. This PAT is only for that product's source repos; it is not the
+  skills-repo publishing token.
 - Trigger ingestion; watch the live SSE sync log. Resync is delta-safe:
   unchanged files are skipped, changed files are embedded before stale vectors
   are deleted, and removed files are cleaned from the configured retrieval

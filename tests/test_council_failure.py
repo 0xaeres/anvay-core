@@ -68,6 +68,7 @@ async def test_council_handles_use_role_specific_models(tmp_path: Path, monkeypa
         "architect": "critic-model",
         "domain_expert": "critic-model",
         "quality_expert": "critic-model",
+        "synthesizer": "draft-model",
     }
 
 

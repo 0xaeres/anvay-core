@@ -65,22 +65,41 @@ def test_access_request_approval_creates_approved_user(tmp_path: Path) -> None:
     assert user["role"] == "viewer"
 
 
-def test_existing_auth0_user_matching_bootstrap_email_is_promoted(
+def test_bootstrap_admin_repairs_existing_matching_user(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL", "owner@example.com")
+    monkeypatch.delenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("NEXUS_BOOTSTRAP_ADMIN_PASSWORD", raising=False)
     store = AuthStore(tmp_path / "auth.db", secret_key="session-secret")
-    store.create_user(
+    user = store.create_user(
         email="owner@example.com",
         password="correct horse battery staple",
         role="viewer",
         status="pending",
     )
+    monkeypatch.setenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL", "owner@example.com")
+    monkeypatch.setenv("NEXUS_BOOTSTRAP_ADMIN_PASSWORD", "another secure password")
+    AuthStore(tmp_path / "auth.db", secret_key="session-secret")
 
-    user = store.get_or_create_auth0_user(
-        auth_sub="auth0|owner", email="owner@example.com", name="Owner"
+    loaded = store.get_user_by_email("owner@example.com")
+
+    assert loaded is not None
+    assert loaded["id"] == user["id"]
+    assert loaded["role"] == "admin"
+    assert loaded["status"] == "approved"
+    repaired = store.login(email="owner@example.com", password="another secure password")
+    assert repaired.user["id"] == user["id"]
+
+
+def test_invalid_password_hash_returns_auth_error(tmp_path: Path) -> None:
+    store = AuthStore(tmp_path / "auth.db", secret_key="session-secret")
+    user = store.create_user(
+        email="owner@example.com",
+        password="correct horse battery staple",
+        role="admin",
     )
+    with sqlite3.connect(tmp_path / "auth.db") as conn:
+        conn.execute("UPDATE auth_users SET password_hash = '' WHERE id = ?", (user["id"],))
 
-    assert user["role"] == "admin"
-    assert user["status"] == "approved"
-    assert user["auth_sub"] == "auth0|owner"
+    with pytest.raises(AuthError):
+        store.login(email="owner@example.com", password="correct horse battery staple")

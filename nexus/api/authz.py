@@ -15,16 +15,12 @@ PRODUCT_ROLES = {"owner", "editor", "viewer"}
 WRITE_ROLES = {"owner", "editor"}
 
 
-def auth_mode() -> str:
-    return (os.getenv("NEXUS_AUTH_MODE") or "").strip().lower()
-
-
 def prod_enabled() -> bool:
     return (os.getenv("NEXUS_ENV") or "").strip().lower() == "production"
 
 
 def auth_enabled() -> bool:
-    return auth_mode() == "auth0" or bool(os.getenv("NEXUS_SECRET_KEY"))
+    return bool(os.getenv("NEXUS_SECRET_KEY"))
 
 
 def local_fs_enabled() -> bool:
@@ -99,6 +95,8 @@ def assert_product_access(
         return user
     role = registry.get_product_role(product_id, str(user["id"]))
     if action == "read" and role in PRODUCT_ROLES:
+        return user
+    if action == "delete" and role == "owner":
         return user
     if action in {"manage", "source", "council", "approve"} and role in WRITE_ROLES:
         return user

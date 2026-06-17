@@ -8,6 +8,8 @@ ephemeral clone of the skills_repo configured in nexus.yaml.
 from __future__ import annotations
 
 import logging
+import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +30,32 @@ class GitPublishResult:
     pushed: bool
     commit_hexsha: str = ""
     error: str = ""
+
+
+def ensure_checkout(root: Path, repo_url: str, *, token: str | None = None) -> None:
+    """Ensure `root` is a Git checkout of the configured skills repo."""
+    if Repo is None:
+        raise GitError("gitpython unavailable")
+    try:
+        Repo(root, search_parent_directories=False)
+        return
+    except InvalidGitRepositoryError:
+        pass
+
+    if not repo_url:
+        raise GitError("skills_repo is not configured")
+    if root.exists() and any(root.rglob("*")):
+        if any(path.is_file() or path.is_symlink() for path in root.rglob("*")):
+            raise GitError(f"skills root {root} exists but is not a git repo")
+        shutil.rmtree(root)
+
+    root.parent.mkdir(parents=True, exist_ok=True)
+    if root.exists():
+        root.rmdir()
+    try:
+        Repo.clone_from(_authenticated_clone_url(repo_url, token), str(root))
+    except Exception as e:
+        raise GitError(f"clone failed: {_redact_token(str(e))}") from e
 
 
 def commit_and_push(root: Path, message: str, *, push: bool = True) -> GitPublishResult:
@@ -92,3 +120,15 @@ def _rollback_commit(repo, commit, error: str) -> GitPublishResult:
             commit_hexsha=commit_hexsha,
             error=f"{error}; rollback failed: {e}",
         )
+
+
+def _authenticated_clone_url(url: str, token: str | None) -> str:
+    if not token:
+        return url
+    if not url.startswith("https://"):
+        return url
+    return url.replace("https://", f"https://x-access-token:{token}@", 1)
+
+
+def _redact_token(text: str) -> str:
+    return re.sub(r"x-access-token:[^@\s]+@", "x-access-token:***@", text)
