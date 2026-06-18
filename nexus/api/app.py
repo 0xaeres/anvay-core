@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from nexus.api.authz import auth_enabled, prod_enabled
 from nexus.api.deps import get_auth_store, get_config_dep, get_registry
@@ -218,12 +219,13 @@ def _validate_production_config() -> None:
     required_env = [
         "NEXUS_TOKEN_KEY",
         "NEXUS_SECRET_KEY",
+        "NEXUS_ADMIN_API_KEY",
         "NEXUS_BOOTSTRAP_ADMIN_EMAIL",
         "NEXUS_BOOTSTRAP_ADMIN_PASSWORD",
         "NEXUS_ALLOWED_ORIGINS",
         "NEXUS_API_DOMAIN",
     ]
-    missing = [name for name in required_env if not os.getenv(name)]
+    missing = [name for name in required_env if not (os.getenv(name) or "").strip()]
     cfg = get_config_dep()
     if not cfg.skills_repo:
         missing.append("skills_repo/NEXUS_SKILLS_REPO")
@@ -233,8 +235,17 @@ def _validate_production_config() -> None:
         )
 
 
-@app.get("/health", tags=["meta"])
-async def health() -> dict:
+class HealthDependencies(BaseModel):
+    falkordb: str
+
+
+class HealthResponse(BaseModel):
+    status: str
+    dependencies: HealthDependencies
+
+
+@app.get("/health", tags=["meta"], response_model=HealthResponse)
+async def health() -> HealthResponse:
     try:
         cfg = get_config_dep()
         graph_store = create_graph_store(cfg)
@@ -245,12 +256,12 @@ async def health() -> dict:
     except Exception as e:
         log.warning("health config/dependency check failed: %s", e)
         falkor_ok = False
-    return {
-        "status": "ok" if falkor_ok else "degraded",
-        "dependencies": {
-            "falkordb": "ok" if falkor_ok else "unavailable",
-        },
-    }
+    return HealthResponse(
+        status="ok" if falkor_ok else "degraded",
+        dependencies=HealthDependencies(
+            falkordb="ok" if falkor_ok else "unavailable",
+        ),
+    )
 
 
 app.include_router(products.router)

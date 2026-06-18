@@ -17,10 +17,10 @@ services:
       retries: 5
 
   falkordb:
-    image: falkordb/falkordb:latest
+    image: falkordb/falkordb:v4.12.4
     container_name: nexus-falkordb
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - falkordb_data:/data
     healthcheck:

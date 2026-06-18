@@ -7,6 +7,7 @@ posts to `POST /setup/skills-repo`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Literal
@@ -51,8 +52,9 @@ async def setup_skills_repo(
     config: NexusConfig = Depends(get_config_dep),
 ) -> dict:
     require_admin(request)
-    token = _skills_repo_token()
-    if mode == "create" and not token:
+    create_token = os.environ.get("NEXUS_SKILLS_REPO_TOKEN") or ""
+    checkout_token = _skills_repo_token()
+    if mode == "create" and not create_token:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -63,7 +65,7 @@ async def setup_skills_repo(
     try:
         result = await bootstrap_skills_repo(
             mode=mode,
-            github_token=token or None,
+            github_token=(create_token if mode == "create" else checkout_token) or None,
             github_org=github_org,
             repo_name=repo_name,
             existing_repo_url=existing_repo_url,
@@ -72,10 +74,11 @@ async def setup_skills_repo(
         log.warning("skills-repo bootstrap failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e)) from e
     try:
-        ensure_checkout(
+        await asyncio.to_thread(
+            ensure_checkout,
             config.hierarchy_root,
             result.skills_repo_url,
-            token=token or None,
+            token=checkout_token or None,
         )
     except GitError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

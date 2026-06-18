@@ -56,7 +56,8 @@ class ConfluenceClient:
         """Yield each space dict the token can read."""
         url: str | None = "/spaces"
         while url:
-            data = await self._get_json(url, params={"limit": 50})
+            params = {"limit": 50} if "?" not in url else None
+            data = await self._get_json(url, params=params)
             for space in data.get("results") or []:
                 yield space
             url = _next_link(data, self.cfg.site_url)
@@ -68,12 +69,17 @@ class ConfluenceClient:
         page_size = max(1, min(self.cfg.page_size, 50))
         while url and fetched < self.cfg.max_pages:
             remaining = self.cfg.max_pages - fetched
-            data = await self._get_json(
-                url,
-                params={
+            params = (
+                {
                     "body-format": "atlas_doc_format",
                     "limit": min(page_size, remaining),
-                },
+                }
+                if "?" not in url
+                else None
+            )
+            data = await self._get_json(
+                url,
+                params=params,
             )
             for page in data.get("results") or []:
                 yield page
@@ -257,6 +263,8 @@ def _next_link(data: dict[str, Any], site_url: str) -> str | None:
         return None
     if nxt.startswith("http"):
         return nxt
+    if nxt.startswith("/"):
+        return nxt
     # Relative path — prepend the wiki base.
     base = site_url.rstrip("/") + "/wiki/api/v2"
-    return base + nxt
+    return f"{base}/{nxt.lstrip('/')}"

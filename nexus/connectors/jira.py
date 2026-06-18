@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from pydantic import BaseModel, Field, field_validator
 
 from nexus.ingest.models import ResourceRef
 
@@ -31,15 +31,32 @@ _DEFAULT_FIELDS = (
 _ISSUE_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 
 
-@dataclass(frozen=True)
-class JiraConfig:
+class JiraConfig(BaseModel):
     site_url: str
     email: str
     api_token: str
     jql: str = "ORDER BY updated DESC"
-    max_results: int = 500
-    page_size: int = 50
+    max_results: int = Field(default=500, ge=1, le=10_000)
+    page_size: int = Field(default=50, ge=1, le=100)
     fields: tuple[str, ...] = _DEFAULT_FIELDS
+
+    @field_validator("site_url")
+    @classmethod
+    def _valid_site_url(cls, value: str) -> str:
+        raw = value.strip().rstrip("/")
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https":
+            raise ValueError("jira site_url must use https")
+        if not host.endswith(".atlassian.net"):
+            raise ValueError("jira site_url must be a Jira Cloud .atlassian.net host")
+        if parsed.username or parsed.password:
+            raise ValueError("jira site_url must not contain userinfo")
+        if parsed.query or parsed.fragment:
+            raise ValueError("jira site_url must not contain query or fragment")
+        if parsed.path not in {"", "/"}:
+            raise ValueError("jira site_url must not contain a path")
+        return raw
 
 
 class JiraAPIError(RuntimeError):
@@ -78,7 +95,11 @@ class JiraClient:
                 params["nextPageToken"] = next_page_token
             payload = await self._get_json("/rest/api/3/search/jql", params=params)
             issues = payload.get("issues") or []
+            if not isinstance(issues, list):
+                raise JiraAPIError("Jira API returned non-list issues")
             for issue in issues:
+                if not isinstance(issue, dict):
+                    raise JiraAPIError("Jira API returned non-object issue")
                 yield issue
                 fetched += 1
                 if fetched >= self.cfg.max_results:
@@ -88,10 +109,16 @@ class JiraClient:
                 break
 
     async def _get_json(self, path: str, *, params: dict[str, Any]) -> dict[str, Any]:
-        resp = await self._client.get(path, params=params)
+        try:
+            resp = await self._client.get(path, params=params)
+        except httpx.HTTPError as e:
+            raise JiraAPIError(f"Jira API request failed: {e}") from e
         if resp.status_code >= 400:
-            raise JiraAPIError(f"Jira API {resp.status_code}: {resp.text[:500]}")
-        data = resp.json()
+            raise JiraAPIError(f"Jira API {resp.status_code}")
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise JiraAPIError("Jira API returned invalid JSON") from e
         if not isinstance(data, dict):
             raise JiraAPIError("Jira API returned non-object JSON")
         return data

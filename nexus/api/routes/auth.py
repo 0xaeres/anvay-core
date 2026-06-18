@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
@@ -231,4 +232,9 @@ def _client_key(request: Request, bucket: str) -> str:
 
 
 def _secure_cookie(request: Request) -> bool:
+    if (os.getenv("NEXUS_ENV") or "").strip().lower() == "production":
+        return True
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if forwarded_proto:
+        return forwarded_proto.split(",", 1)[0].strip().lower() == "https"
     return request.url.scheme == "https"

@@ -102,21 +102,29 @@ class FalkorGraphStore:
         for label in _LABELS:
             await self._ignore_existing(
                 graph.query(
-                    f"CREATE INDEX FOR (n:{_ident(label)}) ON (n.stable_id, n.product_id)"
+                    f"CREATE INDEX FOR (n:{_ident(label)}) ON (n.stable_id, n.product_id)",
+                    timeout=self.cfg.timeout_ms,
                 )
             )
             await self._ignore_existing(
-                graph.query(f"CREATE INDEX FOR (n:{_ident(label)}) ON (n.status)")
+                graph.query(
+                    f"CREATE INDEX FOR (n:{_ident(label)}) ON (n.status)",
+                    timeout=self.cfg.timeout_ms,
+                )
             )
             await self._create_constraint(graph_name, label)
         for rel_type in _EDGE_TYPES:
             await self._ignore_existing(
                 graph.query(
-                    f"CREATE INDEX FOR ()-[r:{_ident(rel_type)}]-() ON (r.stable_id, r.product_id)"
+                    f"CREATE INDEX FOR ()-[r:{_ident(rel_type)}]-() ON (r.stable_id, r.product_id)",
+                    timeout=self.cfg.timeout_ms,
                 )
             )
             await self._ignore_existing(
-                graph.query(f"CREATE INDEX FOR ()-[r:{_ident(rel_type)}]-() ON (r.status)")
+                graph.query(
+                    f"CREATE INDEX FOR ()-[r:{_ident(rel_type)}]-() ON (r.status)",
+                    timeout=self.cfg.timeout_ms,
+                )
             )
         self._schema_ready.add(product_id)
 
@@ -293,8 +301,9 @@ class FalkorGraphStore:
                 ["stable_id"],
             )
         except Exception as e:
-            if not _already_exists(e):
-                log.debug("graph constraint create skipped for %s: %s", label, e)
+            if _already_exists(e):
+                return
+            raise
 
     @staticmethod
     async def _ignore_existing(awaitable) -> None:

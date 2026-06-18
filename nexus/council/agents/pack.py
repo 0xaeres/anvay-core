@@ -99,7 +99,7 @@ async def planner(
         query=_retrieval_query(topic, suffix=PRODUCT_SKILL_RETRIEVAL_QUERY),
         top_k=20,
         graph_store=graph_store,
-        skills=_approved_skills(config, product_id),
+        skills=await _approved_skills(config, product_id),
     )
     evidence.extend(_pack_result_to_evidence(result, limit=20))
 
@@ -185,7 +185,7 @@ async def expert(
         charter=charter,
         retrieval=retrieval,
         graph_store=graph_store,
-        skills=_approved_skills(config, state["product_id"]) if config else [],
+        skills=(await _approved_skills(config, state["product_id"])) if config else [],
         chat=chat,
         stream=True,
     )
@@ -1421,21 +1421,13 @@ def _retrieval_query(topic: str, *, suffix: str = "", limit: int = 900) -> str:
 
 async def _retrieve_pack_evidence(
     *,
-    retrieval: RetrievalContext | None,
+    retrieval: RetrievalContext,
     product_id: str,
     query: str,
     top_k: int,
     graph_store: object | None = None,
     skills: list[Skill] | None = None,
 ):
-    if retrieval is None:
-        return await retrieve(
-            ctx=retrieval,
-            product_id=product_id,
-            query=query,
-            top_k=top_k,
-            mode="auto",
-        )
     return await retrieve_evidence(
         ctx=retrieval,
         product_id=product_id,
@@ -1453,14 +1445,22 @@ def _pack_result_to_evidence(result, *, limit: int) -> list[EvidenceChunk]:
     return hits_to_evidence(result.hits, limit=limit)
 
 
-def _approved_skills(config: NexusConfig | None, product_id: str) -> list[Skill]:
+async def _approved_skills(config: NexusConfig | None, product_id: str) -> list[Skill]:
     if config is None:
         return []
     try:
         root = Path(config.hierarchy_root)
         if not root.is_absolute():
             root = Path.cwd() / root
-        return [skill for skill in SkillStore(root).iter_skills() if skill.product == product_id]
+
+        def _load() -> list[Skill]:
+            return [
+                skill
+                for skill in SkillStore(root).iter_skills()
+                if skill.product == product_id
+            ]
+
+        return await asyncio.to_thread(_load)
     except Exception as e:
         log.debug("skill lookup skipped for evidence retrieval: %s", e)
         return []

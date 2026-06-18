@@ -91,12 +91,18 @@ class ToolState:
         return self._queue
 
     async def aclose(self) -> None:
+        closers = []
         if self._ctx is not None:
-            await self._ctx.aclose()
+            closers.append(self._ctx.aclose)
         if self._graph_store is not None and hasattr(self._graph_store, "aclose"):
-            await self._graph_store.aclose()
+            closers.append(self._graph_store.aclose)
         if self._graphrag_chat is not None:
-            await self._graphrag_chat.aclose()
+            closers.append(self._graphrag_chat.aclose)
+        for close in closers:
+            try:
+                await close()
+            except Exception:
+                log.exception("tool state close failed")
 
 
 # ---------------------------------------------------------------- guidance tools

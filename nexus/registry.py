@@ -269,40 +269,43 @@ class Registry:
 
 
 def _ensure_registry_columns(conn: sqlite3.Connection) -> None:
+    def _add_column_if_missing(column: str, ddl: str) -> None:
+        if column in existing:
+            return
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+
     existing = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(source_resources)").fetchall()
     }
-    if "enrichment_version" not in existing:
-        conn.execute(
-            "ALTER TABLE source_resources "
-            "ADD COLUMN enrichment_version TEXT NOT NULL DEFAULT ''"
-        )
-    if "enrichment_status" not in existing:
-        conn.execute(
-            "ALTER TABLE source_resources "
-            "ADD COLUMN enrichment_status TEXT NOT NULL DEFAULT ''"
-        )
-    if "graph_extraction_version" not in existing:
-        conn.execute(
-            "ALTER TABLE source_resources "
-            "ADD COLUMN graph_extraction_version TEXT NOT NULL DEFAULT ''"
-        )
-    if "graph_status" not in existing:
-        conn.execute(
-            "ALTER TABLE source_resources "
-            "ADD COLUMN graph_status TEXT NOT NULL DEFAULT ''"
-        )
-    if "graph_fact_ids_js" not in existing:
-        conn.execute(
-            "ALTER TABLE source_resources "
-            "ADD COLUMN graph_fact_ids_js TEXT NOT NULL DEFAULT '[]'"
-        )
-    if "graph_indexed_at" not in existing:
-        conn.execute(
-            "ALTER TABLE source_resources "
-            "ADD COLUMN graph_indexed_at TEXT NOT NULL DEFAULT ''"
-        )
+    _add_column_if_missing(
+        "enrichment_version",
+        "ALTER TABLE source_resources ADD COLUMN enrichment_version TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column_if_missing(
+        "enrichment_status",
+        "ALTER TABLE source_resources ADD COLUMN enrichment_status TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column_if_missing(
+        "graph_extraction_version",
+        "ALTER TABLE source_resources ADD COLUMN graph_extraction_version TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column_if_missing(
+        "graph_status",
+        "ALTER TABLE source_resources ADD COLUMN graph_status TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column_if_missing(
+        "graph_fact_ids_js",
+        "ALTER TABLE source_resources ADD COLUMN graph_fact_ids_js TEXT NOT NULL DEFAULT '[]'",
+    )
+    _add_column_if_missing(
+        "graph_indexed_at",
+        "ALTER TABLE source_resources ADD COLUMN graph_indexed_at TEXT NOT NULL DEFAULT ''",
+    )
 
 
 def _backfill_product_members(conn: sqlite3.Connection) -> None:

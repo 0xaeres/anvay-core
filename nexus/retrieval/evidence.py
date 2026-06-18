@@ -428,7 +428,7 @@ async def repo_map_candidates(
             [RetrievalTrace(channel="repo_map", query=query, hits=0, detail="config unavailable")],
             False,
         )
-    repo_map = load_repo_map_for_product(ctx.config, product_id)
+    repo_map = await asyncio.to_thread(load_repo_map_for_product, ctx.config, product_id)
     terms = topic_bias_terms(query)
     scored = _score_symbols(repo_map.symbols, terms)
     out = [_candidate_from_symbol(score, symbol) for score, symbol in scored[:limit]]
@@ -476,16 +476,19 @@ async def graph_local_candidates(
             ],
         ]
     )
-    raw = []
-    for kind in ("code", "text"):
-        raw.extend(
-            await ctx.indexer.search_by_graph_nodes(
+    batches = await asyncio.gather(
+        *[
+            ctx.indexer.search_by_graph_nodes(
                 product_id=product_id,
                 graph_node_ids=graph_ids[:40],
                 vector_kind=kind,
                 top_k=limit,
             )
-        )
+            for kind in ("code", "text")
+        ]
+    )
+    raw = [item for batch in batches for item in batch]
+    raw.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
     out = [
         _candidate_from_hit(
             Hit(id=str(item["id"]), score=float(item.get("score") or 1.0), payload=item.get("payload") or {}, source="graph"),

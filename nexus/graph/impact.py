@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 
 from nexus.graph.context import _ordered_unique, _tokens
@@ -192,12 +193,18 @@ async def _resolve_seeds(
     seed_mentions: Sequence[str],
 ) -> list[GraphNode]:
     nodes: list[GraphNode] = []
-    for mention in _ordered_unique([*seed_mentions, *_tokens(query)])[:10]:
-        result = await graph_store.resolve_entity(
-            product_id=product_id,
-            mention=mention,
-            limit=5,
-        )
+    mentions = _ordered_unique([*seed_mentions, *_tokens(query)])[:10]
+    results = await asyncio.gather(
+        *[
+            graph_store.resolve_entity(
+                product_id=product_id,
+                mention=mention,
+                limit=5,
+            )
+            for mention in mentions
+        ]
+    )
+    for result in results:
         nodes.extend(result.nodes)
     return _dedupe_nodes(nodes)
 

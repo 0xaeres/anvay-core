@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 
 import pytest
 from falkordb.edge import Edge
@@ -95,7 +96,7 @@ async def test_falkordb_store_contract_live() -> None:
         graph_prefix="nexus_test",
     )
     store = FalkorGraphStore(cfg)
-    product_id = "contract"
+    product_id = f"contract-{uuid.uuid4().hex[:8]}"
     resource = ResourceRef(
         source_id="local:contract",
         uri="app.py",

@@ -48,16 +48,25 @@ class CouncilHandles:
     chat_synthesizer: ChatClient
 
     async def aclose(self) -> None:
-        await self.retrieval.aclose()
+        closers = [self.retrieval.aclose]
         if hasattr(self.graph_store, "aclose"):
-            await self.graph_store.aclose()
-        await self.chat_drafter.aclose()
-        await self.chat_critic.aclose()
-        await self.chat_reviser.aclose()
-        await self.chat_architect.aclose()
-        await self.chat_domain_expert.aclose()
-        await self.chat_quality_expert.aclose()
-        await self.chat_synthesizer.aclose()
+            closers.append(self.graph_store.aclose)
+        closers.extend(
+            [
+                self.chat_drafter.aclose,
+                self.chat_critic.aclose,
+                self.chat_reviser.aclose,
+                self.chat_architect.aclose,
+                self.chat_domain_expert.aclose,
+                self.chat_quality_expert.aclose,
+                self.chat_synthesizer.aclose,
+            ]
+        )
+        for close in closers:
+            try:
+                await close()
+            except Exception:
+                log.exception("council handle close failed")
 
 
 @asynccontextmanager

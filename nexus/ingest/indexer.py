@@ -204,6 +204,49 @@ class Indexer:
             deleted += len(unique_ids)
         return deleted
 
+    async def update_payloads(
+        self,
+        chunks: Sequence[Chunk],
+        *,
+        graph_node_ids_by_id: dict[str, list[str]] | None = None,
+        entity_ids_by_id: dict[str, list[str]] | None = None,
+        source_ref_by_id: dict[str, dict] | None = None,
+        citation_anchor_by_id: dict[str, str] | None = None,
+        graph_extraction_version_by_id: dict[str, str] | None = None,
+        artifact_type_by_id: dict[str, str] | None = None,
+    ) -> int:
+        """Patch graph-derived payload metadata without rewriting vectors."""
+        graph_node_ids_by_id = graph_node_ids_by_id or {}
+        entity_ids_by_id = entity_ids_by_id or {}
+        source_ref_by_id = source_ref_by_id or {}
+        citation_anchor_by_id = citation_anchor_by_id or {}
+        graph_extraction_version_by_id = graph_extraction_version_by_id or {}
+        artifact_type_by_id = artifact_type_by_id or {}
+
+        updated = 0
+        for chunk in chunks:
+            payload = {
+                "graph_node_ids": graph_node_ids_by_id.get(chunk.id, []),
+                "entity_ids": entity_ids_by_id.get(chunk.id, []),
+                "source_ref": source_ref_by_id.get(chunk.id, {}),
+                "citation_anchor": citation_anchor_by_id.get(chunk.id, chunk.anchor),
+                "graph_extraction_version": graph_extraction_version_by_id.get(
+                    chunk.id
+                ),
+                "artifact_type": artifact_type_by_id.get(chunk.id, chunk.kind.value),
+            }
+            collection = self._code if chunk.kind.value == "code" else self._text
+            await self._retry_qdrant(
+                f"set_payload:{collection}",
+                lambda collection=collection, payload=payload, chunk_id=chunk.id: self.client.set_payload(
+                    collection_name=collection,
+                    payload=payload,
+                    points=[chunk_id],
+                ),
+            )
+            updated += 1
+        return updated
+
     # ------------------------------------------------------------ read
 
     async def search_dense(
@@ -486,10 +529,13 @@ class Indexer:
         }
         for field_name, field_schema in indexes.items():
             try:
-                await self.client.create_payload_index(
-                    collection_name=collection,
-                    field_name=field_name,
-                    field_schema=field_schema,
+                await self._retry_qdrant(
+                    "create_payload_index",
+                    lambda collection=collection, field_name=field_name, field_schema=field_schema: self.client.create_payload_index(
+                        collection_name=collection,
+                        field_name=field_name,
+                        field_schema=field_schema,
+                    ),
                 )
             except Exception as e:
                 if "already" not in str(e).lower():

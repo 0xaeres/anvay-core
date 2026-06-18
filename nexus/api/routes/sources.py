@@ -575,7 +575,7 @@ async def _ingest_jira_source(
         msg = str(payload.pop("msg", ""))
         await _emit(q, level, msg, source=source_name, **payload)
 
-    await _emit(q, "info", f"Searching Jira issues with JQL: {cfg.jql}")
+    await _emit(q, "info", "Searching Jira issues with configured JQL")
     run_id = registry.start_sync_run(product_id, source_key, _now())
     try:
         stats = await run_ingest(

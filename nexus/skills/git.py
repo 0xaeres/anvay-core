@@ -12,14 +12,20 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 try:
     from git import Repo  # type: ignore[import-not-found]
-    from git.exc import GitError, InvalidGitRepositoryError  # type: ignore[import-not-found]
+    from git.exc import (  # type: ignore[import-not-found]
+        GitError,
+        InvalidGitRepositoryError,
+        NoSuchPathError,
+    )
 except Exception:  # pragma: no cover
     Repo = None  # type: ignore[assignment]
     GitError = Exception  # type: ignore[misc,assignment]
     InvalidGitRepositoryError = Exception  # type: ignore[misc,assignment]
+    NoSuchPathError = Exception  # type: ignore[misc,assignment]
 
 log = logging.getLogger(__name__)
 
@@ -37,9 +43,12 @@ def ensure_checkout(root: Path, repo_url: str, *, token: str | None = None) -> N
     if Repo is None:
         raise GitError("gitpython unavailable")
     try:
-        Repo(root, search_parent_directories=False)
-        return
-    except InvalidGitRepositoryError:
+        repo = Repo(root, search_parent_directories=False)
+        origin_urls = set(repo.remotes.origin.urls) if repo.remotes else set()
+        if not origin_urls or _repo_url_matches(repo_url, origin_urls):
+            return
+        raise GitError(f"skills root {root} is not a checkout of the configured skills repo")
+    except (InvalidGitRepositoryError, NoSuchPathError):
         pass
 
     if not repo_url:
@@ -53,7 +62,9 @@ def ensure_checkout(root: Path, repo_url: str, *, token: str | None = None) -> N
     if root.exists():
         root.rmdir()
     try:
-        Repo.clone_from(_authenticated_clone_url(repo_url, token), str(root))
+        repo = Repo.clone_from(_authenticated_clone_url(repo_url, token), str(root))
+        if token and repo.remotes:
+            repo.remotes.origin.set_url(repo_url)
     except Exception as e:
         raise GitError(f"clone failed: {_redact_token(str(e))}") from e
 
@@ -132,3 +143,21 @@ def _authenticated_clone_url(url: str, token: str | None) -> str:
 
 def _redact_token(text: str) -> str:
     return re.sub(r"x-access-token:[^@\s]+@", "x-access-token:***@", text)
+
+
+def _repo_url_matches(expected: str, actual_urls: set[str]) -> bool:
+    if not expected:
+        return False
+    normalized_expected = _normalize_repo_url(expected)
+    return any(_normalize_repo_url(url) == normalized_expected for url in actual_urls)
+
+
+def _normalize_repo_url(url: str) -> str:
+    if url.startswith("git@github.com:"):
+        return "https://github.com/" + url.removeprefix("git@github.com:").removesuffix(".git")
+    parsed = urlparse(url)
+    if parsed.scheme in {"http", "https"}:
+        host = parsed.hostname or ""
+        path = parsed.path.removesuffix(".git").rstrip("/")
+        return urlunparse(("https", host.lower(), path, "", "", ""))
+    return url.removesuffix(".git").rstrip("/")

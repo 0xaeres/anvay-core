@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -40,15 +41,31 @@ class AgentMessageRequest(BaseModel):
     history: list[GraphRAGMessage] = Field(default_factory=list)
     current_file: str | None = None
     mode: EvidenceMode = "auto"
-    max_depth: int = 3
-    top_k: int = 8
+    max_depth: int = Field(default=3, ge=1, le=5)
+    top_k: int = Field(default=8, ge=5, le=12)
     model: str | None = None
+
+
+class AgentRequestMeta(BaseModel):
+    current_file: str | None = None
+    max_depth: int
+    top_k: int
+    mode: EvidenceMode
+    model: str | None = None
+
+
+class AgentSessionMessage(BaseModel):
+    role: str
+    content: str
+    created_at: str
+    request: AgentRequestMeta | None = None
+    answer: GraphRAGAnswer | None = None
 
 
 class AgentSessionReplay(BaseModel):
     id: str
     product_id: str
-    messages: list[dict] = Field(default_factory=list)
+    messages: list[AgentSessionMessage] = Field(default_factory=list)
     created_at: str
     updated_at: str
 
@@ -91,7 +108,7 @@ async def ask_product_agent(
             confidence=1.0,
             graph_available=True,
         )
-        answer.session_id = _agent_sessions(config).append(
+        answer.session_id = await _agent_sessions(config).append(
             product_id=product_id,
             session_id=body.session_id,
             user_message=body.message,
@@ -116,7 +133,7 @@ async def ask_product_agent(
             synthesize=True,
         )
         answer = GraphRAGAnswer.model_validate(payload)
-        answer.session_id = _agent_sessions(config).append(
+        answer.session_id = await _agent_sessions(config).append(
             product_id=product_id,
             session_id=body.session_id,
             user_message=body.message,
@@ -126,7 +143,7 @@ async def ask_product_agent(
         return answer
     except Exception as e:
         log.exception("product agent failed product=%s", product_id)
-        raise HTTPException(status_code=503, detail=f"product agent unavailable: {e}") from e
+        raise HTTPException(status_code=503, detail="product agent unavailable") from e
     finally:
         await tool_state.aclose()
 
@@ -155,7 +172,7 @@ async def get_product_agent_session(
     config: NexusConfig = Depends(get_config_dep),
 ) -> AgentSessionReplay:
     assert_product_access(request, registry, product_id)
-    replay = _agent_sessions(config).get(product_id=product_id, session_id=session_id)
+    replay = await _agent_sessions(config).get(product_id=product_id, session_id=session_id)
     if replay is None:
         raise HTTPException(status_code=404, detail="agent session not found")
     return AgentSessionReplay.model_validate(replay)
@@ -187,14 +204,14 @@ def _agent_sessions(config: NexusConfig) -> AgentSessionStore:
     return AgentSessionStore(config.storage.proposal_queue.parent / "agent_sessions.db")
 
 
-def _request_meta(body: AgentMessageRequest, model_name: str | None) -> dict:
-    return {
-        "current_file": body.current_file,
-        "max_depth": body.max_depth,
-        "top_k": body.top_k,
-        "mode": body.mode,
-        "model": model_name,
-    }
+def _request_meta(body: AgentMessageRequest, model_name: str | None) -> AgentRequestMeta:
+    return AgentRequestMeta(
+        current_file=body.current_file,
+        max_depth=body.max_depth,
+        top_k=body.top_k,
+        mode=body.mode,
+        model=model_name,
+    )
 
 
 class AgentSessionStore:
@@ -215,49 +232,80 @@ class AgentSessionStore:
         finally:
             conn.close()
 
-    def append(
+    async def append(
         self,
         *,
         product_id: str,
         session_id: str | None,
         user_message: str,
         answer: GraphRAGAnswer,
-        request_meta: dict,
+        request_meta: AgentRequestMeta,
+    ) -> str:
+        return await asyncio.to_thread(
+            self._append_sync,
+            product_id=product_id,
+            session_id=session_id,
+            user_message=user_message,
+            answer=answer,
+            request_meta=request_meta,
+        )
+
+    def _append_sync(
+        self,
+        *,
+        product_id: str,
+        session_id: str | None,
+        user_message: str,
+        answer: GraphRAGAnswer,
+        request_meta: AgentRequestMeta,
     ) -> str:
         sid = session_id or uuid.uuid4().hex
         now = datetime.now(UTC).isoformat()
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT messages_js, created_at FROM agent_sessions WHERE id = ? AND product_id = ?",
-                (sid, product_id),
-            ).fetchone()
-            messages = json.loads(row["messages_js"]) if row else []
-            created_at = row["created_at"] if row else now
-            messages.append(
-                {
-                    "role": "user",
-                    "content": user_message,
-                    "request": request_meta,
-                    "created_at": now,
-                }
-            )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": answer.answer,
-                    "answer": answer.model_dump(mode="json"),
-                    "created_at": now,
-                }
-            )
-            conn.execute(
-                """INSERT OR REPLACE INTO agent_sessions
-                   (id, product_id, messages_js, created_at, updated_at)
-                   VALUES (?,?,?,?,?)""",
-                (sid, product_id, json.dumps(messages), created_at, now),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT messages_js, created_at FROM agent_sessions WHERE id = ? AND product_id = ?",
+                    (sid, product_id),
+                ).fetchone()
+                messages = json.loads(row["messages_js"]) if row else []
+                created_at = row["created_at"] if row else now
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": user_message,
+                        "request": request_meta.model_dump(mode="json"),
+                        "created_at": now,
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": answer.answer,
+                        "answer": answer.model_dump(mode="json"),
+                        "created_at": now,
+                    }
+                )
+                conn.execute(
+                    """INSERT OR REPLACE INTO agent_sessions
+                       (id, product_id, messages_js, created_at, updated_at)
+                       VALUES (?,?,?,?,?)""",
+                    (sid, product_id, json.dumps(messages), created_at, now),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
         return sid
 
-    def get(self, *, product_id: str, session_id: str) -> dict | None:
+    async def get(self, *, product_id: str, session_id: str) -> AgentSessionReplay | None:
+        return await asyncio.to_thread(
+            self._get_sync,
+            product_id=product_id,
+            session_id=session_id,
+        )
+
+    def _get_sync(self, *, product_id: str, session_id: str) -> AgentSessionReplay | None:
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM agent_sessions WHERE id = ? AND product_id = ?",
@@ -265,10 +313,12 @@ class AgentSessionStore:
             ).fetchone()
         if row is None:
             return None
-        return {
-            "id": row["id"],
-            "product_id": row["product_id"],
-            "messages": json.loads(row["messages_js"]),
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
+        return AgentSessionReplay.model_validate(
+            {
+                "id": row["id"],
+                "product_id": row["product_id"],
+                "messages": json.loads(row["messages_js"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )

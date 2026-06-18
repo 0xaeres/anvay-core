@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Sequence
+
+from pydantic import BaseModel, Field
 
 from nexus.graph.context import _ordered_unique
 from nexus.graph.models import (
@@ -26,6 +27,35 @@ log = logging.getLogger(__name__)
 
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_./:{}-]{1,}")
 _JIRA_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
+
+
+class _PromptNode(BaseModel):
+    stable_id: str
+    labels: list[str]
+    name: str
+    resource_uri: str | None = None
+    confidence: float
+    source_refs: list[dict] = Field(default_factory=list)
+
+
+class _PromptEdge(BaseModel):
+    stable_id: str
+    type: str
+    from_id: str
+    to_id: str
+    confidence: float
+    source_refs: list[dict] = Field(default_factory=list)
+
+
+class _PromptPayload(BaseModel):
+    product_id: str
+    question: str
+    recent_history: list[dict] = Field(default_factory=list)
+    resolved_entities: list[_PromptNode] = Field(default_factory=list)
+    graph_neighbors: list[_PromptNode] = Field(default_factory=list)
+    graph_edges: list[_PromptEdge] = Field(default_factory=list)
+    evidence: list[dict] = Field(default_factory=list)
+    unknowns: list[str] = Field(default_factory=list)
 _ROUTE_RE = re.compile(r"/[A-Za-z0-9_./:{}-]+")
 _PATH_RE = re.compile(r"\b[\w./-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|md|mdx|sql|yaml|yml|toml)\b")
 _STOP_WORDS = {
@@ -387,36 +417,47 @@ async def _synthesize_answer(
             citations=citations,
             unknowns=unknowns,
         )
-    resp = await chat.chat(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "You answer product-system questions using only supplied graph facts "
-                    "and evidence excerpts. Cite material claims with citation ids like [C1]. "
-                    "If evidence is missing, say what is unknown. Do not infer causality from "
-                    "graph connectivity alone. For broad architecture or flow questions, give a "
-                    "complete step-by-step explanation with concrete files/functions when evidence "
-                    "supports them; do not answer with a terse symbol summary. If a claim lacks a "
-                    "citation, omit it or mark it unknown."
-                ),
-            },
-            {
-                "role": "user",
-                "content": _prompt_payload(
-                    product_id=product_id,
-                    request=request,
-                    resolved_nodes=resolved_nodes,
-                    traversal_nodes=traversal_nodes,
-                    traversal_edges=traversal_edges,
-                    citations=citations,
-                    unknowns=unknowns,
-                ),
-            },
-        ],
-        max_tokens=1600,
-        stream=False,
-    )
+    try:
+        resp = await chat.chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You answer product-system questions using only supplied graph facts "
+                        "and evidence excerpts. Cite material claims with citation ids like [C1]. "
+                        "If evidence is missing, say what is unknown. Do not infer causality from "
+                        "graph connectivity alone. For broad architecture or flow questions, give a "
+                        "complete step-by-step explanation with concrete files/functions when evidence "
+                        "supports them; do not answer with a terse symbol summary. If a claim lacks a "
+                        "citation, omit it or mark it unknown."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": _prompt_payload(
+                        product_id=product_id,
+                        request=request,
+                        resolved_nodes=resolved_nodes,
+                        traversal_nodes=traversal_nodes,
+                        traversal_edges=traversal_edges,
+                        citations=citations,
+                        unknowns=unknowns,
+                    ).model_dump_json(indent=2),
+                },
+            ],
+            max_tokens=1600,
+            stream=False,
+        )
+    except Exception as e:
+        log.warning("graph rag synthesis failed for product %s: %s", product_id, e)
+        return _fallback_answer(
+            request=request,
+            resolved_nodes=resolved_nodes,
+            traversal_nodes=traversal_nodes,
+            traversal_edges=traversal_edges,
+            citations=citations,
+            unknowns=unknowns,
+        )
     return resp.content.strip() or _fallback_answer(
         request=request,
         resolved_nodes=resolved_nodes,
@@ -436,20 +477,19 @@ def _prompt_payload(
     traversal_edges: Sequence[GraphEdge],
     citations: Sequence[GraphRAGCitation],
     unknowns: Sequence[str],
-) -> str:
-    payload = {
-        "product_id": product_id,
-        "question": request.query,
-        "recent_history": [
+) -> _PromptPayload:
+    return _PromptPayload(
+        product_id=product_id,
+        question=request.query,
+        recent_history=[
             message.model_dump(mode="json") for message in request.history[-8:]
         ],
-        "resolved_entities": [_node_brief(node) for node in resolved_nodes[:12]],
-        "graph_neighbors": [_node_brief(node) for node in traversal_nodes[:30]],
-        "graph_edges": [_edge_brief(edge) for edge in traversal_edges[:40]],
-        "evidence": [citation.model_dump(mode="json") for citation in citations],
-        "unknowns": list(unknowns),
-    }
-    return json.dumps(payload, indent=2, sort_keys=True)
+        resolved_entities=[_node_brief(node) for node in resolved_nodes[:12]],
+        graph_neighbors=[_node_brief(node) for node in traversal_nodes[:30]],
+        graph_edges=[_edge_brief(edge) for edge in traversal_edges[:40]],
+        evidence=[citation.model_dump(mode="json") for citation in citations],
+        unknowns=list(unknowns),
+    )
 
 
 def _fallback_answer(
@@ -544,27 +584,28 @@ def _entity(node: GraphNode) -> GraphContextEntity:
     )
 
 
-def _node_brief(node: GraphNode) -> dict:
+def _node_brief(node: GraphNode) -> _PromptNode:
     props = node.properties
-    return {
-        "stable_id": node.stable_id,
-        "labels": node.labels,
-        "name": _display_name(node),
-        "resource_uri": props.get("resource_uri"),
-        "confidence": node.confidence,
-        "source_refs": [ref.model_dump(mode="json") for ref in node.source_refs[:3]],
-    }
+    resource_uri = props.get("resource_uri")
+    return _PromptNode(
+        stable_id=node.stable_id,
+        labels=node.labels,
+        name=_display_name(node),
+        resource_uri=resource_uri if isinstance(resource_uri, str) else None,
+        confidence=node.confidence,
+        source_refs=[ref.model_dump(mode="json") for ref in node.source_refs[:3]],
+    )
 
 
-def _edge_brief(edge: GraphEdge) -> dict:
-    return {
-        "stable_id": edge.stable_id,
-        "type": edge.type,
-        "from_id": edge.from_id,
-        "to_id": edge.to_id,
-        "confidence": edge.confidence,
-        "source_refs": [ref.model_dump(mode="json") for ref in edge.source_refs[:3]],
-    }
+def _edge_brief(edge: GraphEdge) -> _PromptEdge:
+    return _PromptEdge(
+        stable_id=edge.stable_id,
+        type=edge.type,
+        from_id=edge.from_id,
+        to_id=edge.to_id,
+        confidence=edge.confidence,
+        source_refs=[ref.model_dump(mode="json") for ref in edge.source_refs[:3]],
+    )
 
 
 def _display_name(node: GraphNode) -> str:
@@ -595,7 +636,11 @@ def _confidence(
     if citations:
         base += 0.2
     graph_nodes = [*resolved_nodes, *traversal_nodes]
-    avg_graph = sum(node.confidence for node in graph_nodes) / max(len(graph_nodes), 1)
+    avg_graph = (
+        sum(node.confidence for node in graph_nodes) / len(graph_nodes)
+        if graph_nodes
+        else 1.0
+    )
     return round(min(base * avg_graph, 0.95), 3)
 
 

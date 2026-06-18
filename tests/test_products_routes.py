@@ -212,7 +212,7 @@ def test_delete_product_reports_dependency_failure(tmp_path: Path, monkeypatch) 
         app.dependency_overrides.pop(get_config_dep, None)
 
     assert res.status_code == 502
-    assert "qdrant unavailable" in res.json()["detail"]
+    assert res.json()["detail"] == "failed to purge product 'demo'"
 
 
 def test_delete_product_returns_404_for_missing_product(tmp_path: Path, monkeypatch) -> None:

@@ -20,7 +20,7 @@ def prod_enabled() -> bool:
 
 
 def auth_enabled() -> bool:
-    return bool(os.getenv("NEXUS_SECRET_KEY"))
+    return bool((os.getenv("NEXUS_SECRET_KEY") or "").strip())
 
 
 def local_fs_enabled() -> bool:
@@ -88,10 +88,10 @@ def assert_product_access(
 ) -> dict:
     if not auth_enabled():
         return current_user(request)
-    if not registry.get_product(product_id):
-        raise HTTPException(status_code=404, detail="product not found")
     user = require_user(request)
     if user.get("role") == "admin":
+        if not registry.get_product(product_id):
+            raise HTTPException(status_code=404, detail="product not found")
         return user
     role = registry.get_product_role(product_id, str(user["id"]))
     if action == "read" and role in PRODUCT_ROLES:

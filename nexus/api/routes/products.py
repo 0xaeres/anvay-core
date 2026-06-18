@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from nexus.api.authz import (
     assert_product_access,
@@ -26,6 +28,11 @@ from nexus.tools.delete_product import delete_product
 
 router = APIRouter(tags=["products"])
 log = logging.getLogger(__name__)
+
+
+class DeleteProductResponse(BaseModel):
+    ok: bool
+    report: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.get("/me")
@@ -182,16 +189,16 @@ async def create_product(
     return registry.get_product(id)
 
 
-@router.delete("/products/{product_id}")
+@router.delete("/products/{product_id}", response_model=DeleteProductResponse)
 async def delete_product_route(
     product_id: str,
     request: Request,
     registry: Registry = Depends(get_registry),
     config: NexusConfig = Depends(get_config_dep),
-) -> dict:
+) -> DeleteProductResponse:
+    assert_product_access(request, registry, product_id, action="delete")
     if not registry.get_product(product_id):
         raise HTTPException(status_code=404, detail="product not found")
-    assert_product_access(request, registry, product_id, action="delete")
     try:
         report = await delete_product(
             product_id=product_id,
@@ -202,6 +209,6 @@ async def delete_product_route(
         log.exception("product purge failed product_id=%s", product_id)
         raise HTTPException(
             status_code=502,
-            detail=f"failed to purge product {product_id!r}: {e}",
+            detail=f"failed to purge product {product_id!r}",
         ) from e
-    return {"ok": True, "report": asdict(report)}
+    return DeleteProductResponse(ok=True, report=asdict(report))

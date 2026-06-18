@@ -406,7 +406,7 @@ needed evidence.
 engine used by council, MCP evidence search, and product chat. It runs
 complementary candidate channels, then assembles a coverage-aware evidence set:
 
-```
+```text
 query understanding
   ├─ hybrid dense+BM25+rerank
   ├─ exact indexed grep

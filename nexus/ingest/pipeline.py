@@ -345,6 +345,11 @@ async def run_ingest(
                 for c in all_chunks
                 if payload_by_uri[c.resource.uri].action != "graph_refresh"
             ]
+            graph_refresh_chunks = [
+                c
+                for c in all_chunks
+                if payload_by_uri[c.resource.uri].action == "graph_refresh"
+            ]
 
             if not all_chunks and not graph_extractions:
                 await emit(
@@ -461,30 +466,19 @@ async def run_ingest(
                     c.id: payload_by_uri[c.resource.uri].content_hash
                     for c in vector_chunks
                 }
-                graph_node_ids_by_id = {}
-                entity_ids_by_id = {}
-                source_ref_by_id = {}
-                citation_anchor_by_id = {}
-                graph_extraction_version_by_id = {}
-                artifact_type_by_id = {}
-                for chunk in vector_chunks:
-                    extraction = graph_extractions.get(chunk.resource.uri)
-                    if extraction is None:
-                        continue
-                    graph_node_ids_by_id[chunk.id] = graph_node_ids_for_chunk(
-                        extraction, chunk
-                    )
-                    entity_ids_by_id[chunk.id] = entity_ids_for_chunk(extraction, chunk)
-                    source_ref_by_id[chunk.id] = (
-                        extraction.nodes[0].source_refs[0].model_dump(mode="json")
-                        if extraction.nodes and extraction.nodes[0].source_refs
-                        else {}
-                    )
-                    citation_anchor_by_id[chunk.id] = chunk.anchor
-                    graph_extraction_version_by_id[chunk.id] = extraction.extraction_version
-                    artifact_type_by_id[chunk.id] = (
-                        "summary" if is_summary_chunk(chunk) else chunk.kind.value
-                    )
+                (
+                    graph_node_ids_by_id,
+                    entity_ids_by_id,
+                    source_ref_by_id,
+                    citation_anchor_by_id,
+                    graph_extraction_version_by_id,
+                    artifact_type_by_id,
+                ) = _graph_payload_metadata(
+                    vector_chunks,
+                    graph_extractions=graph_extractions,
+                    product_id=product_id,
+                    source_key=source_key,
+                )
                 await emit(
                     "stage",
                     "upsert",
@@ -505,6 +499,29 @@ async def run_ingest(
                     artifact_type_by_id=artifact_type_by_id,
                     embedding_version=version,
                     indexed_at=indexed_at,
+                )
+            elif graph_refresh_chunks and hasattr(indexer, "update_payloads"):
+                (
+                    graph_node_ids_by_id,
+                    entity_ids_by_id,
+                    source_ref_by_id,
+                    citation_anchor_by_id,
+                    graph_extraction_version_by_id,
+                    artifact_type_by_id,
+                ) = _graph_payload_metadata(
+                    graph_refresh_chunks,
+                    graph_extractions=graph_extractions,
+                    product_id=product_id,
+                    source_key=source_key,
+                )
+                await indexer.update_payloads(
+                    graph_refresh_chunks,
+                    graph_node_ids_by_id=graph_node_ids_by_id,
+                    entity_ids_by_id=entity_ids_by_id,
+                    source_ref_by_id=source_ref_by_id,
+                    citation_anchor_by_id=citation_anchor_by_id,
+                    graph_extraction_version_by_id=graph_extraction_version_by_id,
+                    artifact_type_by_id=artifact_type_by_id,
                 )
 
             graph_updates: dict[str, tuple[str, list[str], str]] = {}
@@ -833,6 +850,58 @@ async def run_ingest(
             await enricher.aclose()
         await indexer.aclose()
         await graph_store.aclose()
+
+
+def _graph_payload_metadata(
+    chunks: list[Chunk],
+    *,
+    graph_extractions: dict[str, GraphExtraction],
+    product_id: str,
+    source_key: str | None,
+) -> tuple[
+    dict[str, list[str]],
+    dict[str, list[str]],
+    dict[str, dict],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+]:
+    graph_node_ids_by_id: dict[str, list[str]] = {}
+    entity_ids_by_id: dict[str, list[str]] = {}
+    source_ref_by_id: dict[str, dict] = {}
+    citation_anchor_by_id: dict[str, str] = {}
+    graph_extraction_version_by_id: dict[str, str] = {}
+    artifact_type_by_id: dict[str, str] = {}
+
+    for chunk in chunks:
+        extraction = graph_extractions.get(chunk.resource.uri)
+        if extraction is None:
+            continue
+        graph_node_ids_by_id[chunk.id] = graph_node_ids_for_chunk(extraction, chunk)
+        entity_ids_by_id[chunk.id] = entity_ids_for_chunk(extraction, chunk)
+        source_ref_by_id[chunk.id] = {
+            "product_id": product_id,
+            "source_key": source_key or "",
+            "source_id": chunk.resource.source_id,
+            "resource_uri": chunk.resource.uri,
+            "anchor": chunk.anchor,
+            "start_line": chunk.start_line,
+            "end_line": chunk.end_line,
+        }
+        citation_anchor_by_id[chunk.id] = chunk.anchor
+        graph_extraction_version_by_id[chunk.id] = extraction.extraction_version
+        artifact_type_by_id[chunk.id] = (
+            "summary" if is_summary_chunk(chunk) else chunk.kind.value
+        )
+
+    return (
+        graph_node_ids_by_id,
+        entity_ids_by_id,
+        source_ref_by_id,
+        citation_anchor_by_id,
+        graph_extraction_version_by_id,
+        artifact_type_by_id,
+    )
 
 
 async def run_query(

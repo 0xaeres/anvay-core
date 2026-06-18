@@ -7,6 +7,7 @@ proposal is a no-op).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -60,7 +61,8 @@ async def approve_proposal(
     skill = _row_to_skill(row, actor=actor)
     root = _resolve_root(config.hierarchy_root)
     try:
-        ensure_checkout(
+        await asyncio.to_thread(
+            ensure_checkout,
             root,
             _resolve_skills_repo_url(config),
             token=_skills_repo_token(),
