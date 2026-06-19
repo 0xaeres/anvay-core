@@ -44,8 +44,12 @@ def ensure_checkout(root: Path, repo_url: str, *, token: str | None = None) -> N
         raise GitError("gitpython unavailable")
     try:
         repo = Repo(root, search_parent_directories=False)
-        origin_urls = set(repo.remotes.origin.urls) if repo.remotes else set()
-        if not origin_urls or _repo_url_matches(repo_url, origin_urls):
+        try:
+            origin = repo.remote("origin")
+            origin_urls = set(origin.urls)
+        except ValueError:
+            origin_urls = set()
+        if origin_urls and _repo_url_matches(repo_url, origin_urls):
             return
         raise GitError(f"skills root {root} is not a checkout of the configured skills repo")
     except (InvalidGitRepositoryError, NoSuchPathError):

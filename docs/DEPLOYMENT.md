@@ -113,8 +113,10 @@ backend. Confirm the Vercel domain is listed in backend `NEXUS_ALLOWED_ORIGINS`.
 ## 5. First Login
 
 Open the Vercel app and sign in with `NEXUS_BOOTSTRAP_ADMIN_EMAIL` plus
-`NEXUS_BOOTSTRAP_ADMIN_PASSWORD`. The backend creates that account as the sole
-initial Nexus admin on first boot. Other users can request access and remain
+`NEXUS_BOOTSTRAP_ADMIN_PASSWORD`. On startup, the backend ensures this email is
+an approved `admin` account and resets its password from the bootstrap env vars.
+After initial setup, rotate or remove bootstrap credentials if you do not want
+this behavior on future restarts. Other users can request access and remain
 pending until an admin approves them.
 
 ## 6. Access Requests

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -293,12 +294,15 @@ class FalkorGraphStore:
         if create is None:
             return
         try:
-            await create(
-                graph_name,
-                "UNIQUE",
-                "NODE",
-                label,
-                ["stable_id"],
+            await asyncio.wait_for(
+                create(
+                    graph_name,
+                    "UNIQUE",
+                    "NODE",
+                    label,
+                    ["stable_id"],
+                ),
+                timeout=self.cfg.timeout_ms / 1000,
             )
         except Exception as e:
             if _already_exists(e):

@@ -278,11 +278,13 @@ class AgentSessionStore:
                         "created_at": now,
                     }
                 )
+                answer_payload = answer.model_dump(mode="json")
+                answer_payload["session_id"] = sid
                 messages.append(
                     {
                         "role": "assistant",
                         "content": answer.answer,
-                        "answer": answer.model_dump(mode="json"),
+                        "answer": answer_payload,
                         "created_at": now,
                     }
                 )

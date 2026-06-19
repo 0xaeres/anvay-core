@@ -27,6 +27,7 @@ _ENUMERABLE = {
 
 def _config(tmp_path) -> NexusConfig:
     return NexusConfig(
+        hierarchy_root=tmp_path / "skills",
         models={
             "council": {"provider": "test", "model": "test"},
             "light": {"provider": "test", "model": "test"},

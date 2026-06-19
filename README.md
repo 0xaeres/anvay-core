@@ -280,7 +280,7 @@ Production target:
 
 - Backend: Oracle VM, Docker Compose, Caddy TLS, FastAPI, private Qdrant.
 - Frontend: Vercel running `../nexus-ui/`.
-- Auth: Auth0 Universal Login with backend RS256/JWKS validation.
+- Auth: Password/session bootstrap and session-based API auth.
 - Observability: Langfuse when configured.
 
 Use [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for the full runbook,

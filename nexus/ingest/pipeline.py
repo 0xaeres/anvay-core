@@ -35,6 +35,7 @@ from nexus.graph.store import create_graph_store
 from nexus.ingest.chunker import chunk_resource
 from nexus.ingest.embedder import EmbedderClient, EmbedderError
 from nexus.ingest.enricher import ContextualEnricher
+from nexus.ingest.indexer import SourceRefPayload
 from nexus.ingest.indexer_factory import create_indexer
 from nexus.ingest.models import Chunk, ChunkKind, ResourceRef
 from nexus.ingest.summaries import graph_summary_chunk, is_summary_chunk
@@ -500,7 +501,7 @@ async def run_ingest(
                     embedding_version=version,
                     indexed_at=indexed_at,
                 )
-            elif graph_refresh_chunks and hasattr(indexer, "update_payloads"):
+            if graph_refresh_chunks and hasattr(indexer, "update_payloads"):
                 (
                     graph_node_ids_by_id,
                     entity_ids_by_id,
@@ -861,14 +862,14 @@ def _graph_payload_metadata(
 ) -> tuple[
     dict[str, list[str]],
     dict[str, list[str]],
-    dict[str, dict],
+    dict[str, SourceRefPayload],
     dict[str, str],
     dict[str, str],
     dict[str, str],
 ]:
     graph_node_ids_by_id: dict[str, list[str]] = {}
     entity_ids_by_id: dict[str, list[str]] = {}
-    source_ref_by_id: dict[str, dict] = {}
+    source_ref_by_id: dict[str, SourceRefPayload] = {}
     citation_anchor_by_id: dict[str, str] = {}
     graph_extraction_version_by_id: dict[str, str] = {}
     artifact_type_by_id: dict[str, str] = {}
@@ -879,15 +880,15 @@ def _graph_payload_metadata(
             continue
         graph_node_ids_by_id[chunk.id] = graph_node_ids_for_chunk(extraction, chunk)
         entity_ids_by_id[chunk.id] = entity_ids_for_chunk(extraction, chunk)
-        source_ref_by_id[chunk.id] = {
-            "product_id": product_id,
-            "source_key": source_key or "",
-            "source_id": chunk.resource.source_id,
-            "resource_uri": chunk.resource.uri,
-            "anchor": chunk.anchor,
-            "start_line": chunk.start_line,
-            "end_line": chunk.end_line,
-        }
+        source_ref_by_id[chunk.id] = SourceRefPayload(
+            product_id=product_id,
+            source_key=source_key or "",
+            source_id=chunk.resource.source_id,
+            resource_uri=chunk.resource.uri,
+            anchor=chunk.anchor,
+            start_line=chunk.start_line,
+            end_line=chunk.end_line,
+        )
         citation_anchor_by_id[chunk.id] = chunk.anchor
         graph_extraction_version_by_id[chunk.id] = extraction.extraction_version
         artifact_type_by_id[chunk.id] = (

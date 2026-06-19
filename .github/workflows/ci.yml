@@ -11,6 +11,9 @@ on:
 env:
   PYTHON_VERSION: "3.13"
 
+permissions:
+  contents: read
+
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
@@ -116,7 +119,7 @@ jobs:
 
       - name: Upload eval report
         if: steps.eval_credentials.outputs.available == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@0b7f80f0896089304928f01c0d540203554e207d
         with:
           name: eval-reports
           path: artifacts/evals
