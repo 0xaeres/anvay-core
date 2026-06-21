@@ -93,10 +93,10 @@ class ModelCfg(BaseModel):
 
 
 class ModelsCfg(BaseModel):
-    council: ModelCfg          # drafter + critic + reviser
-    drafter: ModelCfg | None = None
-    critic: ModelCfg | None = None
-    reviser: ModelCfg | None = None
+    council: ModelCfg          # default for planner + evaluator + repair
+    planner: ModelCfg | None = None
+    evaluator: ModelCfg | None = None
+    repair: ModelCfg | None = None
     synthesizer: ModelCfg | None = None
     chat_agent: ModelCfg | None = None
     light: ModelCfg            # enricher (HQE + doc context)

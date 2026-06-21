@@ -32,6 +32,22 @@ uv run nexus eval run \
 
 Use `--no-ingest-fixture` only when the target product index is already loaded.
 
+### Synthetic Multi-Language Suite
+
+To evaluate retrieval, RAG, and code search capabilities across all 10 supported programming languages (Python, TS, TSX, JS, Rust, Go, Java, C++, Kotlin, Solidity) in a unified run, use the synthetic dataset:
+
+```bash
+uv run nexus eval run \
+  --suite retrieval,rag,code \
+  --product synthetic \
+  --fixture evals/fixtures/synthetic_project \
+  --golden evals/synthetic_queries.jsonl \
+  --limit 10 \
+  --out-dir artifacts/evals-synthetic
+```
+
+The unified harness automatically compiles the mock multi-language source files inside `evals/fixtures/synthetic_project/` from the template before running ingestion and evaluation.
+
 ## CI Contract
 
 Pull requests run the deterministic retrieval suite when `DEEPINFRA_API_KEY` is

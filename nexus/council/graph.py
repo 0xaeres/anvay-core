@@ -39,9 +39,9 @@ TokenSink = Callable[[dict[str, str]], Awaitable[None]]
 class CouncilHandles:
     retrieval: RetrievalContext
     graph_store: object
-    chat_drafter: ChatClient
-    chat_critic: ChatClient
-    chat_reviser: ChatClient
+    chat_planner: ChatClient
+    chat_evaluator: ChatClient
+    chat_repair: ChatClient
     chat_architect: ChatClient
     chat_domain_expert: ChatClient
     chat_quality_expert: ChatClient
@@ -53,9 +53,9 @@ class CouncilHandles:
             closers.append(self.graph_store.aclose)
         closers.extend(
             [
-                self.chat_drafter.aclose,
-                self.chat_critic.aclose,
-                self.chat_reviser.aclose,
+                self.chat_planner.aclose,
+                self.chat_evaluator.aclose,
+                self.chat_repair.aclose,
                 self.chat_architect.aclose,
                 self.chat_domain_expert.aclose,
                 self.chat_quality_expert.aclose,
@@ -76,44 +76,44 @@ async def council_handles(
     token_sink: TokenSink | None = None,
     trace_context: dict[str, str] | None = None,
 ) -> AsyncIterator[CouncilHandles]:
-    drafter_cfg = config.models.drafter or config.models.council
-    critic_cfg = config.models.critic or config.models.council
-    reviser_cfg = config.models.reviser or config.models.council
-    synthesizer_cfg = config.models.synthesizer or drafter_cfg
+    planner_cfg = config.models.planner or config.models.council
+    evaluator_cfg = config.models.evaluator or config.models.council
+    repair_cfg = config.models.repair or config.models.council
+    synthesizer_cfg = config.models.synthesizer or planner_cfg
     log.info(
-        "council models: drafter=%s/%s critic=%s/%s reviser=%s/%s synthesizer=%s/%s",
-        drafter_cfg.provider,
-        drafter_cfg.model,
-        critic_cfg.provider,
-        critic_cfg.model,
-        reviser_cfg.provider,
-        reviser_cfg.model,
+        "council models: planner=%s/%s evaluator=%s/%s repair=%s/%s synthesizer=%s/%s",
+        planner_cfg.provider,
+        planner_cfg.model,
+        evaluator_cfg.provider,
+        evaluator_cfg.model,
+        repair_cfg.provider,
+        repair_cfg.model,
         synthesizer_cfg.provider,
         synthesizer_cfg.model,
     )
     handles = CouncilHandles(
         retrieval=RetrievalContext.from_config(config),
         graph_store=create_graph_store(config),
-        chat_drafter=_chat_from_cfg(
-            drafter_cfg, role="drafter", token_sink=token_sink, trace_context=trace_context
+        chat_planner=_chat_from_cfg(
+            planner_cfg, role="planner", token_sink=token_sink, trace_context=trace_context
         ),
-        chat_critic=_chat_from_cfg(
-            critic_cfg, role="critic", token_sink=token_sink, trace_context=trace_context
+        chat_evaluator=_chat_from_cfg(
+            evaluator_cfg, role="evaluator", token_sink=token_sink, trace_context=trace_context
         ),
-        chat_reviser=_chat_from_cfg(
-            reviser_cfg, role="reviser", token_sink=token_sink, trace_context=trace_context
+        chat_repair=_chat_from_cfg(
+            repair_cfg, role="repair", token_sink=token_sink, trace_context=trace_context
         ),
         chat_architect=_chat_from_cfg(
-            critic_cfg, role="architect", token_sink=token_sink, trace_context=trace_context
+            evaluator_cfg, role="architect", token_sink=token_sink, trace_context=trace_context
         ),
         chat_domain_expert=_chat_from_cfg(
-            critic_cfg,
+            evaluator_cfg,
             role="domain_expert",
             token_sink=token_sink,
             trace_context=trace_context,
         ),
         chat_quality_expert=_chat_from_cfg(
-            critic_cfg,
+            evaluator_cfg,
             role="quality_expert",
             token_sink=token_sink,
             trace_context=trace_context,
@@ -158,7 +158,7 @@ def build_graph(config: NexusConfig, handles: CouncilHandles):
                 config=config,
                 retrieval=handles.retrieval,
                 graph_store=handles.graph_store,
-                chat=handles.chat_drafter,
+                chat=handles.chat_planner,
             )
         except Exception as e:
             raise CouncilAgentError("planner", e) from e
@@ -213,14 +213,14 @@ def build_graph(config: NexusConfig, handles: CouncilHandles):
     async def repair_node(state: CouncilState) -> dict:
         try:
             return await skill.repair_loop(
-                state, chat=handles.chat_reviser, retrieval=handles.retrieval
+                state, chat=handles.chat_repair, retrieval=handles.retrieval
             )
         except Exception as e:
             raise CouncilAgentError("repair", e) from e
 
     async def evaluator_node(state: CouncilState) -> dict:
         try:
-            return await skill.evaluator(state, chat=handles.chat_critic)
+            return await skill.evaluator(state, chat=handles.chat_evaluator)
         except Exception as e:
             raise CouncilAgentError("skill_eval", e) from e
 

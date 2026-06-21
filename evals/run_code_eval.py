@@ -74,10 +74,17 @@ class CodeReport:
 
 
 _PREF_PROMPT = (
-    "You are choosing the more correct answer given the retrieved contexts. "
-    "Read both ANSWER_A and ANSWER_B, then pick the one that is more accurate "
-    "and better grounded in the contexts. Output ONLY JSON: "
-    '{"choice": "A" | "B", "rationale": "1 sentence"}.'
+    "You are a rigorous answer-quality judge. You will be given a QUESTION, "
+    "CONTEXTS retrieved to answer it, and two candidate answers: ANSWER_A and "
+    "ANSWER_B. Decide which answer is more accurate and better grounded in the "
+    "CONTEXTS.\n"
+    "Step 1 — Identify the key facts the QUESTION requires.\n"
+    "Step 2 — Check each answer against the CONTEXTS for accuracy.\n"
+    "Step 3 — Pick the better-grounded answer.\n"
+    'Output ONLY JSON: '
+    '{"reasoning": "step-by-step comparison", '
+    '"choice": "A" | "B", '
+    '"rationale": "1 sentence"}.'
 )
 
 
@@ -153,15 +160,47 @@ async def _score_one(
 
 
 async def _pairwise(item: GoldenItem, hits, judge: ChatClient) -> bool | None:
+    """Run the pairwise preference check with position-bias mitigation.
+
+    We run the judgment twice — once with expected=A, once with expected=B —
+    and only count the result as a confirmed preference when the expected answer
+    wins *regardless of position*.  This eliminates systematic first-position
+    bias that would otherwise inflate PPA scores.
+    """
     contexts = "\n---\n".join(
         (getattr(h, "excerpt", "") or "")[:800] for h in hits[:6]
     )
-    # Random label assignment (A/B) — for determinism in tests we keep A=expected
+    ab = await _pairwise_one_order(
+        item, contexts=contexts, judge=judge, expected_is_a=True
+    )
+    ba = await _pairwise_one_order(
+        item, contexts=contexts, judge=judge, expected_is_a=False
+    )
+    if ab is None and ba is None:
+        return None
+    if ab is None:
+        return ba
+    if ba is None:
+        return ab
+    # Require the judge to agree on both orderings for a confident preference.
+    return ab and ba
+
+
+async def _pairwise_one_order(
+    item: GoldenItem,
+    *,
+    contexts: str,
+    judge: ChatClient,
+    expected_is_a: bool,
+) -> bool | None:
+    """Single pairwise judgment; expected_is_a controls position assignment."""
+    answer_a = item.expected_answer if expected_is_a else item.anti_answer
+    answer_b = item.anti_answer if expected_is_a else item.expected_answer
     user = (
         f"QUESTION:\n{item.query}\n\n"
         f"CONTEXTS:\n{contexts}\n\n"
-        f"ANSWER_A:\n{item.expected_answer}\n\n"
-        f"ANSWER_B:\n{item.anti_answer}\n"
+        f"ANSWER_A:\n{answer_a}\n\n"
+        f"ANSWER_B:\n{answer_b}\n"
     )
     try:
         payload, _ = await judge.chat_json(
@@ -170,13 +209,15 @@ async def _pairwise(item: GoldenItem, hits, judge: ChatClient) -> bool | None:
                 {"role": "user", "content": user[:6000]},
             ],
             temperature=0.0,
-            max_tokens=120,
+            # Increased to accommodate CoT reasoning field.
+            max_tokens=250,
         )
     except Exception as e:
-        log.warning("pairwise judge failed: %s", e)
+        log.warning("pairwise judge failed (expected_is_a=%s): %s", expected_is_a, e)
         return None
     choice = str(payload.get("choice", "")).strip().upper()
-    return choice == "A"
+    # If expected is A, "A" means correct; if expected is B, "B" means correct.
+    return choice == ("A" if expected_is_a else "B")
 
 
 def _identify(hit) -> str:

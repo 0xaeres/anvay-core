@@ -182,9 +182,9 @@ def _live_config(tmp_path: Path) -> NexusConfig:
     fast_models = config.models.model_copy(
         update={
             "council": config.models.light,
-            "drafter": config.models.light,
-            "critic": config.models.light,
-            "reviser": config.models.light,
+            "planner": config.models.light,
+            "evaluator": config.models.light,
+            "repair": config.models.light,
         }
     )
     return config.model_copy(

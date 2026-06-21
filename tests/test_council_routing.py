@@ -52,9 +52,9 @@ def test_build_graph_has_skill_nodes() -> None:
 
     handles = CouncilHandles.__new__(CouncilHandles)
     handles.retrieval = None  # type: ignore[assignment]
-    handles.chat_drafter = None  # type: ignore[assignment]
-    handles.chat_critic = None  # type: ignore[assignment]
-    handles.chat_reviser = None  # type: ignore[assignment]
+    handles.chat_planner = None  # type: ignore[assignment]
+    handles.chat_evaluator = None  # type: ignore[assignment]
+    handles.chat_repair = None  # type: ignore[assignment]
     handles.chat_architect = None  # type: ignore[assignment]
     handles.chat_domain_expert = None  # type: ignore[assignment]
     handles.chat_quality_expert = None  # type: ignore[assignment]

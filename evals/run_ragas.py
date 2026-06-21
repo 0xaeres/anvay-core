@@ -89,17 +89,30 @@ class Report:
 
 
 _FAITHFULNESS_PROMPT = (
-    "You are a strict grader. Given a QUESTION, an ANSWER, and the CONTEXTS "
-    "the answer was supposed to draw from, decide whether every meaningful "
-    "claim in the answer is supported by the contexts. Output ONLY JSON: "
-    '{"score": 0.0-1.0, "notes": "1-sentence explanation"}.'
+    "You are a strict faithfulness grader. Given a QUESTION, an ANSWER, and the "
+    "CONTEXTS the answer was supposed to draw from, evaluate whether every "
+    "meaningful factual claim in the ANSWER is supported by the CONTEXTS.\n"
+    "Step 1 — List each factual claim in the ANSWER (one per line).\n"
+    "Step 2 — For each claim, state whether it is directly supported, partially "
+    "supported, or absent from the CONTEXTS.\n"
+    "Step 3 — Assign a score: 1.0 = fully grounded, 0.0 = mostly hallucinated.\n"
+    'Output ONLY JSON: '
+    '{"reasoning": "step-by-step claim check", '
+    '"score": 0.0-1.0, '
+    '"verdict": "faithful" | "partial" | "hallucinated"}.'
 )
 
 _RELEVANCY_PROMPT = (
-    "You are a strict grader. Given a QUESTION, an ANSWER, and an "
-    "EXPECTED_ANSWER, score how well the answer addresses the question and "
-    "matches the expected content. 1.0 = fully on point, 0.0 = irrelevant. "
-    'Output ONLY JSON: {"score": 0.0-1.0, "notes": "1-sentence explanation"}.'
+    "You are a strict relevancy grader. Given a QUESTION, an ANSWER, and an "
+    "EXPECTED_ANSWER, evaluate how well the answer addresses the question and "
+    "matches the expected content.\n"
+    "Step 1 — Identify the core information need expressed by the QUESTION.\n"
+    "Step 2 — Check whether the ANSWER covers it and aligns with EXPECTED_ANSWER.\n"
+    "Step 3 — Assign a score: 1.0 = fully on point, 0.0 = irrelevant or wrong.\n"
+    'Output ONLY JSON: '
+    '{"reasoning": "step-by-step relevancy check", '
+    '"score": 0.0-1.0, '
+    '"verdict": "relevant" | "partial" | "irrelevant"}.'
 )
 
 _SYNTH_PROMPT = (
@@ -126,7 +139,10 @@ async def run(
         items = items[:limit]
 
     ctx = RetrievalContext.from_config(config)
-    judge = ChatClient.from_cfg(config.models.council, role="ragas_judge")
+    # Use the dedicated evaluator model if configured to avoid self-preference
+    # bias (the judge should not grade its own generated answers).
+    judge_cfg = config.models.evaluator or config.models.council
+    judge = ChatClient.from_cfg(judge_cfg, role="ragas_judge")
     answerer = ChatClient.from_cfg(config.models.council, role="ragas_answerer")
 
     try:
@@ -232,12 +248,16 @@ async def _llm_judge(
         {"role": "user", "content": user[:6000]},
     ]
     try:
-        payload, _ = await judge.chat_json(msg, temperature=0.0, max_tokens=200)
+        # Increased max_tokens to accommodate CoT reasoning field.
+        payload, _ = await judge.chat_json(msg, temperature=0.0, max_tokens=400)
     except Exception as e:
         log.warning("judge call failed: %s", e)
         return 0.0, f"judge error: {e}"
     score = max(0.0, min(1.0, float(payload.get("score", 0.0) or 0.0)))
-    return score, str(payload.get("notes", ""))
+    # Prefer the structured `reasoning` field; fall back to legacy `notes` for
+    # backwards-compatibility with any cached/stubbed responses in tests.
+    reasoning = str(payload.get("reasoning") or payload.get("notes", ""))
+    return score, reasoning
 
 
 def _heuristic_context_recall(item: GoldenItem, hits) -> float:

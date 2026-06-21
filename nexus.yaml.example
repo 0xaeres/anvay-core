@@ -45,19 +45,19 @@ models:
     temperature: 0.0
 
   # Optional role-specific overrides. Omit to use models.council for all three.
-  # drafter:
+  # planner:
   #   provider: deepinfra
   #   model: deepseek-ai/DeepSeek-V3
   #   api_key: ${DEEPINFRA_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
   #   temperature: 0.0
-  # critic:
+  # evaluator:
   #   provider: deepinfra
   #   model: deepseek-ai/DeepSeek-V3
   #   api_key: ${DEEPINFRA_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
   #   temperature: 0.0
-  # reviser:
+  # repair:
   #   provider: deepinfra
   #   model: deepseek-ai/DeepSeek-V3
   #   api_key: ${DEEPINFRA_API_KEY}
