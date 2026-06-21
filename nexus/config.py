@@ -6,7 +6,7 @@ import os
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -115,8 +115,17 @@ class EnrichmentWorkerCfg(BaseModel):
     max_attempts: int = 3
 
 
+class GraphIngestionCfg(BaseModel):
+    mode: Literal["deterministic", "bounded_llm"] = "bounded_llm"
+    max_resources_per_batch: int = Field(12, gt=0)
+    max_facts_per_resource: int = Field(24, gt=0)
+    concurrency: int = Field(2, gt=0)
+    confidence_floor: float = Field(0.65, ge=0.0, le=1.0)
+
+
 class IngestionCfg(BaseModel):
     enrich_chunks: EnrichCfg = Field(default_factory=EnrichCfg)
+    graph: GraphIngestionCfg = Field(default_factory=GraphIngestionCfg)
     embed_batch_size: int = 32
     quality_gate_threshold: float = 0.0
     file_batch_size: int = 50

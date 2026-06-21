@@ -340,15 +340,26 @@ with enriched vectors after the raw index exists. The indexer can delete by
 `resource_uri` for repair paths or by explicit chunk IDs for delta-safe stale
 cleanup.
 
-### Structural Summary Chunks (`nexus/ingest/summaries.py`)
+### Graph Extraction + Summary Chunks (`nexus/ingest/summaries.py`)
 
-After deterministic graph extraction, ingest writes one source-backed structural
-summary chunk per resource when graph facts exist. Summary chunks use the
-original `resource_uri`, line `0`, `context_path="Graph summary"`, and
-`artifact_type="summary"`. They are embedded as text and carry the same
-product/source/graph metadata as normal chunks, so broad architecture queries
-can retrieve graph-aware overview evidence before drilling into concrete source
-chunks. These summaries are deterministic and do not bypass source citations.
+Ingest always runs deterministic graph extraction first. When
+`ingestion.graph.mode="bounded_llm"` and the light model is reachable, changed
+code/docs resources may add allowlisted, strict-JSON LLM facts (`CALLS`,
+`IMPLEMENTS`, `DOCUMENTS`, `CONSTRAINS`, `DEPENDS_ON`, `MENTIONS`,
+`PART_OF_FLOW`) with confidence and source line anchors. Invalid, unsupported,
+or low-confidence facts are dropped; deterministic facts remain the baseline.
+
+Ingest writes source-backed graph memory chunks when graph facts exist:
+
+- `artifact_type="summary"` for per-resource structural counts/entities
+  (`context_path="Graph summary"`, line `0:0`).
+- `artifact_type="graph_community_summary"` for compact relationship memories
+  over flows, runtime/config/data, docs/tests (`context_path="Graph community
+  summary"`, line `0:1`).
+
+Both carry product/source/graph metadata as normal chunks. They help broad
+queries find graph-aware overview evidence, but final answers must still cite
+original source chunks for material claims.
 
 ### Repo Map (`nexus/retrieval/repomap.py`)
 
@@ -412,7 +423,7 @@ query understanding
   ├─ exact indexed grep
   ├─ repo-map symbol search
   ├─ graph-local traversal -> attached chunks
-  ├─ structural summary chunks
+  ├─ structural + graph community summary chunks
   └─ approved skill memory
       ↓
 mixed rerank + dedupe + channel quotas + file diversity + coverage gate
@@ -422,10 +433,12 @@ Graph is a navigation layer, not an answer source by itself. Graph traversal
 resolves files/symbols/routes/config keys to source-backed chunks and explains
 why adjacent evidence is related. Do not pollute semantic queries by appending
 all graph neighbor names. Broad product questions should retain documentation
-structural summaries, and implementation evidence; exact/path/symbol matches
-should not be crowded out by semantically similar but incomplete chunks. When a
-reranker is configured, the evidence engine reranks the mixed candidate pool
-across all channels before applying quotas.
+structural/community summaries, and implementation evidence; exact/path/symbol
+matches should not be crowded out by semantically similar but incomplete chunks.
+`QueryPlan` records the chosen strategy, seed entities, edge types, community
+hits, DRIFT-lite followups, graph paths, and unknowns. When a reranker is
+configured, the evidence engine reranks the mixed candidate pool across all
+channels before applying quotas.
 
 Still out of scope without an eval-set win: HyDE, semantic cache, classifier
 fallbacks, free-form code graph extraction, and circuit breakers. The retrieval
@@ -726,6 +739,12 @@ ingestion:
   enrich_chunks:
     docs: false                # optional Anthropic Contextual Retrieval
     code: false                # optional HQE
+  graph:
+    mode: bounded_llm          # deterministic graph + validated LLM facts when light model is reachable
+    max_resources_per_batch: 12
+    max_facts_per_resource: 24
+    concurrency: 2
+    confidence_floor: 0.65
   embed_batch_size: 32
   quality_gate_threshold: 0.0  # reranker score gate; calibrate per provider via eval
   file_batch_size: 50

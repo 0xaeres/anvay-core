@@ -7,7 +7,12 @@ import pytest
 
 from nexus.graph.models import GraphNode, GraphQueryResult
 from nexus.ingest.models import ResourceRef
-from nexus.ingest.summaries import graph_summary_chunk, is_summary_chunk
+from nexus.ingest.summaries import (
+    graph_community_summary_chunk,
+    graph_summary_chunk,
+    is_community_summary_chunk,
+    is_summary_chunk,
+)
 from nexus.retrieval import evidence
 from nexus.retrieval.evidence import (
     EvidenceCandidate,
@@ -90,6 +95,23 @@ def test_graph_summary_chunk_is_source_backed_summary() -> None:
     assert "auth" in chunk.content
 
 
+def test_graph_community_summary_chunk_captures_relationships() -> None:
+    from nexus.graph.extractor import extract_resource_graph
+
+    resource = ResourceRef(source_id="repo", uri="app.py", mime="text/x-python")
+    graph = extract_resource_graph(
+        product_id="p",
+        source_key="src",
+        resource=resource,
+        content="@router.get('/tokens')\ndef read_token():\n    return {}\n",
+    )
+    chunk = graph_community_summary_chunk(product_id="p", resource=resource, extraction=graph)
+
+    assert chunk is not None
+    assert is_community_summary_chunk(chunk)
+    assert "Flows:" in chunk.content
+
+
 @pytest.mark.asyncio
 async def test_summary_candidates_filter_summary_artifacts(monkeypatch) -> None:
     async def fake_retrieve(**_kwargs):
@@ -104,7 +126,7 @@ async def test_summary_candidates_filter_summary_artifacts(monkeypatch) -> None:
                         "start_line": 0,
                         "end_line": 0,
                         "content": "Structural summary for app.py.",
-                        "artifact_type": "summary",
+                        "artifact_type": "graph_community_summary",
                     },
                 ),
                 Hit(
@@ -134,6 +156,7 @@ async def test_summary_candidates_filter_summary_artifacts(monkeypatch) -> None:
     assert trace[0].hits == 1
     assert out[0].channel == "summary"
     assert out[0].role == "overview"
+    assert out[0].metadata["artifact_type"] == "graph_community_summary"
     assert out[0].line == 0
 
 

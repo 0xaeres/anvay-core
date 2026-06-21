@@ -188,13 +188,21 @@ class FalkorGraphStore:
             "MATCH (n) WHERE n.product_id = $product_id AND n.status = 'active' "
             "AND (n.stable_id = $mention "
             "OR toLower(coalesce(n.name, '')) CONTAINS toLower($mention) "
+            "OR toLower(coalesce(n.normalized_path, '')) CONTAINS toLower($mention) "
+            "OR toLower(coalesce(n.key, '')) CONTAINS toLower($mention) "
             "OR toLower(coalesce(n.resource_uri, '')) CONTAINS toLower($mention) "
             "OR toLower(coalesce(n.path, '')) CONTAINS toLower($mention)) "
             "RETURN n LIMIT $limit",
             {"product_id": product_id, "mention": mention, "limit": limit},
             timeout=self.cfg.timeout_ms,
         )
-        return _query_result_to_graph(result)
+        out = _query_result_to_graph(result)
+        out.nodes = sorted(
+            out.nodes,
+            key=lambda node: _node_match_score(node, mention),
+            reverse=True,
+        )
+        return out
 
     async def traverse(
         self,
@@ -214,16 +222,18 @@ class FalkorGraphStore:
             safe_types = "|".join(_ident(t) for t in edge_types if t in _EDGE_TYPES)
             if safe_types:
                 type_clause = f":{safe_types}"
+        effective_limit = min(limit, _traversal_limit(edge_types, limit))
         query = (
             "MATCH p=(seed)-[r"
             f"{type_clause}*1..{max(1, min(max_depth, 5))}]-(n) "
             "WHERE seed.product_id = $product_id AND seed.stable_id IN $seed_ids "
             "AND n.product_id = $product_id AND n.status = 'active' "
-            "RETURN seed, n, r LIMIT $limit"
+            "AND all(rel IN relationships(p) WHERE rel.product_id = $product_id AND rel.status = 'active') "
+            "RETURN nodes(p), relationships(p) LIMIT $limit"
         )
         result = await graph.ro_query(
             query,
-            {"product_id": product_id, "seed_ids": seed_ids, "limit": limit},
+            {"product_id": product_id, "seed_ids": seed_ids, "limit": effective_limit},
             timeout=self.cfg.timeout_ms,
         )
         return _query_result_to_graph(result)
@@ -356,6 +366,45 @@ def _query_result_to_graph(result) -> GraphQueryResult:
         edges=sorted(edges.values(), key=lambda e: e.stable_id),
         paths=paths,
     )
+
+
+def _traversal_limit(edge_types: list[str] | None, requested: int) -> int:
+    if not edge_types:
+        return min(requested, 100)
+    high_degree = {"MENTIONS", "RELATED_TO"}
+    if any(edge_type in high_degree for edge_type in edge_types):
+        return min(requested, 40)
+    return min(requested, 120)
+
+
+def _node_match_score(node: GraphNode, mention: str) -> float:
+    target = mention.strip().lower()
+    props = node.properties
+    values = [
+        node.stable_id,
+        props.get("name"),
+        props.get("path"),
+        props.get("normalized_path"),
+        props.get("resource_uri"),
+        props.get("key"),
+        props.get("title"),
+    ]
+    score = 0.0
+    for raw in values:
+        if not isinstance(raw, str) or not raw:
+            continue
+        value = raw.lower()
+        if value == target:
+            score = max(score, 100.0)
+        elif value.endswith(target):
+            score = max(score, 80.0)
+        elif target in value:
+            score = max(score, 50.0)
+    if props.get("resource_uri") == mention:
+        score += 10.0
+    if node.source_refs:
+        score += 2.0
+    return score * float(node.confidence or 1.0)
 
 
 def _collect_graph_values(value, nodes: dict[str, GraphNode], edges: dict[str, GraphEdge]) -> None:

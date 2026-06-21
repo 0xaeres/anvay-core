@@ -138,6 +138,17 @@ class QueryPlan(BaseModel):
     channels_run: list[str] = Field(default_factory=list)
     anchors: list[str] = Field(default_factory=list)
     graph_seed_strategy: str = "none"
+    strategy: str = "hybrid_graph"
+    seed_entities: list[str] = Field(default_factory=list)
+    edge_types: list[str] = Field(default_factory=list)
+    community_hits: int = 0
+    followups: list[str] = Field(default_factory=list)
+    graph_paths: list[str] = Field(default_factory=list)
+    graph_entity_count: int = 0
+    graph_relationship_count: int = 0
+    graph_relationships_used: bool = False
+    graph_diagnostics: list[str] = Field(default_factory=list)
+    unknowns: list[str] = Field(default_factory=list)
     coverage: EvidenceCoverage | None = None
     fallbacks: list[str] = Field(default_factory=list)
     latency_ms: float = 0.0
@@ -239,12 +250,22 @@ async def retrieve_evidence(
     plan.channels_run = _ordered_unique(str(item.channel) for item in trace)
 
     pooled = [candidate for group in channels for candidate in group]
+    plan.seed_entities = _ordered_unique(
+        gid for candidate in pooled for gid in candidate.graph_node_ids
+    )[:24]
+    plan.community_hits = sum(
+        1
+        for candidate in pooled
+        if candidate.metadata.get("artifact_type") == "graph_community_summary"
+    )
     if plan.mode == "drift_lite":
+        plan.followups = _drift_followup_queries(query, pooled)
         drifted, drift_trace, drift_reranked = await drift_lite_candidates(
             ctx=ctx,
             product_id=product_id,
             query=query,
             seeds=pooled,
+            followups=plan.followups,
             top_k=max(top_k, 8),
         )
         pooled.extend(drifted)
@@ -274,6 +295,26 @@ async def retrieve_evidence(
             merged = merge_candidates([*merged, *repaired], understanding=understanding, top_k=top_k)
             coverage = assess_coverage(understanding, merged)
     plan.coverage = coverage
+    plan.graph_paths = _ordered_unique(
+        str(candidate.metadata.get("graph_path") or "")
+        for candidate in merged
+        if candidate.metadata.get("graph_path")
+    )[:8]
+    plan.graph_entity_count = len(
+        _ordered_unique(gid for candidate in merged for gid in candidate.graph_node_ids)
+    )
+    plan.graph_relationship_count = max(
+        (int(candidate.metadata.get("graph_edge_count") or 0) for candidate in merged),
+        default=0,
+    )
+    plan.graph_relationships_used = plan.graph_relationship_count > 0
+    plan.graph_diagnostics = _ordered_unique(
+        str(candidate.metadata.get("graph_diagnostic") or "")
+        for candidate in merged
+        if candidate.metadata.get("graph_diagnostic")
+    )[:8]
+    if not plan.seed_entities and plan.mode in {"local", "drift_lite"}:
+        plan.unknowns.append("no graph seed entities resolved")
     plan.latency_ms = round((time.perf_counter() - started) * 1000, 1)
     plan.channels_run = _ordered_unique(str(item.channel) for item in trace)
     for item in trace:
@@ -310,15 +351,20 @@ def _query_plan(understanding: QueryUnderstanding, *, query_mode: EvidenceMode) 
             mode = "global"
     if mode == "drift_lite":
         seed_strategy = "summary_repo_map_followups"
+        strategy = "drift_lite"
     elif mode == "local":
         seed_strategy = "explicit_anchor_graph_traversal" if understanding.anchors else "hybrid_hit_graph_seed"
+        strategy = "local_graph"
     else:
         seed_strategy = "structural_summary_repo_map"
+        strategy = "global_community"
     return QueryPlan(
         mode=mode,
         shape=understanding.shape,
         anchors=understanding.anchors,
         graph_seed_strategy=seed_strategy,
+        strategy=strategy,
+        edge_types=_edge_types_for(understanding),
     )
 
 
@@ -459,10 +505,11 @@ async def graph_local_candidates(
     if not seed_ids:
         return [], [RetrievalTrace(channel="graph", query=" ".join(understanding.anchors), hits=0)], False
 
+    edge_types = _edge_types_for(understanding)
     traversal = await graph_store.traverse(
         product_id=product_id,
         seed_ids=seed_ids[:8],
-        edge_types=_edge_types_for(understanding),
+        edge_types=edge_types,
         max_depth=max(1, min(max_depth, 4)),
         limit=80,
     )
@@ -488,15 +535,36 @@ async def graph_local_candidates(
         ]
     )
     raw = [item for batch in batches for item in batch]
-    raw.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
-    out = [
-        _candidate_from_hit(
+    traversal_nodes = getattr(traversal, "nodes", []) or []
+    traversal_edges = getattr(traversal, "edges", []) or []
+    traversal_paths = getattr(traversal, "paths", []) or []
+    rank_by_id = _graph_rank_by_id(
+        seed_ids=seed_ids,
+        nodes=traversal_nodes,
+        edges=traversal_edges,
+    )
+    raw.sort(
+        key=lambda item: _graph_hit_rank(item, rank_by_id),
+        reverse=True,
+    )
+    out = []
+    for item in raw[:limit]:
+        candidate = _candidate_from_hit(
             Hit(id=str(item["id"]), score=float(item.get("score") or 1.0), payload=item.get("payload") or {}, source="graph"),
             channel="graph",
         )
-        for item in raw[:limit]
-    ]
-    return out, [RetrievalTrace(channel="graph", query=" ".join(understanding.anchors), hits=len(out))], False
+        candidate.score = _graph_hit_rank(item, rank_by_id)
+        candidate.metadata["graph_seed_ids"] = seed_ids[:8]
+        candidate.metadata["edge_types"] = edge_types
+        candidate.metadata["graph_edge_count"] = len(traversal_edges)
+        candidate.metadata["graph_relationship_types"] = sorted({getattr(edge, "type", "") for edge in traversal_edges if getattr(edge, "type", "")})
+        if traversal_edges:
+            candidate.metadata["graph_path"] = _graph_path_label(traversal_paths, candidate.graph_node_ids)
+        else:
+            candidate.metadata["graph_diagnostic"] = "no graph relationships returned"
+        out.append(candidate)
+    detail = "" if traversal_edges else "no graph relationships returned"
+    return out, [RetrievalTrace(channel="graph", query=" ".join(understanding.anchors), hits=len(out), detail=detail)], False
 
 
 async def summary_candidates(
@@ -518,7 +586,7 @@ async def summary_candidates(
     out = [
         _candidate_from_hit(hit, channel="summary")
         for hit in result.hits
-        if (hit.payload or {}).get("artifact_type") == "summary"
+        if (hit.payload or {}).get("artifact_type") in {"summary", "graph_community_summary"}
     ][:limit]
     return out, [RetrievalTrace(channel="summary", query=query, hits=len(out))], result.reranked
 
@@ -564,6 +632,7 @@ async def drift_lite_candidates(
     query: str,
     seeds: Sequence[EvidenceCandidate],
     top_k: int,
+    followups: Sequence[str] | None = None,
 ) -> tuple[list[EvidenceCandidate], list[RetrievalTrace], bool]:
     """Deterministic broad-to-specific follow-up retrieval.
 
@@ -571,7 +640,7 @@ async def drift_lite_candidates(
     queries come only from structural summaries, repo-map symbols, and the
     original user query.
     """
-    followups = _drift_followup_queries(query, seeds)
+    followups = list(followups or _drift_followup_queries(query, seeds))
     out: list[EvidenceCandidate] = []
     trace: list[RetrievalTrace] = []
     reranked = False
@@ -771,7 +840,11 @@ def _candidate_from_hit(hit: Hit, *, channel: EvidenceChannel) -> EvidenceCandid
         context_path=str(context_path) if context_path else None,
         excerpt=_truncate(content, 900),
         graph_node_ids=list(payload.get("graph_node_ids") or []),
-        metadata={"source": hit.source, "kind": payload.get("kind")},
+        metadata={
+            "source": hit.source,
+            "kind": payload.get("kind"),
+            "artifact_type": payload.get("artifact_type"),
+        },
     )
 
 
@@ -857,6 +930,66 @@ def _drift_followup_queries(query: str, seeds: Sequence[EvidenceCandidate]) -> l
         f"{query} {fragment}".strip()
         for fragment in _ordered_unique(fragments)
     ][:4]
+
+
+def _graph_rank_by_id(
+    *,
+    seed_ids: Sequence[str],
+    nodes: Sequence[object],
+    edges: Sequence[object] | None = None,
+) -> dict[str, float]:
+    ranks = {seed_id: 10.0 for seed_id in seed_ids}
+    for node in nodes:
+        stable_id = getattr(node, "stable_id", "")
+        if not stable_id:
+            continue
+        confidence = float(getattr(node, "confidence", 1.0) or 1.0)
+        labels = set(getattr(node, "labels", []) or [])
+        label_boost = 1.5 if labels & {"APIEndpoint", "Function", "Class", "Document"} else 1.0
+        ranks[stable_id] = max(ranks.get(stable_id, 0.0), 5.0 * confidence + label_boost)
+    for edge in edges or []:
+        confidence = float(getattr(edge, "confidence", 1.0) or 1.0)
+        freshness = float(getattr(edge, "freshness", 1.0) or 1.0)
+        method = getattr(edge, "extraction_method", "deterministic")
+        method_boost = 1.0 if method == "deterministic" else 0.75
+        edge_weight = _edge_type_weight(str(getattr(edge, "type", "")))
+        score = 3.0 * confidence * freshness * method_boost * edge_weight
+        for stable_id in (getattr(edge, "from_id", ""), getattr(edge, "to_id", "")):
+            if stable_id:
+                ranks[stable_id] = max(ranks.get(stable_id, 0.0), score)
+    return ranks
+
+
+def _edge_type_weight(edge_type: str) -> float:
+    return {
+        "DECLARES": 1.4,
+        "CONTAINS": 1.2,
+        "HANDLES": 1.3,
+        "EXPOSES": 1.3,
+        "CALLS": 1.2,
+        "COVERS": 1.1,
+        "DOCUMENTS": 1.1,
+        "MENTIONS": 0.6,
+        "RELATED_TO": 0.5,
+    }.get(edge_type, 1.0)
+
+
+def _graph_path_label(paths: Sequence[dict[str, Any]], graph_node_ids: Sequence[str]) -> str:
+    for path in paths:
+        node_ids = [str(node_id) for node_id in path.get("node_ids", [])]
+        edge_ids = [str(edge_id) for edge_id in path.get("edge_ids", [])]
+        if node_ids and any(node_id in graph_node_ids for node_id in node_ids):
+            return " -> ".join([*node_ids[:4], *edge_ids[:2]])
+    return " -> ".join(graph_node_ids[:6])
+
+
+def _graph_hit_rank(item: dict, rank_by_id: dict[str, float]) -> float:
+    payload = item.get("payload") or {}
+    ids = list(payload.get("graph_node_ids") or [])
+    graph_score = max((rank_by_id.get(gid, 0.0) for gid in ids), default=0.0)
+    artifact = payload.get("artifact_type")
+    artifact_boost = 1.0 if artifact == "graph_community_summary" else 0.0
+    return float(item.get("score") or 0.0) + graph_score + artifact_boost
 
 
 def _take_channel(

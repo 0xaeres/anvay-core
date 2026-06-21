@@ -151,6 +151,10 @@ async def answer_graph_rag(
             resolved_entities=[],
             graph_available=True,
             graph_used=False,
+            graph_relationships_used=False,
+            graph_entity_count=0,
+            graph_relationship_count=0,
+            graph_diagnostics=["ambiguous entity resolution"],
             needs_clarification=True,
             clarification_options=options,
             confidence=0.0,
@@ -182,11 +186,15 @@ async def answer_graph_rag(
             node for node in traversal.nodes if node.stable_id not in seed_ids
         ]
         traversal_edges = traversal.edges
-        graph_paths = _paths_from_graph(
-            seed_nodes=resolved_nodes,
-            nodes=traversal.nodes,
-            edges=traversal.edges,
-        )
+        if traversal_edges:
+            graph_paths = _paths_from_graph(
+                seed_nodes=resolved_nodes,
+                nodes=traversal.nodes,
+                edges=traversal.edges,
+                paths=traversal.paths,
+            )
+        else:
+            unknowns.append("no graph relationships returned")
     else:
         unknowns.append("no graph entity resolved")
 
@@ -216,6 +224,20 @@ async def answer_graph_rag(
         unknowns=unknowns,
     )
 
+    query_plan = getattr(evidence_result, "query_plan", None)
+    if query_plan is not None:
+        query_plan.graph_entity_count = len({node.stable_id for node in [*resolved_nodes, *traversal_nodes]})
+        query_plan.graph_relationship_count = len(traversal_edges)
+        query_plan.graph_relationships_used = bool(traversal_edges)
+        query_plan.graph_diagnostics = _ordered_unique(
+            [*(getattr(query_plan, "graph_diagnostics", []) or []), *unknowns]
+        )
+    graph_diagnostics = _ordered_unique(
+        [
+            *unknowns,
+            *(getattr(query_plan, "graph_diagnostics", []) or []),
+        ]
+    )
     return GraphRAGAnswer(
         product_id=product_id,
         query=request.query,
@@ -226,9 +248,13 @@ async def answer_graph_rag(
         confidence=_confidence(resolved_nodes, traversal_nodes, citations, True),
         trace=list(getattr(evidence_result, "trace", []) or []),
         coverage=getattr(evidence_result, "coverage", None),
-        query_plan=getattr(evidence_result, "query_plan", None),
+        query_plan=query_plan,
         graph_available=True,
         graph_used=bool(resolved_nodes or traversal_nodes or traversal_edges),
+        graph_relationships_used=bool(traversal_edges),
+        graph_entity_count=len({node.stable_id for node in [*resolved_nodes, *traversal_nodes]}),
+        graph_relationship_count=len(traversal_edges),
+        graph_diagnostics=graph_diagnostics,
         reranked=evidence_result.reranked,
         unknowns=unknowns,
     )
@@ -531,17 +557,29 @@ def _paths_from_graph(
     seed_nodes: Sequence[GraphNode],
     nodes: Sequence[GraphNode],
     edges: Sequence[GraphEdge],
+    paths: Sequence[dict] | None = None,
 ) -> list[GraphRAGPath]:
+    if not edges:
+        return []
     node_ids = {node.stable_id for node in nodes}
     edge_ids = [edge.stable_id for edge in edges]
     avg_conf = sum(edge.confidence for edge in edges) / max(len(edges), 1)
+    relationship_types = sorted({edge.type for edge in edges})
+    source_anchors = _ordered_unique(
+        ref.anchor for edge in edges for ref in edge.source_refs if ref.anchor
+    )[:5]
     return [
         GraphRAGPath(
             seed_id=seed.stable_id,
+            seed_name=_display_name(seed),
             node_ids=sorted(node_ids),
             edge_ids=edge_ids,
-            summary=f"{_display_name(seed)} expanded to {len(node_ids)} node(s)",
-            confidence=round(avg_conf, 3) if edges else seed.confidence,
+            relationship_types=relationship_types,
+            source_anchors=source_anchors,
+            node_count=len(node_ids),
+            edge_count=len(edge_ids),
+            summary=f"{_display_name(seed)} reached {len(node_ids)} node(s) through {len(edge_ids)} relationship(s)",
+            confidence=round(avg_conf, 3),
         )
         for seed in seed_nodes[:5]
     ]

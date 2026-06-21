@@ -21,7 +21,7 @@ from nexus.ingest.chunker import _LANGS, _identifier_of, _lang_for
 from nexus.ingest.models import Chunk, ResourceRef
 from nexus.retrieval.repomap import _KIND_BY_NODE, _signature_of
 
-EXTRACTOR_SCHEMA_VERSION: Final = "graph-v1"
+EXTRACTOR_SCHEMA_VERSION: Final = "graph-v2"
 
 _GRAPH_NS = uuid.UUID("1a41a1f2-a486-4aa7-bad5-a1a263ad91c2")
 _TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__)/|(^|/|_)(test|spec)[_.-]", re.I)
@@ -45,6 +45,9 @@ _DB_TABLE_RE = re.compile(
     re.I,
 )
 _MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.M)
+_DOC_PATH_RE = re.compile(r"\b[\w./-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|md|mdx|sql|yaml|yml|toml|json)\b")
+_DOC_ROUTE_RE = re.compile(r"/[A-Za-z0-9_./:{}-]+")
+_DOC_SYMBOL_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]{2,})`")
 _JIRA_METADATA_RE = re.compile(r'^\{"jira":\s*(\{.*\})\}\s*$', re.M)
 
 
@@ -161,11 +164,13 @@ def extract_resource_graph(
             if "Test" in node.labels:
                 add_edge("COVERS", node.stable_id, module_id, properties={"coverage_hint": node.properties.get("name")})
         _add_import_edges(product_id, resource, content, module_id, add_node, add_edge)
+        _add_call_edges(product_id, resource, content, lang, symbol_ids, add_edge)
         _add_route_edges(product_id, resource, content, file_id, symbol_ids, add_node, add_edge)
         _add_config_edges(product_id, resource, content, file_id, add_node, add_edge)
 
     if resource.uri.lower().endswith((".md", ".mdx")) or resource.mime == "text/markdown":
         _add_doc_headings(product_id, resource, content, file_id, now, source_ref, add_node, add_edge)
+        _add_doc_reference_edges(product_id, resource, content, file_id, now, source_ref, add_node, add_edge)
 
     if "Migration" in file_labels or resource.uri.lower().endswith(".sql"):
         _add_db_edges(product_id, resource, content, file_id, add_node, add_edge)
@@ -270,8 +275,49 @@ def _add_import_edges(product_id, resource, content, module_id, add_node, add_ed
         if not imported:
             continue
         imported_id = _sid("module", product_id, imported)
-        add_node("Module", imported_id, properties={"name": imported, "external": imported.startswith((".", "@")) is False})
+        add_node("Module", imported_id, properties={"name": imported, "external": not _looks_internal_import(imported, resource.uri)})
         add_edge("IMPORTS", module_id, imported_id, properties={"import": imported})
+
+
+def _add_call_edges(product_id, resource, content, lang, symbols, add_edge) -> None:
+    if resource.uri.lower().endswith((".go", ".rs", ".java")):
+        return
+    cfg = _LANGS[lang]
+    tree = Parser(cfg.language).parse(content.encode("utf-8"))
+    by_name = {
+        str(symbol.properties.get("name")): symbol
+        for symbol in symbols
+        if symbol.properties.get("name")
+    }
+    calls: list[tuple[int, str]] = []
+    stack: list[Node] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type in {"call", "call_expression"}:
+            name = _called_name(node, content)
+            if name:
+                calls.append((node.start_point[0] + 1, name))
+        stack.extend(reversed(node.named_children))
+    symbols_by_span = sorted(
+        (
+            int(symbol.properties.get("start_line", 0)),
+            int(symbol.properties.get("end_line", 0)),
+            symbol.stable_id,
+        )
+        for symbol in symbols
+        if isinstance(symbol.properties.get("start_line"), int)
+        and isinstance(symbol.properties.get("end_line"), int)
+    )
+    for line, callee_name in calls:
+        callee = by_name.get(callee_name)
+        if callee is None:
+            continue
+        caller_id = next(
+            (stable_id for start, end, stable_id in symbols_by_span if start <= line <= end),
+            None,
+        )
+        if caller_id and caller_id != callee.stable_id:
+            add_edge("CALLS", caller_id, callee.stable_id, properties={"callee": callee_name, "line": line})
 
 
 def _add_route_edges(product_id, resource, content, file_id, symbols, add_node, add_edge) -> None:
@@ -313,17 +359,70 @@ def _add_db_edges(product_id, resource, content, file_id, add_node, add_edge) ->
 
 
 def _add_doc_headings(product_id, resource, content, file_id, now, source_ref, add_node, add_edge) -> None:
+    stack: list[tuple[int, str]] = []
     for match in _MD_HEADING_RE.finditer(content):
         line = content[: match.start()].count("\n") + 1
         title = match.group(2).strip()
+        level = len(match.group(1))
         doc_id = _sid("document", product_id, resource.uri, title)
         add_node(
             "Document",
             doc_id,
-            properties={"title": title, "level": len(match.group(1)), "resource_uri": resource.uri, "start_line": line},
+            properties={"title": title, "level": level, "resource_uri": resource.uri, "start_line": line},
             refs=[source_ref.model_copy(update={"anchor": f"{resource.uri}:{line}", "start_line": line, "end_line": line})],
         )
-        add_edge("CONTAINS", file_id, doc_id)
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        parent_id = stack[-1][1] if stack else file_id
+        add_edge("CONTAINS", parent_id, doc_id)
+        stack.append((level, doc_id))
+    _ = now
+
+
+def _add_doc_reference_edges(product_id, resource, content, file_id, now, source_ref, add_node, add_edge) -> None:
+    doc_id = file_id
+    headings = list(_MD_HEADING_RE.finditer(content))
+    for index, heading in enumerate(headings or [None]):
+        if heading is not None:
+            title = heading.group(2).strip()
+            doc_id = _sid("document", product_id, resource.uri, title)
+            start = heading.end()
+            start_line = content[: heading.start()].count("\n") + 1
+        else:
+            start = 0
+            start_line = 1
+        end = headings[index + 1].start() if heading is not None and index + 1 < len(headings) else len(content)
+        section = content[start:end]
+        for match in _DOC_PATH_RE.finditer(section):
+            line = start_line + section[: match.start()].count("\n")
+            target = match.group(0).strip("./")
+            target_id = _sid("file", product_id, target)
+            add_node("CodeFile", target_id, properties={"resource_uri": target, "name": PurePosixPath(target).name})
+            ref = source_ref.model_copy(update={"anchor": f"{resource.uri}:{line}", "start_line": line, "end_line": line})
+            add_edge("DOCUMENTS", doc_id, target_id, properties={"mention": target}, refs=[ref])
+        for match in _DOC_ROUTE_RE.finditer(section):
+            line = start_line + section[: match.start()].count("\n")
+            route = match.group(0)
+            route_id = _sid("api", product_id, "ANY", _normalize_route(route), _module_name(resource.uri))
+            add_node("APIEndpoint", route_id, properties={"path": route, "normalized_path": _normalize_route(route)})
+            ref = source_ref.model_copy(update={"anchor": f"{resource.uri}:{line}", "start_line": line, "end_line": line})
+            add_edge("MENTIONS", doc_id, route_id, properties={"mention": route}, refs=[ref])
+        for match in _CONFIG_READ_RE.finditer(section):
+            line = start_line + section[: match.start()].count("\n")
+            key = next((g for g in match.groups() if g), None)
+            if not key:
+                continue
+            config_id = _sid("config", product_id, key)
+            add_node("Config", config_id, properties={"name": key})
+            ref = source_ref.model_copy(update={"anchor": f"{resource.uri}:{line}", "start_line": line, "end_line": line})
+            add_edge("MENTIONS", doc_id, config_id, properties={"mention": key}, refs=[ref])
+        for match in _DOC_SYMBOL_RE.finditer(section):
+            line = start_line + section[: match.start()].count("\n")
+            name = match.group(1)
+            symbol_id = _sid("symbol", product_id, resource.uri, name, "Function")
+            add_node("Function", symbol_id, properties={"name": name, "resource_uri": resource.uri})
+            ref = source_ref.model_copy(update={"anchor": f"{resource.uri}:{line}", "start_line": line, "end_line": line})
+            add_edge("MENTIONS", doc_id, symbol_id, properties={"mention": name}, refs=[ref])
     _ = now
 
 
@@ -390,6 +489,36 @@ def _jira_metadata(content: str) -> dict:
 def _jira_site(uri: str) -> str:
     parts = uri.split(":")
     return parts[1] if len(parts) >= 3 else "unknown"
+
+
+def _called_name(node: Node, content: str) -> str | None:
+    target = node.child_by_field_name("function")
+    if target is None and node.named_children:
+        target = node.named_children[0]
+    if target is None:
+        return None
+    if target.type in {"identifier", "attribute", "property_identifier"}:
+        return _last_identifier(_node_text(target, content))
+    if target.type in {"member_expression", "attribute"}:
+        return _last_identifier(_node_text(target, content))
+    return _last_identifier(_node_text(target, content))
+
+
+def _node_text(node: Node, content: str) -> str:
+    return content.encode("utf-8")[node.start_byte : node.end_byte].decode("utf-8", errors="ignore")
+
+
+def _last_identifier(text: str) -> str | None:
+    matches = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text)
+    return matches[-1] if matches else None
+
+
+def _looks_internal_import(imported: str, uri: str) -> bool:
+    if imported.startswith("."):
+        return True
+    first = imported.split(".", 1)[0]
+    parts = [part for part in PurePosixPath(uri).parts[:-1] if part not in {".", ""}]
+    return first in parts
 
 
 def _csv_or_list(value) -> list[str]:

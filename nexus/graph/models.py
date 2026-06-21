@@ -167,8 +167,13 @@ class GraphRAGCitation(BaseModel):
 
 class GraphRAGPath(BaseModel):
     seed_id: str
+    seed_name: str = ""
     node_ids: list[str] = Field(default_factory=list)
     edge_ids: list[str] = Field(default_factory=list)
+    relationship_types: list[str] = Field(default_factory=list)
+    source_anchors: list[str] = Field(default_factory=list)
+    node_count: int = 0
+    edge_count: int = 0
     summary: str = ""
     confidence: float = 0.0
 
@@ -201,6 +206,10 @@ class GraphRAGAnswer(BaseModel):
     query_plan: QueryPlan | None = None
     graph_available: bool = False
     graph_used: bool = False
+    graph_relationships_used: bool = False
+    graph_entity_count: int = 0
+    graph_relationship_count: int = 0
+    graph_diagnostics: list[str] = Field(default_factory=list)
     reranked: bool = False
     needs_clarification: bool = False
     clarification_options: list[GraphContextEntity] = Field(default_factory=list)
