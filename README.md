@@ -30,8 +30,12 @@ docs, source credentials, approved guidance, and tenancy boundary.
 - **Delta-safe sync.** Resync reads manifests, skips unchanged resources,
   embeds changed resources before stale chunk cleanup, and deletes removed
   resources from derived indexes.
-- **Measured retrieval.** The serving path is dense + BM25, reciprocal rank
-  fusion, then a configured cross-encoder reranker. More layers require eval evidence.
+- **Measured retrieval.** The serving path is a multi-channel evidence engine
+  managed by `retrieve_evidence()`. It integrates dense + BM25 vector search,
+  exact text grep, repo-map symbol outlines, graph-local path traversal, and
+  approved skill memories. Results are dynamically mixed via cross-encoder
+  reranking and gated by continuous evaluation metrics (e.g., faithfulness ≥ 0.85,
+  nDCG@10 ≥ 0.75).
 - **Portable output.** Approved skills are ordinary Agent Skills directories
   served through MCP, so Claude, Codex, Cursor, Continue, and other clients can
   consume the same product guidance.
@@ -61,6 +65,7 @@ flowchart LR
 
   subgraph Stores["Derived stores"]
     Qdrant["Qdrant vectors + BM25 sparse"]
+    GraphStore["FalkorDB graph store"]
     RepoMap["Repo maps"]
     SkillsRepo["Git skills repo"]
   end
@@ -78,8 +83,10 @@ flowchart LR
   FastAPI --> Ingest
   Ingest --> Registry
   Ingest --> Qdrant
+  Ingest --> GraphStore
   Ingest --> RepoMap
   Retrieval --> Qdrant
+  Retrieval --> GraphStore
   Retrieval --> RepoMap
   FastAPI --> Council
   Council --> Retrieval
@@ -98,8 +105,8 @@ Nexus separates source-of-truth state from derived serving state:
 |---|---|---|
 | API | `nexus/api/` | Product, source, council, proposal, skill, setup, auth, and dashboard routes. |
 | Registry | SQLite via `nexus/registry.py` | Products, runtime sources, sync manifests, sync runs, proposal/session metadata. |
-| Ingest | `nexus/ingest/` | Source diff, chunking, optional enrichment, embeddings, sparse vectors, Qdrant writes, stale cleanup. |
-| Retrieval | `nexus/retrieval/` | Dense + BM25 search, RRF merge, cross-encoder rerank, graph-local traversal, repo map context. |
+| Ingest | `nexus/ingest/` | Source diff, chunking, optional enrichment, embeddings, sparse vectors, Qdrant/GraphStore writes, stale cleanup. |
+| Retrieval | `nexus/retrieval/` | Multi-channel evidence engine (dense + BM25, exact grep, repo-map symbols, graph-local traversal, summaries, skills), cross-encoder rerank. |
 | Council | `nexus/council/` | Planner, expert fanout, synthesizer, repair, eval, finalizer, SSE progress. |
 | Skills | `nexus/skills/` | Agent Skills parsing, storage, provenance, approval write path, Git commit/push. |
 | MCP | `nexus/mcp_server/` | `find_skills`, `get_skill`, `query_code_context`, `hybrid_search_corpus`. |
@@ -120,6 +127,7 @@ sequenceDiagram
   participant Registry as SQLite registry
   participant Ingest as Ingest pipeline
   participant Qdrant
+  participant Graph as FalkorDB Graph
   participant Council as Expert council
   participant Skills as Skills repo
   participant MCP as MCP clients
@@ -132,19 +140,23 @@ sequenceDiagram
   API->>Ingest: Start background sync
   Ingest->>Registry: Load manifest + compute diff
   Ingest->>Qdrant: Upsert changed chunks
+  Ingest->>Graph: Upsert changed entities/edges
   Ingest->>Qdrant: Delete stale/removed chunks
+  Ingest->>Graph: Retire deleted graph resources
   Ingest->>Registry: Persist successful manifest
   User->>UI: Run council
   UI->>API: POST /council/sessions
   API->>Council: Start bounded LangGraph workflow
-  Council->>Qdrant: Retrieve evidence
+  Council->>Qdrant: Retrieve hybrid vector/text context
+  Council->>Graph: Resolve & traverse graph paths
   Council->>Registry: Queue skill proposals
   User->>UI: Review + approve
   UI->>API: POST /proposals/{id}/approve
   API->>Skills: Commit approved SKILL.md
   API->>Qdrant: Index approved skill body
   MCP->>Skills: Serve approved skills
-  MCP->>Qdrant: Serve product-scoped context
+  MCP->>Qdrant: Serve product-scoped vector context
+  MCP->>Graph: Serve graph context
 ```
 
 ## Product Skill Lifecycle
@@ -304,6 +316,23 @@ uv run python -m evals.run_ragas
 uv run python -m evals.run_code_eval
 make test-live-e2e
 ```
+
+### Evaluation Gates & Thresholds
+
+The evaluation harness enforces strict quality gates across three distinct test suites (`retrieval`, `rag`, and `code`). Pull requests and local evaluations must meet or exceed these thresholds:
+
+| Suite | Focus | Target Metric | Required Threshold | Verification Command |
+|---|---|---|---|---|
+| **Retrieval** | Core search quality | Recall@10 | ≥ `0.80` | `uv run nexus eval run --suite retrieval` |
+| | | Mean Reciprocal Rank (MRR) | ≥ `0.50` | |
+| **RAG** | Quality & truthfulness | Faithfulness (LLM-as-a-judge) | ≥ `0.85` | `uv run python -m evals.run_ragas` |
+| | | Answer Correctness (LLM-as-a-judge) | ≥ `0.80` | |
+| | | Context Recall | ≥ `0.75` | |
+| **Code** | Repository understanding | nDCG@10 | ≥ `0.75` | `uv run python -m evals.run_code_eval` |
+| | | Recall@10 | ≥ `0.80` | |
+| | | Pairwise Preference Accuracy | ≥ `0.85` | |
+
+*Note on LLM-as-a-Judge Design:* The in-house judges evaluate faithfulness and correctness asynchronously using Chain-of-Thought (CoT) reasoning to ensure determinism and auditable output. Pairwise preference runs with position-swap bias mitigation (running matches twice swapping A/B positions).
 
 Run retrieval evals after changes to chunking, embedding, optional enrichment,
 hybrid search, reranking, or repo map generation. See

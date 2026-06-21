@@ -72,8 +72,8 @@ def _seed_proposal(queue: ProposalQueue) -> SkillProposal:
 
 
 def _init_skills_repo(path: Path, remote_path: Path) -> None:
-    Repo.init(remote_path, bare=True)
-    repo = Repo.init(path)
+    Repo.init(remote_path, bare=True, initial_branch="main")
+    repo = Repo.init(path, initial_branch="main")
     (path / "README.md").write_text("# skills\n", encoding="utf-8")
     repo.git.add(A=True)
     repo.index.commit("seed skills repo")
