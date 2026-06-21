@@ -6,7 +6,8 @@ Three scores per query, plus aggregates:
   is grounded in retrieved contexts.
 - **answer_relevancy** - LLM judges whether the answer addresses the question
   (and aligns with expected_answer when one is supplied).
-- **context_recall** - did the retrieved contexts cover the expected_files?
+- **context_recall** - fraction of expected_files covered by at least one
+  retrieved hit, matched by URI suffix (mirrors tests/eval/harness.matches_expected).
 
 Gates (per Slice 7 plan):
   faithfulness    >= 0.85
@@ -240,13 +241,31 @@ async def _llm_judge(
 
 
 def _heuristic_context_recall(item: GoldenItem, hits) -> float:
+    """Fraction of expected_files covered by at least one retrieved hit.
+
+    Uses URI suffix matching (``resource_uri.endswith(expected_file)``) to
+    avoid false positives from plain substring search.  Mirrors the logic in
+    ``tests.eval.harness.matches_expected`` so both harnesses agree on what
+    counts as a hit.
+    """
     if not item.expected_files:
         return 1.0
-    hit_files = " ".join(
-        (h.payload or {}).get("resource_uri", "") for h in hits
-    ).lower()
-    matched = sum(1 for f in item.expected_files if f.lower() in hit_files)
+    # Collect unique URIs from the retrieved hits once.
+    retrieved_uris = [
+        str((h.payload or {}).get("resource_uri") or "").lower()
+        for h in hits
+    ]
+    matched = sum(
+        1
+        for expected_file in item.expected_files
+        if _any_uri_covers(expected_file.lower(), retrieved_uris)
+    )
     return matched / len(item.expected_files)
+
+
+def _any_uri_covers(expected_file: str, retrieved_uris: list[str]) -> bool:
+    """Return True if any retrieved URI ends with the expected file path."""
+    return any(uri.endswith(expected_file) for uri in retrieved_uris if uri)
 
 
 def _aggregate(results: list[QueryScore]) -> dict[str, float]:
