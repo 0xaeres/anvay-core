@@ -130,6 +130,7 @@ async def run_suites(
                     product_id=suite_product,
                     out_dir=run_dir,
                     ingest=ingest,
+                    golden_path=golden_path,
                     top_k=top_k,
                 )
             )
@@ -177,6 +178,10 @@ async def _ingest_fixture(
     fixture_path: Path,
     config: NexusConfig,
 ) -> IngestStats:
+    if fixture_path.name == "synthetic_project" or product_id == "synthetic":
+        from evals.generate_synthetic_project import generate_project
+        generate_project(fixture_path)
+
     path = fixture_path.resolve()
     if not path.exists() or not path.is_dir():
         raise FileNotFoundError(f"eval fixture not found: {path}")
@@ -191,9 +196,10 @@ async def _run_retrieval_suite(
     product_id: str,
     out_dir: Path,
     ingest: dict | None,
+    golden_path: Path,
     top_k: int,
 ) -> SuiteArtifact:
-    meta, queries = load_queries()
+    meta, queries = load_queries(golden_path)
     report = await run_retrieval_eval(
         config=config, product_id=product_id, top_k=top_k, queries=queries
     )

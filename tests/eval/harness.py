@@ -87,6 +87,31 @@ class EvalReport:
 
 def load_queries(path: Path = QUERIES_PATH) -> tuple[dict, list[dict]]:
     """Returns (meta, queries)."""
+    if path.suffix == ".jsonl":
+        queries = []
+        meta = {
+            "description": "Synthetic multi-language retrieval eval set",
+            "ingested_product_id": "synthetic",
+            "ingested_root": "",
+            "min_recall_at_10": 0.8,
+            "min_mrr": 0.5,
+        }
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                obj = json.loads(line)
+                expected_files = obj.get("expected_files", [])
+                expected_list = [{"file": f} for f in expected_files]
+                queries.append({
+                    "id": obj.get("id"),
+                    "query": obj.get("query"),
+                    "expected": expected_list,
+                    "tags": obj.get("tags", []),
+                })
+        return meta, queries
+
     data = json.loads(path.read_text(encoding="utf-8"))
     return data.get("_meta", {}), data.get("queries", [])
 
