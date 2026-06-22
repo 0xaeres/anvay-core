@@ -483,6 +483,7 @@ class Indexer:
     async def delete_by_product(self, *, product_id: str) -> dict[str, int]:
         """Delete all points for a product from code/text collections."""
         counts: dict[str, int] = {}
+        existing = await self._existing_collections()
         product_filter = qm.Filter(
             must=[
                 qm.FieldCondition(
@@ -491,6 +492,9 @@ class Indexer:
             ]
         )
         for coll in (self._code, self._text):
+            if coll not in existing:
+                counts[coll] = 0
+                continue
             before = await self._retry_qdrant(
                 f"count_delete_product:{coll}",
                 lambda coll=coll: self.client.count(
@@ -509,6 +513,41 @@ class Indexer:
                 )
             counts[coll] = before.count
         return counts
+
+    async def count_by_product(self, *, product_id: str) -> dict[str, int]:
+        """Count product points in code/text collections.
+
+        Missing collections are empty from the product deletion perspective.
+        """
+        counts: dict[str, int] = {}
+        existing = await self._existing_collections()
+        product_filter = qm.Filter(
+            must=[
+                qm.FieldCondition(
+                    key="product_id", match=qm.MatchValue(value=product_id)
+                )
+            ]
+        )
+        for coll in (self._code, self._text):
+            if coll not in existing:
+                counts[coll] = 0
+                continue
+            before = await self._retry_qdrant(
+                f"count_product:{coll}",
+                lambda coll=coll: self.client.count(
+                    collection_name=coll,
+                    count_filter=product_filter,
+                    exact=True,
+                ),
+            )
+            counts[coll] = before.count
+        return counts
+
+    async def _existing_collections(self) -> set[str]:
+        collections = await self._retry_qdrant(
+            "get_collections", self.client.get_collections
+        )
+        return {collection.name for collection in collections.collections}
 
     async def _retry_qdrant(
         self, operation: str, call: Callable[[], Awaitable[T]]

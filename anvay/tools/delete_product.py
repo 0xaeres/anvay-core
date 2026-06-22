@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,8 @@ from anvay.registry import Registry
 from anvay.retrieval.repomap import repomap_path_for
 from anvay.skills.store import SkillStore
 
+log = logging.getLogger(__name__)
+
 
 @dataclass
 class DeleteProductReport:
@@ -25,6 +28,7 @@ class DeleteProductReport:
     graph_deleted: bool = False
     repomap_deleted: bool = False
     checkpoints: int = 0
+    derived_errors: list[str] = field(default_factory=list)
 
 
 async def delete_product(
@@ -51,12 +55,13 @@ async def delete_product(
     if not skip_qdrant:
         indexer = create_indexer(config)
         try:
-            report.index = {
-                "code": await indexer.count(product_id=product_id, vector_kind="code"),
-                "text": await indexer.count(product_id=product_id, vector_kind="text"),
-            }
+            report.index = await indexer.count_by_product(product_id=product_id)
             if not dry_run:
                 report.index = await indexer.delete_by_product(product_id=product_id)
+        except Exception as e:
+            detail = f"qdrant purge skipped: {_exception_detail(e)}"
+            report.derived_errors.append(detail)
+            log.warning("product qdrant purge failed product_id=%s: %s", product_id, e)
         finally:
             await indexer.aclose()
 
@@ -65,8 +70,13 @@ async def delete_product(
 
     graph_store = create_graph_store(config)
     try:
-        await graph_store.delete_product(product_id=product_id)
-        report.graph_deleted = True
+        try:
+            await graph_store.delete_product(product_id=product_id)
+            report.graph_deleted = True
+        except Exception as e:
+            detail = f"graph purge skipped: {_exception_detail(e)}"
+            report.derived_errors.append(detail)
+            log.warning("product graph purge failed product_id=%s: %s", product_id, e)
     finally:
         await graph_store.aclose()
 
@@ -174,3 +184,8 @@ def _has_thread_id(conn: sqlite3.Connection, table: str) -> bool:
     if not rows:
         return False
     return any(row[1] == "thread_id" for row in conn.execute(f"PRAGMA table_info({table})"))
+
+
+def _exception_detail(exc: Exception) -> str:
+    text = str(exc).strip()
+    return text or exc.__class__.__name__

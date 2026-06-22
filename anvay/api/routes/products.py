@@ -39,6 +39,7 @@ class DeleteProductReportResponse(BaseModel):
     graph_deleted: bool = False
     repomap_deleted: bool = False
     checkpoints: int = 0
+    derived_errors: list[str] = Field(default_factory=list)
 
 
 class DeleteProductResponse(BaseModel):

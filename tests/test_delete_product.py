@@ -154,3 +154,57 @@ def test_delete_product_dry_run_then_removes_local_state(
     assert not repomap_path.exists()
     with sqlite3.connect(cfg.storage.council_checkpoint) as conn:
         assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+
+
+def test_delete_product_continues_when_derived_stores_are_gone(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cfg = _config(tmp_path)
+    registry = Registry(tmp_path / "registry.db")
+    now = datetime.now(UTC).isoformat()
+    registry.upsert_product({
+        "id": "demo",
+        "name": "Demo",
+        "tagline": "",
+        "owner": {},
+        "onboardedAt": now,
+    })
+
+    class MissingIndexer:
+        async def count_by_product(self, *, product_id: str) -> dict[str, int]:
+            raise RuntimeError("qdrant unavailable")
+
+        async def delete_by_product(self, *, product_id: str) -> dict[str, int]:
+            raise RuntimeError("qdrant unavailable")
+
+        async def aclose(self) -> None:
+            pass
+
+    class MissingGraphStore:
+        async def delete_product(self, *, product_id: str) -> int:
+            raise RuntimeError("falkordb unavailable")
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        delete_product_module,
+        "create_indexer",
+        lambda config: MissingIndexer(),
+    )
+    monkeypatch.setattr(
+        delete_product_module,
+        "create_graph_store",
+        lambda config: MissingGraphStore(),
+    )
+
+    report = asyncio.run(delete_product(product_id="demo", config=cfg, dry_run=False))
+
+    assert registry.get_product("demo") is None
+    assert report.index == {}
+    assert report.graph_deleted is False
+    assert report.derived_errors == [
+        "qdrant purge skipped: qdrant unavailable",
+        "graph purge skipped: falkordb unavailable",
+    ]
