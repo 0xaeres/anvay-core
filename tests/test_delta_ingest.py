@@ -425,7 +425,7 @@ async def test_delta_sync_writes_graph_manifest_and_payload_metadata(
     assert stats.graph_resources_indexed == 1
     assert row is not None
     assert row["graphStatus"] == "complete"
-    assert row["graphExtractionVersion"] == pipeline.graph_extraction_version()
+    assert row["graphExtractionVersion"] == pipeline.graph_version(cfg)
     assert row["graphFactIds"]
     assert graph.upserted
     assert upsert_kwargs["graph_node_ids_by_id"]

@@ -11,10 +11,13 @@ import asyncio
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
+
+from pydantic import BaseModel, Field, computed_field
 
 from evals.run_code_eval import CodeReport
 from evals.run_code_eval import run as run_code_eval
@@ -43,8 +46,7 @@ class SuiteDefaults:
     fixture_path: Path
 
 
-@dataclass
-class SuiteArtifact:
+class SuiteArtifact(BaseModel):
     suite: SuiteName
     passed: bool
     product_id: str
@@ -52,11 +54,10 @@ class SuiteArtifact:
     metrics: dict[str, float]
     thresholds: dict[str, float]
     ingest: dict | None = None
-    notes: list[str] = field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
-@dataclass
-class EvalRunArtifact:
+class EvalRunArtifact(BaseModel):
     run_id: str
     generated_at: str
     config_path: str
@@ -64,14 +65,10 @@ class EvalRunArtifact:
     suites: list[SuiteArtifact]
     output_dir: str
 
+    @computed_field
     @property
     def passed(self) -> bool:
         return all(s.passed for s in self.suites)
-
-    def as_dict(self) -> dict:
-        data = asdict(self)
-        data["passed"] = self.passed
-        return data
 
 
 def parse_suites(value: str) -> tuple[SuiteName, ...]:
@@ -133,6 +130,7 @@ async def run_suites(
                     product_id=suite_product,
                     out_dir=run_dir,
                     ingest=ingest,
+                    golden_path=golden_path,
                     top_k=top_k,
                 )
             )
@@ -168,7 +166,7 @@ async def run_suites(
         output_dir=str(run_dir),
     )
     (run_dir / "summary.json").write_text(
-        json.dumps(artifact.as_dict(), indent=2), encoding="utf-8"
+        json.dumps(artifact.model_dump(mode="json"), indent=2), encoding="utf-8"
     )
     (run_dir / "summary.md").write_text(render_markdown_summary(artifact), encoding="utf-8")
     return artifact
@@ -180,6 +178,10 @@ async def _ingest_fixture(
     fixture_path: Path,
     config: NexusConfig,
 ) -> IngestStats:
+    if fixture_path.name == "synthetic_project":
+        from evals.generate_synthetic_project import generate_project
+        generate_project(fixture_path)
+
     path = fixture_path.resolve()
     if not path.exists() or not path.is_dir():
         raise FileNotFoundError(f"eval fixture not found: {path}")
@@ -194,20 +196,31 @@ async def _run_retrieval_suite(
     product_id: str,
     out_dir: Path,
     ingest: dict | None,
+    golden_path: Path,
     top_k: int,
 ) -> SuiteArtifact:
-    meta, queries = load_queries()
+    meta, queries = load_queries(golden_path)
     report = await run_retrieval_eval(
         config=config, product_id=product_id, top_k=top_k, queries=queries
     )
     output = out_dir / "retrieval.json"
+    recall_threshold_key = f"min_recall_at_{top_k}"
     payload = {
         "suite": "retrieval",
         "product_id": product_id,
-        "metrics": {"recall_at_k": report.recall_at_k, "mrr": report.mrr},
+        "metrics": {
+            "recall_at_k": report.recall_at_k,
+            "mrr": report.mrr,
+            "ndcg_at_k": report.ndcg_at_k,
+        },
         "thresholds": {
-            "min_recall_at_10": float(meta.get("min_recall_at_10", 0.0)),
+            recall_threshold_key: float(
+                meta.get(recall_threshold_key, meta.get("min_recall_at_10", 0.0))
+            ),
             "min_mrr": float(meta.get("min_mrr", 0.0)),
+            f"min_ndcg_at_{top_k}": float(
+                meta.get(f"min_ndcg_at_{top_k}", meta.get("min_ndcg_at_10", 0.0))
+            ),
         },
         "misses": _retrieval_misses(report),
         "items": [
@@ -223,8 +236,9 @@ async def _run_retrieval_suite(
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     thresholds = payload["thresholds"]
     passed = (
-        report.recall_at_k >= thresholds["min_recall_at_10"]
+        report.recall_at_k >= thresholds[recall_threshold_key]
         and report.mrr >= thresholds["min_mrr"]
+        and report.ndcg_at_k >= thresholds[f"min_ndcg_at_{top_k}"]
     )
     return SuiteArtifact(
         suite="retrieval",
@@ -340,6 +354,14 @@ def _ingest_stats_to_dict(stats: IngestStats) -> dict:
     }
 
 
+def _redact_url(value: str) -> str:
+    parts = urlsplit(value)
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
 def _config_fingerprint(config: NexusConfig) -> dict:
     return {
         "embedding_provider": config.models.embedding.provider,
@@ -350,7 +372,7 @@ def _config_fingerprint(config: NexusConfig) -> dict:
         "reranker_model": config.models.reranker.model,
         "council_provider": config.models.council.provider,
         "council_model": config.models.council.model,
-        "qdrant_url": config.vector_store.url,
+        "qdrant_url": _redact_url(config.vector_store.url),
         "qdrant_collections": config.vector_store.collections.model_dump(),
         "quantization": config.vector_store.quantization.model_dump(),
     }

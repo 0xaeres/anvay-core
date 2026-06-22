@@ -15,6 +15,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -37,6 +38,81 @@ log = logging.getLogger(__name__)
 class ToolError(BaseModel):
     error: str
     product_id: str | None = None
+
+
+class SkillSummary(BaseModel):
+    id: str
+    name: str
+    tier: str
+    confidence: float
+    summary: str
+
+
+class FindSkillsResponse(BaseModel):
+    query: str
+    context: str
+    current_file: str | None = None
+    filtered_from: int
+    skills: list[SkillSummary]
+
+
+class SkillResponse(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    product: str
+    tier: str
+    parent: str | None = None
+    related: list[str]
+    coverage: dict[str, Any]
+    version: int
+    confidence: float
+    eval_status: str
+    eval_summary: str
+    eval_failures: list[str]
+    quality_score: float
+    signals_used: list[str]
+    applies_to: dict[str, Any]
+    provenance: dict[str, Any]
+    body: str
+
+
+class OutcomeRecord(BaseModel):
+    skill_name: str
+    succeeded: bool
+    notes: str
+    ts: float
+    signal_id: str
+
+
+class ReportOutcomeResponse(BaseModel):
+    ok: bool
+    received: OutcomeRecord
+
+
+class RetrievalHitResponse(BaseModel):
+    score: float
+    source: str
+    anchor: str
+    context_path: str | None = None
+    content: str | None = None
+
+
+class RetrievalResponse(BaseModel):
+    reranked: bool
+    hits: list[RetrievalHitResponse]
+
+
+class GrepHitResponse(BaseModel):
+    score: float
+    anchor: str
+    content: str
+    source: str
+
+
+class GrepResponse(BaseModel):
+    query: str
+    hits: list[GrepHitResponse]
 
 
 @dataclass
@@ -125,7 +201,13 @@ async def find_skills(
     """
     all_skills = state.store.iter_skills()
     if not all_skills:
-        return {"skills": [], "warning": "no skills found at hierarchy_root"}
+        return FindSkillsResponse(
+            query=query,
+            context=context,
+            current_file=current_file,
+            filtered_from=0,
+            skills=[],
+        ).model_dump(mode="json")
 
     product_skills = [s for s in all_skills if s.product == state.product]
     master_skills = [s for s in product_skills if s.tier == "product_master"]
@@ -161,24 +243,24 @@ async def find_skills(
     remaining = max(top_k - len(masters), 0)
     top = [*masters, *[s for _, s in scored[:remaining] if s not in masters]]
 
-    out: list[dict] = []
+    out: list[SkillSummary] = []
     for s in top:
         out.append(
-            {
-                "id": s.id,
-                "name": s.name,
-                "tier": s.tier,
-                "confidence": s.confidence,
-                "summary": s.description or _first_paragraph(s.body),
-            }
+            SkillSummary(
+                id=s.id,
+                name=s.name,
+                tier=s.tier,
+                confidence=s.confidence,
+                summary=s.description or _first_paragraph(s.body),
+            )
         )
-    return {
-        "query": query,
-        "context": context,
-        "current_file": current_file,
-        "filtered_from": len(product_skills),
-        "skills": out,
-    }
+    return FindSkillsResponse(
+        query=query,
+        context=context,
+        current_file=current_file,
+        filtered_from=len(product_skills),
+        skills=out,
+    ).model_dump(mode="json")
 
 
 async def get_skill(state: ToolState, *, name: str) -> dict:
@@ -189,8 +271,8 @@ async def get_skill(state: ToolState, *, name: str) -> dict:
         if s.name == name:
             out = s.model_dump(mode="json")
             out["id"] = s.id
-            return out
-    return {"error": f"skill not found: {name}"}
+            return SkillResponse.model_validate(out).model_dump(mode="json")
+    return ToolError(error=f"skill not found: {name}").model_dump(exclude_none=True)
 
 
 async def report_outcome(
@@ -217,7 +299,7 @@ async def report_outcome(
     )
     record["signal_id"] = signal_id
     log.info("outcome reported: %s", record)
-    return {"ok": True, "received": record}
+    return ReportOutcomeResponse(ok=True, received=record).model_dump(mode="json")
 
 
 # ---------------------------------------------------------------- context tools
@@ -242,7 +324,7 @@ async def query_code_context(
         rendered["hits"] = [
             hit for hit in rendered["hits"] if _matches_file_globs(hit["anchor"].split(":", 1)[0], [file_glob])
         ]
-    return rendered
+    return RetrievalResponse.model_validate(rendered).model_dump(mode="json")
 
 
 async def grep_corpus(
@@ -263,18 +345,18 @@ async def grep_corpus(
         query=query,
         limit=top_k,
     )
-    return {
-        "query": query,
-        "hits": [
-            {
-                "score": hit.score,
-                "anchor": f"{hit.file}:{hit.line}",
-                "content": hit.excerpt,
-                "source": "grep",
-            }
+    return GrepResponse(
+        query=query,
+        hits=[
+            GrepHitResponse(
+                score=hit.score,
+                anchor=f"{hit.file}:{hit.line}",
+                content=hit.excerpt,
+                source="grep",
+            )
             for hit in hits
         ],
-    }
+    ).model_dump(mode="json")
 
 
 async def hybrid_search_corpus(
@@ -293,7 +375,7 @@ async def hybrid_search_corpus(
     result = await retrieve(
         ctx=state.ctx, product_id=pid, query=query, top_k=top_k, mode="auto"
     )
-    return _render_retrieval(result)
+    return RetrievalResponse.model_validate(_render_retrieval(result)).model_dump(mode="json")
 
 
 async def evidence_search_corpus(

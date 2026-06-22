@@ -1,0 +1,95 @@
+{
+  "items": [
+    {
+      "id": "py_processing",
+      "faithfulness": 1.0,
+      "answer_relevancy": 1.0,
+      "context_recall": 1.0,
+      "answer": "The `DataProcessor` processes items using the `process_data` method. This method takes a list of items and returns a new list where each item is converted to a string and reversed.",
+      "notes": "The answer accurately describes the method name and the logic (string conversion and reversal) found in the provided code. | The answer accurately describes the process of converting items to strings and reversing them, matching the expected answer."
+    },
+    {
+      "id": "ts_session",
+      "faithfulness": 1.0,
+      "answer_relevancy": 1.0,
+      "context_recall": 1.0,
+      "answer": "To create a new session in TypeScript, use the `createSession` method of the `SessionManager` class. This method generates a random `SessionId`, creates a `UserSession` object containing the `id`, `userId`, and current date, and stores it in the `sessions` map.",
+      "notes": "The answer accurately describes the logic and components of the `createSession` method as provided in the context. | The answer accurately describes the process and matches all key components of the expected answer."
+    },
+    {
+      "id": "tsx_profile",
+      "faithfulness": 1.0,
+      "answer_relevancy": 1.0,
+      "context_recall": 1.0,
+      "answer": "The `UserProfileCard` component displays a user's `username` and `role` within a profile card div. The `useAuthStatus` hook takes a `token` string and returns a boolean `isLoggedIn` state based on whether the token length is greater than zero.",
+      "notes": "The answer accurately describes the functionality and logic of both the component and the hook as provided in the contexts. | The answer accurately describes both the component and the hook as specified in the expected answer."
+    },
+    {
+      "id": "js_logger",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.9,
+      "context_recall": 1.0,
+      "answer": "The `LoggerService` is defined as a class with a `log` method that formats messages as `[${this.prefix}] ${message}`. Additionally, there is a `formatMessage` function that formats messages using the ISO date, a level, and the message.",
+      "notes": "All claims regarding the LoggerService class and the formatMessage function are directly supported by the provided contexts. | The answer correctly identifies the class, the formatting logic, and the helper function, though it omits the specific filename."
+    },
+    {
+      "id": "rust_wallet",
+      "faithfulness": 1.0,
+      "answer_relevancy": 1.0,
+      "context_recall": 1.0,
+      "answer": "To sign transactions, use the `sign_transaction` function which takes `tx_data` and a `keypair` to return a signature vector. To transfer funds, the `Wallet` struct implements the `Transfer` trait's `transfer_amount` method, which deducts the specified amount from the balance if sufficient funds exist.",
+      "notes": "All claims regarding the sign_transaction function and the Wallet struct's implementation of the Transfer trait are directly supported by the provided code contexts. | The answer accurately describes both the signing process and the transfer mechanism as specified in the expected answer."
+    },
+    {
+      "id": "go_storage",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.9,
+      "context_recall": 1.0,
+      "answer": "The `Config` struct's `Validate` method checks if the `Port` is less than or equal to 0, returning an \"invalid port\" error if so. The `Storage` interface defines a `Save` method that takes a string key and byte slice value, returning an error.",
+      "notes": "The answer accurately describes the Validate method and the Storage interface as defined in the provided Go code. | The answer accurately describes the validation logic and the Storage interface, missing only the mention of the factory function."
+    },
+    {
+      "id": "java_order",
+      "faithfulness": 1.0,
+      "answer_relevancy": 1.0,
+      "context_recall": 1.0,
+      "answer": "The `OrderService` class contains a `placeOrder` method that accepts an `OrderRequest` object. This method returns `false` if the request is null or if the request's `amount()` is less than or equal to 0; otherwise, it returns `true`. The provided contexts do not include the definition of the `OrderRequest` record.",
+      "notes": "The answer accurately describes the logic of the placeOrder method and correctly notes the absence of the OrderRequest definition in the contexts. | The answer accurately describes the logic of the placeOrder method and the validation of the OrderRequest record as specified in the expected answer."
+    },
+    {
+      "id": "cpp_engine",
+      "faithfulness": 1.0,
+      "answer_relevancy": 1.0,
+      "context_recall": 1.0,
+      "answer": "In the `nexus::core` namespace, the `Engine` class contains a `run_task` method that accepts a `const std::string& name`. Additionally, the `max_value` template in the same namespace takes two arguments of type `T` and returns the greater of the two.",
+      "notes": "All claims regarding the namespace, class method, and template function are directly supported by the provided context. | The answer accurately describes both the Engine::run_task method and the max_value template within the specified namespace, matching the expected content."
+    },
+    {
+      "id": "kt_database",
+      "faithfulness": 1.0,
+      "answer_relevancy": 1.0,
+      "context_recall": 1.0,
+      "answer": "The `UserRepository` class contains a `fetchUser` function that takes a `userId` string and returns `\"User-$userId\"`. Additionally, there is a Kotlin `AppDatabase` object with a `databaseName` property set to `\"nexus_eval_db\"`.",
+      "notes": "All claims regarding the UserRepository class, the fetchUser function, and the AppDatabase object are explicitly supported by the provided contexts. | The answer provides all the specific details mentioned in the expected answer and adds precise implementation details."
+    },
+    {
+      "id": "sol_pool",
+      "faithfulness": 1.0,
+      "answer_relevancy": 1.0,
+      "context_recall": 1.0,
+      "answer": "To add liquidity to the `LiquidityPool` contract, call the `addLiquidity` function by passing the desired `amount` as a parameter. This function is `payable` and restricted to the contract owner via the `onlyOwner` modifier. Once called, it increases the `pool.totalLiquidity` using `SafeMath`.",
+      "notes": "The answer accurately describes the function name, parameters, modifiers, and logic provided in the context. | The answer provides all the key details mentioned in the expected answer, including the function name, the modifier, and the use of SafeMath."
+    }
+  ],
+  "aggregates": {
+    "n": 10,
+    "faithfulness": 1.0,
+    "answer_relevancy": 0.98,
+    "context_recall": 1.0
+  },
+  "thresholds": {
+    "faithfulness": 0.85,
+    "answer_relevancy": 0.8,
+    "context_recall": 0.75
+  }
+}

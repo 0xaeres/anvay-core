@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import TypeVar
 
 import httpx
+from pydantic import BaseModel
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import exceptions as qex
 from qdrant_client.http import models as qm
@@ -40,6 +41,16 @@ T = TypeVar("T")
 
 class IndexerError(RuntimeError):
     pass
+
+
+class SourceRefPayload(BaseModel):
+    product_id: str
+    source_key: str
+    source_id: str
+    resource_uri: str
+    anchor: str
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 def _point_batches(
@@ -130,7 +141,7 @@ class Indexer:
         content_hash_by_id: dict[str, str] | None = None,
         graph_node_ids_by_id: dict[str, list[str]] | None = None,
         entity_ids_by_id: dict[str, list[str]] | None = None,
-        source_ref_by_id: dict[str, dict] | None = None,
+        source_ref_by_id: dict[str, SourceRefPayload] | None = None,
         citation_anchor_by_id: dict[str, str] | None = None,
         graph_extraction_version_by_id: dict[str, str] | None = None,
         artifact_type_by_id: dict[str, str] | None = None,
@@ -210,7 +221,7 @@ class Indexer:
         *,
         graph_node_ids_by_id: dict[str, list[str]] | None = None,
         entity_ids_by_id: dict[str, list[str]] | None = None,
-        source_ref_by_id: dict[str, dict] | None = None,
+        source_ref_by_id: dict[str, SourceRefPayload] | None = None,
         citation_anchor_by_id: dict[str, str] | None = None,
         graph_extraction_version_by_id: dict[str, str] | None = None,
         artifact_type_by_id: dict[str, str] | None = None,
@@ -225,16 +236,21 @@ class Indexer:
 
         updated = 0
         for chunk in chunks:
-            payload = {
-                "graph_node_ids": graph_node_ids_by_id.get(chunk.id, []),
-                "entity_ids": entity_ids_by_id.get(chunk.id, []),
-                "source_ref": source_ref_by_id.get(chunk.id, {}),
-                "citation_anchor": citation_anchor_by_id.get(chunk.id, chunk.anchor),
-                "graph_extraction_version": graph_extraction_version_by_id.get(
-                    chunk.id
-                ),
-                "artifact_type": artifact_type_by_id.get(chunk.id, chunk.kind.value),
-            }
+            payload: dict[str, object] = {}
+            if chunk.id in graph_node_ids_by_id:
+                payload["graph_node_ids"] = graph_node_ids_by_id[chunk.id]
+            if chunk.id in entity_ids_by_id:
+                payload["entity_ids"] = entity_ids_by_id[chunk.id]
+            if chunk.id in source_ref_by_id:
+                payload["source_ref"] = source_ref_by_id[chunk.id].model_dump(mode="json")
+            if chunk.id in citation_anchor_by_id:
+                payload["citation_anchor"] = citation_anchor_by_id[chunk.id]
+            if chunk.id in graph_extraction_version_by_id:
+                payload["graph_extraction_version"] = graph_extraction_version_by_id[chunk.id]
+            if chunk.id in artifact_type_by_id:
+                payload["artifact_type"] = artifact_type_by_id[chunk.id]
+            if not payload:
+                continue
             collection = self._code if chunk.kind.value == "code" else self._text
             await self._retry_qdrant(
                 f"set_payload:{collection}",
@@ -580,7 +596,7 @@ class Indexer:
         content_hash: str | None = None,
         graph_node_ids: list[str] | None = None,
         entity_ids: list[str] | None = None,
-        source_ref: dict | None = None,
+        source_ref: SourceRefPayload | None = None,
         citation_anchor: str | None = None,
         graph_extraction_version: str | None = None,
         artifact_type: str | None = None,
@@ -612,7 +628,7 @@ class Indexer:
                 "content": c.content,
                 "graph_node_ids": graph_node_ids or [],
                 "entity_ids": entity_ids or [],
-                "source_ref": source_ref or {},
+                "source_ref": source_ref.model_dump(mode="json") if source_ref else {},
                 "citation_anchor": citation_anchor or c.anchor,
                 "graph_extraction_version": graph_extraction_version,
                 "artifact_type": artifact_type or c.kind.value,

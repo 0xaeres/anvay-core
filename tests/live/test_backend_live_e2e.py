@@ -182,14 +182,15 @@ def _live_config(tmp_path: Path) -> NexusConfig:
     fast_models = config.models.model_copy(
         update={
             "council": config.models.light,
-            "drafter": config.models.light,
-            "critic": config.models.light,
-            "reviser": config.models.light,
+            "planner": config.models.light,
+            "evaluator": config.models.light,
+            "repair": config.models.light,
         }
     )
     return config.model_copy(
         update={
             "hierarchy_root": tmp_path / "skills",
+            "skills_repo": str(tmp_path / "skills-remote.git"),
             "models": fast_models,
             "storage": config.storage.model_copy(
                 update={
@@ -381,8 +382,10 @@ Patterns to avoid:
 
 
 def _init_live_skills_repo(root: Path) -> None:
-    root.mkdir(parents=True, exist_ok=True)
-    repo = Repo.init(root)
+    remote = root.parent / "skills-remote.git"
+    remote.mkdir(parents=True, exist_ok=True)
+    Repo.init(remote, bare=True)
+    repo = Repo.clone_from(str(remote), root)
     with repo.config_writer() as writer:
         writer.set_value("user", "name", "Nexus Live E2E")
         writer.set_value("user", "email", "live-e2e@nexus.local")

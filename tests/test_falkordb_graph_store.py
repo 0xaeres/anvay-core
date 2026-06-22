@@ -81,6 +81,67 @@ def test_falkordb_result_conversion_preserves_nodes_edges_and_source_refs() -> N
     assert converted.nodes[1].source_refs[0].anchor == "app.py:1"
 
 
+def test_falkordb_result_conversion_handles_path_nodes_and_relationships() -> None:
+    source = Node(
+        labels=["Function"],
+        properties={
+            "product_id": "prod",
+            "stable_id": "symbol:prod:app.py:read_token:Function",
+            "name": "read_token",
+            "confidence": 1.0,
+            "extraction_method": "deterministic",
+            "last_seen": "2026-01-01T00:00:00+00:00",
+            "freshness": 1.0,
+            "status": "active",
+            "source_refs_js": "[]",
+        },
+    )
+    dest = Node(
+        labels=["Function"],
+        properties={
+            "product_id": "prod",
+            "stable_id": "symbol:prod:app.py:load_policy:Function",
+            "name": "load_policy",
+            "confidence": 1.0,
+            "extraction_method": "deterministic",
+            "last_seen": "2026-01-01T00:00:00+00:00",
+            "freshness": 1.0,
+            "status": "active",
+            "source_refs_js": "[]",
+        },
+    )
+    edge = Edge(
+        source,
+        "CALLS",
+        dest,
+        properties={
+            "product_id": "prod",
+            "stable_id": "edge:call",
+            "from_id": "symbol:prod:app.py:read_token:Function",
+            "to_id": "symbol:prod:app.py:load_policy:Function",
+            "confidence": 1.0,
+            "extraction_method": "deterministic",
+            "last_seen": "2026-01-01T00:00:00+00:00",
+            "freshness": 1.0,
+            "status": "active",
+            "source_refs_js": "[]",
+        },
+    )
+
+    converted = _query_result_to_graph(FakeQueryResult([[[source, dest], [edge]]]))
+
+    assert [edge.stable_id for edge in converted.edges] == ["edge:call"]
+    assert converted.paths == [
+        {
+            "node_ids": [
+                "symbol:prod:app.py:read_token:Function",
+                "symbol:prod:app.py:load_policy:Function",
+            ],
+            "edge_ids": ["edge:call"],
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_falkordb_store_contract_live() -> None:
     host = os.environ.get("NEXUS_FALKORDB_HOST")
@@ -118,6 +179,16 @@ async def test_falkordb_store_contract_live() -> None:
         await store.ensure_schema()
         fact_ids = await store.upsert_resource_graph(extraction)
         assert fact_ids
+        seed = next(node.stable_id for node in extraction.nodes if "file:" in node.stable_id)
+        traversal = await store.traverse(
+            product_id=product_id,
+            seed_ids=[seed],
+            edge_types=["CONTAINS", "DECLARES", "READS"],
+            max_depth=2,
+            limit=10,
+        )
+        assert traversal.nodes
+        assert any(edge.type == "READS" for edge in traversal.edges)
         assert await store.retire_resource_graph(
             product_id=product_id,
             fact_ids=fact_ids[:1],

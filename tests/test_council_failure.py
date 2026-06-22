@@ -16,9 +16,9 @@ def _config(tmp_path: Path) -> NexusConfig:
     return NexusConfig(
         models={
             "council": {"provider": "deepinfra", "model": "shared"},
-            "drafter": {"provider": "deepinfra", "model": "draft-model"},
-            "critic": {"provider": "deepinfra", "model": "critic-model"},
-            "reviser": {"provider": "deepinfra", "model": "revise-model"},
+            "planner": {"provider": "deepinfra", "model": "draft-model"},
+            "evaluator": {"provider": "deepinfra", "model": "critic-model"},
+            "repair": {"provider": "deepinfra", "model": "revise-model"},
             "light": {"provider": "deepinfra", "model": "light"},
             "embedding": {"provider": "jina-local", "model": "j", "url": "http://embed"},
             "reranker": {"provider": "jina-local", "model": "r", "url": "http://rerank"},
@@ -71,9 +71,9 @@ async def test_council_handles_use_role_specific_models(tmp_path: Path, monkeypa
         pass
 
     assert seen == {
-        "drafter": "draft-model",
-        "critic": "critic-model",
-        "reviser": "revise-model",
+        "planner": "draft-model",
+        "evaluator": "critic-model",
+        "repair": "revise-model",
         "architect": "critic-model",
         "domain_expert": "critic-model",
         "quality_expert": "critic-model",

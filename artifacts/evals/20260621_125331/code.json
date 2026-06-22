@@ -1,0 +1,86 @@
+{
+  "items": [
+    {
+      "id": "py_processing",
+      "ndcg_at_10": 1,
+      "recall_at_10": 1,
+      "pairwise_preferred": true,
+      "pairwise_reasoning": ""
+    },
+    {
+      "id": "ts_session",
+      "ndcg_at_10": 1.057438852428655,
+      "recall_at_10": 1.3333333333333333,
+      "pairwise_preferred": true,
+      "pairwise_reasoning": ""
+    },
+    {
+      "id": "tsx_profile",
+      "ndcg_at_10": 1,
+      "recall_at_10": 1,
+      "pairwise_preferred": true,
+      "pairwise_reasoning": ""
+    },
+    {
+      "id": "js_logger",
+      "ndcg_at_10": 1,
+      "recall_at_10": 1,
+      "pairwise_preferred": true,
+      "pairwise_reasoning": ""
+    },
+    {
+      "id": "rust_wallet",
+      "ndcg_at_10": 1,
+      "recall_at_10": 1,
+      "pairwise_preferred": true,
+      "pairwise_reasoning": ""
+    },
+    {
+      "id": "go_storage",
+      "ndcg_at_10": 0.9217868789962071,
+      "recall_at_10": 1,
+      "pairwise_preferred": true,
+      "pairwise_reasoning": ""
+    },
+    {
+      "id": "java_order",
+      "ndcg_at_10": 1.6309297535714575,
+      "recall_at_10": 2,
+      "pairwise_preferred": true,
+      "pairwise_reasoning": ""
+    },
+    {
+      "id": "cpp_engine",
+      "ndcg_at_10": 1,
+      "recall_at_10": 1,
+      "pairwise_preferred": true,
+      "pairwise_reasoning": ""
+    },
+    {
+      "id": "kt_database",
+      "ndcg_at_10": 1,
+      "recall_at_10": 1,
+      "pairwise_preferred": true,
+      "pairwise_reasoning": ""
+    },
+    {
+      "id": "sol_pool",
+      "ndcg_at_10": 1,
+      "recall_at_10": 1,
+      "pairwise_preferred": true,
+      "pairwise_reasoning": ""
+    }
+  ],
+  "aggregates": {
+    "n": 10,
+    "ndcg_at_10": 1.061,
+    "recall_at_10": 1.1333,
+    "pairwise_preference_accuracy": 1,
+    "pairwise_n": 10
+  },
+  "thresholds": {
+    "ndcg_at_10": 0.75,
+    "recall_at_10": 0.8,
+    "pairwise_preference": 0.85
+  }
+}

@@ -30,14 +30,22 @@ from nexus.graph.extractor import (
     graph_extraction_version,
     graph_node_ids_for_chunk,
 )
+from nexus.graph.llm_extractor import extract_bounded_llm_graph, graph_llm_supported_resource
 from nexus.graph.models import GraphExtraction
 from nexus.graph.store import create_graph_store
 from nexus.ingest.chunker import chunk_resource
 from nexus.ingest.embedder import EmbedderClient, EmbedderError
 from nexus.ingest.enricher import ContextualEnricher
+from nexus.ingest.indexer import SourceRefPayload
 from nexus.ingest.indexer_factory import create_indexer
 from nexus.ingest.models import Chunk, ChunkKind, ResourceRef
-from nexus.ingest.summaries import graph_summary_chunk, is_summary_chunk
+from nexus.ingest.summaries import (
+    graph_community_summary_chunk,
+    graph_summary_chunk,
+    is_community_summary_chunk,
+    is_summary_chunk,
+)
+from nexus.llm.client import ChatClient
 from nexus.retrieval.sparse import aencode_passages
 
 log = logging.getLogger(__name__)
@@ -126,6 +134,20 @@ def enrichment_version(config: NexusConfig) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def graph_version(config: NexusConfig) -> str:
+    """Hash graph-affecting config. Change => graph refresh on next sync."""
+    payload = {
+        "deterministic": graph_extraction_version(),
+        "mode": config.ingestion.graph.mode,
+        "light_provider": config.models.light.provider,
+        "light_model": config.models.light.model,
+        "max_facts_per_resource": config.ingestion.graph.max_facts_per_resource,
+        "confidence_floor": config.ingestion.graph.confidence_floor,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def _content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
@@ -186,11 +208,13 @@ async def run_ingest(
     )
     indexer = create_indexer(config)
     graph_store = create_graph_store(config)
+    graph_llm_chat = _graph_llm_chat(config)
+    graph_llm_sem = asyncio.Semaphore(config.ingestion.graph.concurrency)
     batch_no = 0
     sync_id = _utc_now()
     version = embedding_version(config)
     enrich_version = enrichment_version(config)
-    graph_version = graph_extraction_version()
+    graph_index_version = graph_version(config)
     manifest_by_uri: dict[str, dict] = {}
     current_uris: set[str] = set()
     delta_enabled = registry is not None and source_key is not None
@@ -228,7 +252,7 @@ async def run_ingest(
             "stage",
             "graph_prepare",
             "Graph store ready",
-            graph_extraction_version=graph_version,
+            graph_extraction_version=graph_index_version,
         )
         if delta_enabled:
             manifest_by_uri = {
@@ -242,7 +266,7 @@ async def run_ingest(
                 source_key=source_key,
                 resources=len(manifest_by_uri),
                 embedding_version=version,
-                graph_extraction_version=graph_version,
+                graph_extraction_version=graph_index_version,
             )
         await emit("stage", "discover", "Discovering resources")
 
@@ -292,15 +316,50 @@ async def run_ingest(
             payload_by_uri = {item.ref.uri: item for item in items}
             graph_extractions: dict[str, GraphExtraction] = {}
             graph_failures: dict[str, str] = {}
+            graph_partials: set[str] = set()
+            graph_llm_remaining = config.ingestion.graph.max_resources_per_batch
             for item in items:
                 if delta_enabled:
                     try:
-                        graph_extractions[item.ref.uri] = extract_resource_graph(
+                        extraction = extract_resource_graph(
                             product_id=product_id,
                             source_key=source_key,
                             resource=item.ref,
                             content=item.content,
                             indexed_at=sync_id,
+                        )
+                        if (
+                            graph_llm_chat is not None
+                            and graph_llm_remaining > 0
+                            and item.action != "graph_refresh"
+                            and graph_llm_supported_resource(item.ref)
+                        ):
+                            graph_llm_remaining -= 1
+                            try:
+                                async with graph_llm_sem:
+                                    extraction = await extract_bounded_llm_graph(
+                                        chat=graph_llm_chat,
+                                        cfg=config.ingestion.graph,
+                                        product_id=product_id,
+                                        source_key=source_key,
+                                        resource=item.ref,
+                                        content=item.content,
+                                        base=extraction,
+                                        indexed_at=sync_id,
+                                    )
+                            except Exception as e:
+                                stats.graph_errors += 1
+                                graph_partials.add(item.ref.uri)
+                                log.warning("bounded graph LLM skipped for %s: %s", item.ref.uri, e)
+                                await emit(
+                                    "warn",
+                                    "graph_llm",
+                                    f"Bounded graph LLM skipped for {item.ref.uri}: {e}",
+                                    batch=batch_id,
+                                    uri=item.ref.uri,
+                                )
+                        graph_extractions[item.ref.uri] = extraction.model_copy(
+                            update={"extraction_version": graph_index_version}
                         )
                     except Exception as e:
                         graph_failures[item.ref.uri] = str(e)
@@ -326,6 +385,17 @@ async def run_ingest(
                 )
                 if summary is not None:
                     chunks.append(summary)
+                community = (
+                    graph_community_summary_chunk(
+                        product_id=product_id,
+                        resource=item.ref,
+                        extraction=graph_extractions[item.ref.uri],
+                    )
+                    if item.ref.uri in graph_extractions
+                    else None
+                )
+                if community is not None:
+                    chunks.append(community)
                 if not chunks:
                     await emit(
                         "debug",
@@ -344,11 +414,13 @@ async def run_ingest(
                 c
                 for c in all_chunks
                 if payload_by_uri[c.resource.uri].action != "graph_refresh"
+                or is_community_summary_chunk(c)
             ]
             graph_refresh_chunks = [
                 c
                 for c in all_chunks
                 if payload_by_uri[c.resource.uri].action == "graph_refresh"
+                and not is_community_summary_chunk(c)
             ]
 
             if not all_chunks and not graph_extractions:
@@ -500,7 +572,7 @@ async def run_ingest(
                     embedding_version=version,
                     indexed_at=indexed_at,
                 )
-            elif graph_refresh_chunks and hasattr(indexer, "update_payloads"):
+            if graph_refresh_chunks and hasattr(indexer, "update_payloads"):
                 (
                     graph_node_ids_by_id,
                     entity_ids_by_id,
@@ -534,7 +606,7 @@ async def run_ingest(
                             previous_fact_ids=prior.get("graphFactIds", []),
                         )
                         graph_updates[uri] = (
-                            "complete",
+                            "partial" if uri in graph_partials else "complete",
                             fact_ids,
                             indexed_at,
                         )
@@ -557,7 +629,9 @@ async def run_ingest(
             for uri in manifest_uris:
                 chunks = chunks_by_uri.get(uri, [])
                 item = payload_by_uri[uri]
-                vector_changed = item.action != "graph_refresh"
+                vector_changed = item.action != "graph_refresh" or any(
+                    is_community_summary_chunk(chunk) for chunk in chunks
+                )
                 new_ids = (
                     [c.id for c in chunks]
                     if vector_changed
@@ -586,10 +660,10 @@ async def run_ingest(
                     graph_manifest_version = prior.get("graphExtractionVersion", "")
                     if uri in graph_updates:
                         graph_status, graph_fact_ids, graph_indexed_at = graph_updates[uri]
-                        graph_manifest_version = graph_version
+                        graph_manifest_version = graph_index_version
                     elif uri in graph_failures:
                         graph_status = "failed"
-                        graph_manifest_version = graph_version
+                        graph_manifest_version = graph_index_version
                     registry.upsert_resource_manifest(
                         {
                             "product": product_id,
@@ -681,7 +755,7 @@ async def run_ingest(
             if prior and prior["contentHash"] == digest and prior["embeddingVersion"] == version:
                 stats.unchanged += 1
                 graph_stale = (
-                    prior.get("graphExtractionVersion") != graph_version
+                    prior.get("graphExtractionVersion") != graph_index_version
                     or prior.get("graphStatus") in {"", "pending", "partial", "failed"}
                 )
                 if graph_stale:
@@ -848,8 +922,25 @@ async def run_ingest(
         await embedder.aclose()
         if enricher is not None:
             await enricher.aclose()
+        if graph_llm_chat is not None:
+            await graph_llm_chat.aclose()
         await indexer.aclose()
         await graph_store.aclose()
+
+
+def _graph_llm_chat(config: NexusConfig) -> ChatClient | None:
+    if config.ingestion.graph.mode != "bounded_llm":
+        return None
+    cfg = config.models.light
+    if cfg.provider.lower() in {"anthropic", "deepinfra", "openai"} and not cfg.api_key:
+        return None
+    if not (cfg.api_key or cfg.base_url or cfg.url):
+        return None
+    try:
+        return ChatClient.from_cfg(cfg, role="graph_extractor")
+    except Exception as e:
+        log.warning("bounded graph LLM disabled: %s", e)
+        return None
 
 
 def _graph_payload_metadata(
@@ -861,14 +952,14 @@ def _graph_payload_metadata(
 ) -> tuple[
     dict[str, list[str]],
     dict[str, list[str]],
-    dict[str, dict],
+    dict[str, SourceRefPayload],
     dict[str, str],
     dict[str, str],
     dict[str, str],
 ]:
     graph_node_ids_by_id: dict[str, list[str]] = {}
     entity_ids_by_id: dict[str, list[str]] = {}
-    source_ref_by_id: dict[str, dict] = {}
+    source_ref_by_id: dict[str, SourceRefPayload] = {}
     citation_anchor_by_id: dict[str, str] = {}
     graph_extraction_version_by_id: dict[str, str] = {}
     artifact_type_by_id: dict[str, str] = {}
@@ -879,20 +970,23 @@ def _graph_payload_metadata(
             continue
         graph_node_ids_by_id[chunk.id] = graph_node_ids_for_chunk(extraction, chunk)
         entity_ids_by_id[chunk.id] = entity_ids_for_chunk(extraction, chunk)
-        source_ref_by_id[chunk.id] = {
-            "product_id": product_id,
-            "source_key": source_key or "",
-            "source_id": chunk.resource.source_id,
-            "resource_uri": chunk.resource.uri,
-            "anchor": chunk.anchor,
-            "start_line": chunk.start_line,
-            "end_line": chunk.end_line,
-        }
+        source_ref_by_id[chunk.id] = SourceRefPayload(
+            product_id=product_id,
+            source_key=source_key or "",
+            source_id=chunk.resource.source_id,
+            resource_uri=chunk.resource.uri,
+            anchor=chunk.anchor,
+            start_line=chunk.start_line,
+            end_line=chunk.end_line,
+        )
         citation_anchor_by_id[chunk.id] = chunk.anchor
         graph_extraction_version_by_id[chunk.id] = extraction.extraction_version
-        artifact_type_by_id[chunk.id] = (
-            "summary" if is_summary_chunk(chunk) else chunk.kind.value
-        )
+        if is_community_summary_chunk(chunk):
+            artifact_type_by_id[chunk.id] = "graph_community_summary"
+        elif is_summary_chunk(chunk):
+            artifact_type_by_id[chunk.id] = "summary"
+        else:
+            artifact_type_by_id[chunk.id] = chunk.kind.value
 
     return (
         graph_node_ids_by_id,

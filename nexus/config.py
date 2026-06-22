@@ -6,10 +6,10 @@ import os
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_VAR_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
@@ -93,15 +93,32 @@ class ModelCfg(BaseModel):
 
 
 class ModelsCfg(BaseModel):
-    council: ModelCfg          # drafter + critic + reviser
-    drafter: ModelCfg | None = None
-    critic: ModelCfg | None = None
-    reviser: ModelCfg | None = None
+    council: ModelCfg          # default for planner + evaluator + repair
+    planner: ModelCfg | None = None
+    evaluator: ModelCfg | None = None
+    repair: ModelCfg | None = None
     synthesizer: ModelCfg | None = None
     chat_agent: ModelCfg | None = None
     light: ModelCfg            # enricher (HQE + doc context)
     embedding: ModelCfg
     reranker: ModelCfg
+
+    @model_validator(mode="before")
+    @classmethod
+    def map_legacy_role_keys(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        aliases = {
+            "drafter": "planner",
+            "critic": "evaluator",
+            "reviser": "repair",
+        }
+        normalized = dict(data)
+        for old, new in aliases.items():
+            if old in normalized and new not in normalized:
+                normalized[new] = normalized[old]
+            normalized.pop(old, None)
+        return normalized
 
 
 class EnrichCfg(BaseModel):
@@ -115,8 +132,17 @@ class EnrichmentWorkerCfg(BaseModel):
     max_attempts: int = 3
 
 
+class GraphIngestionCfg(BaseModel):
+    mode: Literal["deterministic", "bounded_llm"] = "bounded_llm"
+    max_resources_per_batch: int = Field(12, gt=0)
+    max_facts_per_resource: int = Field(24, gt=0)
+    concurrency: int = Field(2, gt=0)
+    confidence_floor: float = Field(0.65, ge=0.0, le=1.0)
+
+
 class IngestionCfg(BaseModel):
     enrich_chunks: EnrichCfg = Field(default_factory=EnrichCfg)
+    graph: GraphIngestionCfg = Field(default_factory=GraphIngestionCfg)
     embed_batch_size: int = 32
     quality_gate_threshold: float = 0.0
     file_batch_size: int = 50

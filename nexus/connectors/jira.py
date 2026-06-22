@@ -94,7 +94,7 @@ class JiraClient:
             if next_page_token:
                 params["nextPageToken"] = next_page_token
             payload = await self._get_json("/rest/api/3/search/jql", params=params)
-            issues = payload.get("issues") or []
+            issues = payload.get("issues", [])
             if not isinstance(issues, list):
                 raise JiraAPIError("Jira API returned non-list issues")
             for issue in issues:

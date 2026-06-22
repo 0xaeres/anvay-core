@@ -5,6 +5,7 @@ from __future__ import annotations
 from nexus.graph.context import build_code_context_pack
 from nexus.graph.extractor import extract_resource_graph, graph_extraction_version
 from nexus.graph.impact import build_change_impact, build_dependency_trace
+from nexus.graph.llm_extractor import merge_llm_graph_facts, parse_llm_graph_facts
 from nexus.graph.rag import answer_graph_rag
 from nexus.graph.store import create_graph_store
 
@@ -16,4 +17,6 @@ __all__ = [
     "create_graph_store",
     "extract_resource_graph",
     "graph_extraction_version",
+    "merge_llm_graph_facts",
+    "parse_llm_graph_facts",
 ]

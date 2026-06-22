@@ -47,6 +47,48 @@ class TokenPolicy:
     )
 
 
+def test_python_resource_graph_extracts_intra_file_calls() -> None:
+    resource = ResourceRef(source_id="local:test", uri="app.py", mime="text/x-python")
+    graph = extract_resource_graph(
+        product_id="prod",
+        source_key="src",
+        resource=resource,
+        content=(
+            "def read_token():\n"
+            "    return load_policy()\n\n"
+            "def load_policy():\n"
+            "    return {}\n"
+        ),
+    )
+
+    call_edges = [edge for edge in graph.edges if edge.type == "CALLS"]
+    assert len(call_edges) == 1
+    assert "read_token" in call_edges[0].from_id
+    assert "load_policy" in call_edges[0].to_id
+
+
+def test_markdown_graph_extracts_hierarchy_and_doc_references() -> None:
+    resource = ResourceRef(source_id="local:test", uri="docs/auth.md", mime="text/markdown")
+    graph = extract_resource_graph(
+        product_id="prod",
+        source_key="src",
+        resource=resource,
+        content=(
+            "# Auth\n\n"
+            "See `read_token` in services/auth/api.py and route /tokens/{token_id}.\n\n"
+            "## Config\n\n"
+            "Uses os.environ.get(\"TOKEN_SECRET\").\n"
+        ),
+    )
+
+    edge_types = {edge.type for edge in graph.edges}
+    titles = {node.properties.get("title") for node in graph.nodes}
+    assert {"Auth", "Config"} <= titles
+    assert "DOCUMENTS" in edge_types
+    assert "MENTIONS" in edge_types
+    assert any(edge.type == "CONTAINS" and "Auth" in edge.from_id and "Config" in edge.to_id for edge in graph.edges)
+
+
 def test_chunk_graph_node_ids_include_overlapping_symbols() -> None:
     content = (
         "def alpha():\n"

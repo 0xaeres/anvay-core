@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from nexus.api.authz import (
     assert_product_access,
@@ -30,9 +28,22 @@ router = APIRouter(tags=["products"])
 log = logging.getLogger(__name__)
 
 
+class DeleteProductReportResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    product_id: str
+    registry: dict[str, int] = Field(default_factory=dict)
+    queue: dict[str, int | list[str]] = Field(default_factory=dict)
+    skills: int = 0
+    index: dict[str, int] = Field(default_factory=dict)
+    graph_deleted: bool = False
+    repomap_deleted: bool = False
+    checkpoints: int = 0
+
+
 class DeleteProductResponse(BaseModel):
     ok: bool
-    report: dict[str, Any] = Field(default_factory=dict)
+    report: DeleteProductReportResponse
 
 
 @router.get("/me")
@@ -211,4 +222,7 @@ async def delete_product_route(
             status_code=502,
             detail=f"failed to purge product {product_id!r}",
         ) from e
-    return DeleteProductResponse(ok=True, report=asdict(report))
+    return DeleteProductResponse(
+        ok=True,
+        report=DeleteProductReportResponse.model_validate(report),
+    )

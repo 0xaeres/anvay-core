@@ -235,6 +235,7 @@ def _secure_cookie(request: Request) -> bool:
     if (os.getenv("NEXUS_ENV") or "").strip().lower() == "production":
         return True
     forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    forwarded_https = False
     if forwarded_proto:
-        return forwarded_proto.split(",", 1)[0].strip().lower() == "https"
-    return request.url.scheme == "https"
+        forwarded_https = forwarded_proto.split(",", 1)[0].strip().lower() == "https"
+    return request.url.scheme == "https" or forwarded_https

@@ -31,7 +31,7 @@ from nexus.skills.models import Citation, SkillProposal
 def _make_cfg(tmp_path: Path) -> NexusConfig:
     m = ModelCfg(provider="deepinfra", model="x")
     return NexusConfig(
-        skills_repo="git@example:repo.git",
+        skills_repo=str(tmp_path / "remote.git"),
         hierarchy_root=tmp_path / "skills",
         connectors=[],
         vector_store=VectorStoreCfg(url="http://127.0.0.1:1"),  # dead port
@@ -71,9 +71,19 @@ def _seed_proposal(queue: ProposalQueue) -> SkillProposal:
     return p
 
 
+def _init_skills_repo(path: Path, remote_path: Path) -> None:
+    Repo.init(remote_path, bare=True, initial_branch="main")
+    repo = Repo.init(path, initial_branch="main")
+    (path / "README.md").write_text("# skills\n", encoding="utf-8")
+    repo.git.add(A=True)
+    repo.index.commit("seed skills repo")
+    repo.create_remote("origin", str(remote_path))
+    repo.git.push("--set-upstream", "origin", "main")
+
+
 def test_approve_writes_skill_file_and_flips_status(tmp_path: Path) -> None:
     cfg = _make_cfg(tmp_path)
-    Repo.init(cfg.hierarchy_root)
+    _init_skills_repo(cfg.hierarchy_root, tmp_path / "remote.git")
     queue = ProposalQueue(cfg.storage.proposal_queue)
     p = _seed_proposal(queue)
 
@@ -102,7 +112,7 @@ def test_approve_writes_skill_file_and_flips_status(tmp_path: Path) -> None:
 
 def test_approve_product_skill_writes_flat_file_and_reloads(tmp_path: Path) -> None:
     cfg = _make_cfg(tmp_path)
-    Repo.init(cfg.hierarchy_root)
+    _init_skills_repo(cfg.hierarchy_root, tmp_path / "remote.git")
     queue = ProposalQueue(cfg.storage.proposal_queue)
     proposal = SkillProposal(
         id="prop_product_skill",
@@ -151,7 +161,7 @@ def test_approve_unknown_proposal_raises(tmp_path: Path) -> None:
 
 def test_approve_twice_is_idempotent(tmp_path: Path) -> None:
     cfg = _make_cfg(tmp_path)
-    Repo.init(cfg.hierarchy_root)
+    _init_skills_repo(cfg.hierarchy_root, tmp_path / "remote.git")
     queue = ProposalQueue(cfg.storage.proposal_queue)
     p = _seed_proposal(queue)
     asyncio.run(approve_proposal(proposal_id=p.id, actor="me", config=cfg, queue=queue))

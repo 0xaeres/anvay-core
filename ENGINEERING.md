@@ -7,7 +7,7 @@ needs a patch.
 ## Overview
 
 Nexus indexes a product's code + docs, runs a bounded expert council to draft
-a product skill pack, requires humans to approve proposals, and serves the
+a product skill, requires humans to approve proposals, and serves the
 resulting skills (and the raw corpus) over MCP to AI coding clients.
 
 The system is deliberately small. Anything that doesn't move the
@@ -19,7 +19,7 @@ ingest                                              council
 ─────────────                                       ─────────────
 chunker         tree-sitter / heading-aware         drafter
 enricher        optional HQE / Anthropic CR         critic   ← own retrieval
-embedder        Jina v4 (Metal)                     reviser  ← only on blocking
+embedder        OpenAI-compatible client (cloud or local llama.cpp)   reviser  ← only on blocking
 indexer         Qdrant (dense + BM25)                  │
 repomap         tree-sitter symbol outline             ▼
                                                     SkillProposal
@@ -272,9 +272,9 @@ chunk.
 
 ### Embedder (`nexus/ingest/embedder.py`)
 
-OpenAI-compatible client against DeepInfra Qwen3 by default, or a local
-llama.cpp server hosting **Jina Embeddings v4** (`jinaai/jina-embeddings-v4`,
-2048-dim) when `provider: jina-local`. The
+OpenAI-compatible client. Defaults to a cloud inference provider (e.g. DeepInfra
+Qwen3 embeddings), or any local llama.cpp server when `provider: jina-local` or
+another locally-hosted profile is set in `nexus.yaml`. The
 `text_for_embedding()` prefix (`context_summary` from optional enrichment, or
 `context_path`) is included in the input. llama.cpp sometimes reports
 physical-batch token-limit failures as
@@ -340,15 +340,26 @@ with enriched vectors after the raw index exists. The indexer can delete by
 `resource_uri` for repair paths or by explicit chunk IDs for delta-safe stale
 cleanup.
 
-### Structural Summary Chunks (`nexus/ingest/summaries.py`)
+### Graph Extraction + Summary Chunks (`nexus/ingest/summaries.py`)
 
-After deterministic graph extraction, ingest writes one source-backed structural
-summary chunk per resource when graph facts exist. Summary chunks use the
-original `resource_uri`, line `0`, `context_path="Graph summary"`, and
-`artifact_type="summary"`. They are embedded as text and carry the same
-product/source/graph metadata as normal chunks, so broad architecture queries
-can retrieve graph-aware overview evidence before drilling into concrete source
-chunks. These summaries are deterministic and do not bypass source citations.
+Ingest always runs deterministic graph extraction first. When
+`ingestion.graph.mode="bounded_llm"` and the light model is reachable, changed
+code/docs resources may add allowlisted, strict-JSON LLM facts (`CALLS`,
+`IMPLEMENTS`, `DOCUMENTS`, `CONSTRAINS`, `DEPENDS_ON`, `MENTIONS`,
+`PART_OF_FLOW`) with confidence and source line anchors. Invalid, unsupported,
+or low-confidence facts are dropped; deterministic facts remain the baseline.
+
+Ingest writes source-backed graph memory chunks when graph facts exist:
+
+- `artifact_type="summary"` for per-resource structural counts/entities
+  (`context_path="Graph summary"`, line `0:0`).
+- `artifact_type="graph_community_summary"` for compact relationship memories
+  over flows, runtime/config/data, docs/tests (`context_path="Graph community
+  summary"`, line `0:1`).
+
+Both carry product/source/graph metadata as normal chunks. They help broad
+queries find graph-aware overview evidence, but final answers must still cite
+original source chunks for material claims.
 
 ### Repo Map (`nexus/retrieval/repomap.py`)
 
@@ -412,7 +423,7 @@ query understanding
   ├─ exact indexed grep
   ├─ repo-map symbol search
   ├─ graph-local traversal -> attached chunks
-  ├─ structural summary chunks
+  ├─ structural + graph community summary chunks
   └─ approved skill memory
       ↓
 mixed rerank + dedupe + channel quotas + file diversity + coverage gate
@@ -422,26 +433,25 @@ Graph is a navigation layer, not an answer source by itself. Graph traversal
 resolves files/symbols/routes/config keys to source-backed chunks and explains
 why adjacent evidence is related. Do not pollute semantic queries by appending
 all graph neighbor names. Broad product questions should retain documentation
-structural summaries, and implementation evidence; exact/path/symbol matches
-should not be crowded out by semantically similar but incomplete chunks. When a
-reranker is configured, the evidence engine reranks the mixed candidate pool
-across all channels before applying quotas.
+structural/community summaries, and implementation evidence; exact/path/symbol
+matches should not be crowded out by semantically similar but incomplete chunks.
+`QueryPlan` records the chosen strategy, seed entities, edge types, community
+hits, DRIFT-lite followups, graph paths, and unknowns. When a reranker is
+configured, the evidence engine reranks the mixed candidate pool across all
+channels before applying quotas.
 
 Still out of scope without an eval-set win: HyDE, semantic cache, classifier
 fallbacks, free-form code graph extraction, and circuit breakers. The retrieval
 eval set (§10) is the floor; new layers must improve it.
 
-## 5. Council — Expert Skill Pack
+## 5. Council — Expert Product Skill
 
-`nexus/council/graph.py`. LangGraph state graph for product skill packs:
+`nexus/council/graph.py`. LangGraph state graph for the single product skill:
 
-```
-START ──► Planner ──► Experts ──► Synthesizer ──► Repair ──► Judge
-                                                               │
-                                  missing evidence && cb == 0? │
-                                                               ├── true ─► Targeted Callback
-                                                               │            └──► Synthesizer
-                                                               └── false ─► Finalizer ─► END
+```text
+START ──► Planner ──► Architect ─┐
+                  └─► Domain Expert ├─► Synthesizer ─► Repair ─► Eval ─► Finalizer ─► END
+                  └─► Quality Expert┘
 ```
 
 State (`nexus/council/state.py::CouncilState`):
@@ -452,46 +462,39 @@ class CouncilState(TypedDict, total=False):
     product_id: str
     topic: str
     config_path: str
-    evidence: list[EvidenceChunk]   # reducer-merged: planner + experts + callback
+    evidence: list[EvidenceChunk]   # reducer-merged: planner + experts + repair
     skill_plan: list[SkillPlanItem]
     expert_reports: list[ExpertReport]
     skill_drafts: list[SkillDraft]
-    proposals: list[SkillProposal]  # context, architecture, engineering proposals
-    judge_result: JudgeResult | None
-    callback_count: int             # capped at 1
+    proposals: list[SkillProposal]  # one product_master proposal
+    eval_results: list[SkillEvalResult]
     proposal: SkillProposal | None
     proposal_id: str | None         # primary/master proposal for compatibility
     critique: Critique | None
-    revision_count: int             # capped at 1
+    revision_count: int
     deliberation: list[DeliberationMessage]  # append-only stream
     costs: list[AgentCost]
 ```
 
-### Pack Agents (`nexus/council/agents/pack.py`)
+### Skill Agents (`nexus/council/agents/skill.py`)
 
-Planner retrieves the initial evidence and creates exactly three skill
-outlines: `{product}-context`, `{product}-architecture`, and
-`{product}-engineering`. Expert fanout then runs two bounded lenses: Product
-Mapper and Engineering Mapper. Product Mapper extracts identity, domain
-vocabulary, entities, apps/services/repos, APIs, schemas, auth/tenancy, and
-boundaries. Engineering Mapper extracts commands, toolchain, tests/evals, code
-standards, security/secrets, debugging, and review signals. Experts do fresh
-retrieval so the Synthesizer sees more than the planner's initial chunk pool.
+Planner retrieves the initial evidence and creates exactly one `product_master`
+skill outline. Expert fanout runs three bounded lenses: architect,
+domain_expert, and quality_expert. Each expert produces compact JSON only:
+`summary`, `findings`, and `missing_questions`. Experts do fresh retrieval so
+the Synthesizer sees more than the planner's initial chunk pool.
 
-Synthesizer emits one Markdown skill per outline. The completeness repair loop
-validates every draft against the tier-specific schema and retries missing
+Synthesizer emits one Markdown product skill. The completeness repair loop
+validates the draft against the tier-specific schema and retries missing
 sections or factual citation gaps up to `REPAIR_ATTEMPT_CAP = 3`. Factual
 product claims require citations; procedural guidance does not unless it names
 a concrete product fact. Incomplete skills are never queued: if repair still
 fails, the session stops with `reason="incomplete_skill"`.
 
-Judge checks evidence coverage and may request one targeted expert callback.
-After that callback, the graph re-synthesizes and repairs. A second unresolved
-evidence gap stops the session with `reason="insufficient_evidence"`.
-
-Finalizer parses complete drafts into multiple `SkillProposal` rows. The
-primary/master proposal remains available as `proposal_id` for old clients;
-the full pack is persisted on the session as `proposal_ids`.
+Eval runs deterministic skill checks, including identity, structure, name
+match, citation faithfulness, and trigger quality. Finalizer parses the
+complete draft into one `SkillProposal`. `proposal_id` points at that single
+proposal, and sessions persist `proposal_ids` with one entry.
 
 ### LLM client (`nexus/llm/client.py`)
 
@@ -631,7 +634,7 @@ credentials plus product-scope project keys.
 | Method + path | Purpose |
 |---|---|
 | `GET /products/{id}/council/sessions` | List sessions for a product. |
-| `POST /products/{id}/council/sessions` | Body: `{topic: str}`. Schedules the skill-pack council as a background task. Returns `{session_id}`. |
+| `POST /products/{id}/council/sessions` | Body: `{topic: str}`. Schedules the product-skill council as a background task. Returns `{session_id}`. |
 | `GET /council/sessions/{sid}` | Persisted session row. |
 | `GET /council/sessions/{sid}/stream` | SSE: live deliberation if running; deterministic replay if completed. |
 
@@ -736,6 +739,12 @@ ingestion:
   enrich_chunks:
     docs: false                # optional Anthropic Contextual Retrieval
     code: false                # optional HQE
+  graph:
+    mode: bounded_llm          # deterministic graph + validated LLM facts when light model is reachable
+    max_resources_per_batch: 12
+    max_facts_per_resource: 24
+    concurrency: 2
+    confidence_floor: 0.65
   embed_batch_size: 32
   quality_gate_threshold: 0.0  # reranker score gate; calibrate per provider via eval
   file_batch_size: 50
@@ -841,16 +850,16 @@ This runner uses `evals/golden.jsonl` skill questions. For each query, it:
 
 1. Retrieves the top 8 contexts through the production retrieval pipeline.
 2. Synthesizes a 2-4 sentence answer using only retrieved contexts.
-3. Uses the configured council model as a strict JSON judge for faithfulness
-   and answer relevancy.
+3. Uses the configured evaluator model (or council fallback) as a strict JSON
+   judge for faithfulness and answer correctness.
 4. Computes context recall by checking whether expected file names appear in
    retrieved hit URIs.
 
 Aggregates are simple means over the evaluated items:
 
-```
+```text
 faithfulness      >= 0.85
-answer_relevancy  >= 0.80
+answer_correctness >= 0.80
 context_recall    >= 0.75
 ```
 
@@ -916,8 +925,9 @@ derived index cleanup for offline/local-only recovery.
 - **Qdrant** for vector + sparse storage, with native TurboQuant for dense
   vector compression. **fastembed** backs Qdrant BM25 sparse encoding.
 - **DeepInfra Qwen3** embeddings/reranker are the default low-resource dev
-  profile. Local **Jina v4** embeddings + **Jina Reranker v3** remain available
-  via llama.cpp for high-resource/offline machines.
+  profile. Alternative providers — including local llama.cpp servers — are
+  supported through the same OpenAI-compatible `ModelCfg` by setting
+  `provider`, `model`, `base_url`, and `dim` in `nexus.yaml`.
 - **DeepInfra** (OpenAI-compatible) for council LLMs and optional enrichment in
   dev. Swap the `provider` + `base_url` to point at any compatible endpoint.
 - **MCP** (stdio transport) for the agent-facing skill server.

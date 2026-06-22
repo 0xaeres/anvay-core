@@ -115,6 +115,40 @@
       "tags": ["retrieval", "graph", "relational"]
     },
     {
+      "query": "what depends on a graph seed during product question answering",
+      "expected": [
+        {"file": "nexus/graph/rag.py"},
+        {"file": "nexus/retrieval/evidence.py"}
+      ],
+      "tags": ["graph", "relational"]
+    },
+    {
+      "query": "which docs or summaries constrain graph relationship answers",
+      "expected": [
+        {"file": "nexus/ingest/summaries.py"},
+        {"file": "nexus/graph/rag.py"}
+      ],
+      "tags": ["graph", "docs", "relational"]
+    },
+    {
+      "query": "which endpoints read config values in graph extraction",
+      "expected": [{"file": "nexus/graph/extractor.py"}],
+      "tags": ["graph", "config", "relational"]
+    },
+    {
+      "query": "what tests cover graph rag route traversal",
+      "expected": [{"file": "tests/test_graph_rag.py"}],
+      "tags": ["graph", "tests", "relational"]
+    },
+    {
+      "query": "how does graph flow reach source-backed evidence chunks",
+      "expected": [
+        {"file": "nexus/retrieval/evidence.py"},
+        {"file": "nexus/ingest/indexer.py"}
+      ],
+      "tags": ["graph", "retrieval", "relational"]
+    },
+    {
       "query": "does Nexus OCR diagrams",
       "expected": [{"file": "ENGINEERING.md", "line_start": 285, "line_end": 288}],
       "tags": ["negative", "visual-evidence"]
@@ -248,6 +282,34 @@
       "query": "Pydantic config loader with env variable substitution",
       "expected": [{"file": "nexus/config.py"}],
       "tags": ["config"]
+    },
+    {
+      "query": "deterministic graph extracts intra-file function calls",
+      "expected": [{"file": "nexus/graph/extractor.py"}],
+      "tags": ["graph", "dependency", "relational"]
+    },
+    {
+      "query": "graph traversal returns path nodes and relationships",
+      "expected": [{"file": "nexus/graph/store.py"}],
+      "tags": ["graph", "traversal", "relational"]
+    },
+    {
+      "query": "which code handles API route graph edges",
+      "expected": [{"file": "nexus/graph/extractor.py"}],
+      "tags": ["graph", "routes", "relational"]
+    },
+    {
+      "query": "which docs mention code paths in graph extraction",
+      "expected": [{"file": "nexus/graph/extractor.py"}],
+      "tags": ["graph", "docs", "relational"]
+    },
+    {
+      "query": "how graph trace separates entities from relationships",
+      "expected": [
+        {"file": "nexus/graph/models.py"},
+        {"file": "nexus/graph/rag.py"}
+      ],
+      "tags": ["graph", "trace", "product-chat"]
     },
     {
       "query": "continuous daemon that watches connector updates",

@@ -147,6 +147,10 @@ async def test_graph_rag_answers_arbitrary_query_with_graph_and_citations(monkey
     assert answer.citations[0].anchor == "api/routes.py:42"
     assert answer.resolved_entities[0].resource_uri == "shared/auth.py"
     assert answer.graph_paths[0].edge_ids == ["edge:1"]
+    assert answer.graph_paths[0].edge_count == 1
+    assert answer.graph_paths[0].relationship_types == ["EXPOSES"]
+    assert answer.graph_relationships_used is True
+    assert answer.graph_relationship_count == 1
     assert answer.confidence > 0.6
     assert answer.graph_used is True
     assert seen["mode"] == "auto"
@@ -199,6 +203,57 @@ async def test_graph_rag_uses_qdrant_hits_as_graph_seeds_when_mentions_do_not_re
     assert len(calls) == 2
     assert answer.graph_used is True
     assert answer.resolved_entities[0].stable_id == "file:prod:shared/auth.py"
+
+
+@pytest.mark.asyncio
+async def test_graph_rag_does_not_report_paths_without_relationships(monkeypatch) -> None:
+    class NoEdgeGraph(FakeGraph):
+        async def traverse(
+            self,
+            *,
+            product_id: str,
+            seed_ids: list[str],
+            edge_types: list[str] | None = None,
+            max_depth: int = 2,
+            limit: int = 50,
+        ):
+            self.traversed.append((product_id, seed_ids, edge_types, max_depth, limit))
+            return GraphQueryResult(nodes=[self.api_node], edges=[])
+
+    async def fake_retrieve(*, ctx, product_id, query, top_k, mode, graph_node_ids=None):
+        return RetrievalResult(
+            hits=[
+                Hit(
+                    id="h1",
+                    score=0.8,
+                    source="dense",
+                    payload={
+                        "resource_uri": "api/routes.py",
+                        "start_line": 42,
+                        "content": "@router.get('/tokens')",
+                        "graph_node_ids": ["api:prod:GET:/tokens"],
+                    },
+                )
+            ],
+            reranked=False,
+            seed_count=1,
+        )
+
+    monkeypatch.setattr(rag, "retrieve", fake_retrieve)
+
+    answer = await answer_graph_rag(
+        ctx=object(),
+        graph_store=NoEdgeGraph(),
+        chat=None,
+        product_id="prod",
+        request=GraphRAGQuery(query="what depends on shared/auth.py?"),
+    )
+
+    assert answer.graph_used is True
+    assert answer.graph_relationships_used is False
+    assert answer.graph_paths == []
+    assert answer.graph_relationship_count == 0
+    assert "no graph relationships returned" in answer.unknowns
 
 
 @pytest.mark.asyncio

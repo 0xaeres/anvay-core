@@ -1,0 +1,118 @@
+{
+  "suite": "retrieval",
+  "product_id": "synthetic",
+  "metrics": {
+    "recall_at_k": 1.0,
+    "mrr": 1.0
+  },
+  "thresholds": {
+    "min_recall_at_10": 0.8,
+    "min_mrr": 0.5
+  },
+  "misses": [],
+  "items": [
+    {
+      "query": "how does python DataProcessor process items",
+      "first_match_rank": 1,
+      "tags": [],
+      "top_files": [
+        "evals/fixtures/synthetic_project/python_demo.py",
+        "evals/fixtures/synthetic_project/JavaDemo.java",
+        "evals/fixtures/synthetic_project/kotlin_demo.kt"
+      ]
+    },
+    {
+      "query": "create a new session for a user in TypeScript",
+      "first_match_rank": 1,
+      "tags": [],
+      "top_files": [
+        "evals/fixtures/synthetic_project/typescript_demo.ts",
+        "evals/fixtures/synthetic_project/tsx_demo.tsx",
+        "evals/fixtures/synthetic_project/kotlin_demo.kt",
+        "evals/fixtures/synthetic_project/solidity_demo.sol"
+      ]
+    },
+    {
+      "query": "react component user profile card and auth status hook",
+      "first_match_rank": 1,
+      "tags": [],
+      "top_files": [
+        "evals/fixtures/synthetic_project/tsx_demo.tsx",
+        "evals/fixtures/synthetic_project/typescript_demo.ts",
+        "evals/fixtures/synthetic_project/kotlin_demo.kt",
+        "evals/fixtures/synthetic_project/solidity_demo.sol"
+      ]
+    },
+    {
+      "query": "where is the LoggerService defined and message formatting",
+      "first_match_rank": 1,
+      "tags": [],
+      "top_files": [
+        "evals/fixtures/synthetic_project/javascript_demo.js",
+        "evals/fixtures/synthetic_project/JavaDemo.java",
+        "evals/fixtures/synthetic_project/typescript_demo.ts"
+      ]
+    },
+    {
+      "query": "sign transactions and transfer funds on Rust wallet",
+      "first_match_rank": 1,
+      "tags": [],
+      "top_files": [
+        "evals/fixtures/synthetic_project/rust_demo.rs",
+        "evals/fixtures/synthetic_project/solidity_demo.sol",
+        "evals/fixtures/synthetic_project/JavaDemo.java"
+      ]
+    },
+    {
+      "query": "go validate config ports and Storage interface",
+      "first_match_rank": 1,
+      "tags": [],
+      "top_files": [
+        "evals/fixtures/synthetic_project/go_demo.go",
+        "evals/fixtures/synthetic_project/tsx_demo.tsx",
+        "evals/fixtures/synthetic_project/typescript_demo.ts"
+      ]
+    },
+    {
+      "query": "Java OrderService placeOrder and OrderRequest record",
+      "first_match_rank": 1,
+      "tags": [],
+      "top_files": [
+        "evals/fixtures/synthetic_project/JavaDemo.java",
+        "evals/fixtures/synthetic_project/javascript_demo.js",
+        "evals/fixtures/synthetic_project/tsx_demo.tsx"
+      ]
+    },
+    {
+      "query": "Engine run_task in core namespace and max_value template in cpp",
+      "first_match_rank": 1,
+      "tags": [],
+      "top_files": [
+        "evals/fixtures/synthetic_project/cpp_demo.cpp",
+        "evals/fixtures/synthetic_project/go_demo.go",
+        "evals/fixtures/synthetic_project/rust_demo.rs"
+      ]
+    },
+    {
+      "query": "UserRepository fetchUser and Kotlin AppDatabase object",
+      "first_match_rank": 1,
+      "tags": [],
+      "top_files": [
+        "evals/fixtures/synthetic_project/kotlin_demo.kt",
+        "evals/fixtures/synthetic_project/JavaDemo.java",
+        "evals/fixtures/synthetic_project/typescript_demo.ts",
+        "evals/fixtures/synthetic_project/tsx_demo.tsx"
+      ]
+    },
+    {
+      "query": "add liquidity to LiquidityPool contract in solidity",
+      "first_match_rank": 1,
+      "tags": [],
+      "top_files": [
+        "evals/fixtures/synthetic_project/solidity_demo.sol",
+        "evals/fixtures/synthetic_project/rust_demo.rs",
+        "evals/fixtures/synthetic_project/JavaDemo.java"
+      ]
+    }
+  ]
+}

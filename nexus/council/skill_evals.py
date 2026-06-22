@@ -134,9 +134,37 @@ def _trigger_failures(draft: SkillDraft, plan: Sequence[SkillPlanItem]) -> list[
 
 
 def _positive_trigger_queries(draft: SkillDraft) -> list[str]:
+    """Return 3 semantically varied positive queries to catch narrow routing.
+
+    Using a single query trivially passes for almost any coherent description.
+    Three varied phrasings (imperative, explanatory, identity) catch edge cases
+    where the routing logic only fires on exact lexical overlap.
+    """
     words = [t for t in _tokens(draft.description) if len(t) >= 4]
-    phrase = " ".join(words[:4]) or draft.name
-    return [f"I need help with {phrase}"]
+    name_phrase = draft.name.replace("-", " ")
+    queries: list[str] = []
+
+    # 1. Imperative phrasing from the first half of the description.
+    if words:
+        queries.append(f"I need help with {' '.join(words[:4])}")
+
+    # 2. How-to phrasing from the second half (different token window).
+    if len(words) >= 5:
+        queries.append(f"how do I handle {' '.join(words[2:6])}")
+    elif words:
+        queries.append(f"how do I use {name_phrase}")
+
+    # 3. Explain phrasing using the skill name — always distinct from the above.
+    queries.append(f"explain {name_phrase}")
+
+    # De-duplicate while preserving order, cap at 3.
+    seen: set[str] = set()
+    result: list[str] = []
+    for q in queries:
+        if q not in seen:
+            seen.add(q)
+            result.append(q)
+    return result[:3] or [f"I need help with {name_phrase}"]
 
 
 def _rank_plans(query: str, plan: Sequence[SkillPlanItem]) -> list[tuple[float, SkillPlanItem]]:
