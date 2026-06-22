@@ -201,7 +201,13 @@ async def find_skills(
     """
     all_skills = state.store.iter_skills()
     if not all_skills:
-        return {"skills": [], "warning": "no skills found at hierarchy_root"}
+        return FindSkillsResponse(
+            query=query,
+            context=context,
+            current_file=current_file,
+            filtered_from=0,
+            skills=[],
+        ).model_dump(mode="json")
 
     product_skills = [s for s in all_skills if s.product == state.product]
     master_skills = [s for s in product_skills if s.tier == "product_master"]

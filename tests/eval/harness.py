@@ -38,7 +38,7 @@ class QueryResult:
     first_match_rank: int | None  # 1-indexed; None if no match in top_k
     tags: list[str]
     relevance: list[bool] | None = None
-    expected_count: int = 1
+    expected_count: int = 0
 
     @property
     def hit(self) -> bool:
@@ -72,7 +72,7 @@ class EvalReport:
             ndcg_by_relevance(
                 r.relevance or [r.hit],
                 k=self.top_k,
-                relevant_count=max(r.expected_count, 1),
+                relevant_count=r.expected_count,
             )
             for r in self.results
         ]
@@ -191,7 +191,7 @@ async def run_eval(
                     first_match_rank=first_rank,
                     tags=tags,
                     relevance=relevance,
-                    expected_count=max(len(expected), 1),
+                    expected_count=len(expected),
                 )
             )
         return EvalReport(results=results, top_k=top_k)

@@ -123,6 +123,7 @@ async def _score_one(
     retrieved_ids = [_identify(candidate) for candidate in result.candidates]
     relevant = {f.lower() for f in item.expected_files}
     retrieved_labels = [_matched_expected_file(rid, relevant) or rid for rid in retrieved_ids]
+    retrieved_labels = list(dict.fromkeys(retrieved_labels))
 
     ndcg = ndcg_at_k(retrieved_labels, relevant, k=10)
     recall = recall_at_k(retrieved_labels, relevant, k=10)
@@ -158,9 +159,7 @@ async def _pairwise_with_reasoning(
     wins *regardless of position*.  This eliminates systematic first-position
     bias that would otherwise inflate PPA scores.
     """
-    contexts = "\n---\n".join(
-        (getattr(h, "excerpt", "") or "")[:800] for h in hits[:6]
-    )
+    contexts = [(getattr(h, "excerpt", "") or "")[:800] for h in hits[:6]]
     ab, ab_reason = await _pairwise_one_order_with_reasoning(
         item, contexts=contexts, judge=judge, expected_is_a=True
     )
@@ -181,7 +180,7 @@ async def _pairwise_with_reasoning(
 async def _pairwise_one_order(
     item: GoldenItem,
     *,
-    contexts: str,
+    contexts: list[str],
     judge: ChatClient,
     expected_is_a: bool,
 ) -> bool | None:
@@ -197,7 +196,7 @@ async def _pairwise_one_order(
 async def _pairwise_one_order_with_reasoning(
     item: GoldenItem,
     *,
-    contexts: str,
+    contexts: list[str],
     judge: ChatClient,
     expected_is_a: bool,
 ) -> tuple[bool | None, str]:
@@ -220,7 +219,15 @@ def _identify(hit) -> str:
 
 
 def _matched_expected_file(retrieved_id: str, relevant: set[str]) -> str | None:
-    return next((path for path in relevant if path in (retrieved_id or "").lower()), None)
+    normalized = (retrieved_id or "").lower().split(":", 1)[0].strip("/")
+    normalized_name = normalized.rsplit("/", 1)[-1]
+    for path in sorted(relevant, key=lambda p: (-len(p), p)):
+        expected = path.lower().strip("/")
+        if normalized == expected or normalized.endswith(f"/{expected}"):
+            return path
+        if "/" not in expected and normalized_name == expected:
+            return path
+    return None
 
 
 def _aggregate(results: list[CodeQueryScore]) -> dict[str, float]:

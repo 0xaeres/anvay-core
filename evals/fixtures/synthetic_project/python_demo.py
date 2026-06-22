@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # python_demo.py
 from functools import lru_cache
 

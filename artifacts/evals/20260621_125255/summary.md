@@ -7,4 +7,4 @@
 
 | Suite | Product | Status | Metrics | Output |
 |---|---|---|---|---|
-| retrieval | `synthetic` | PASS | recall_at_k=1, mrr=1 | `artifacts/evals/20260621_125255/retrieval.json` |
+| retrieval | `synthetic` | PASS | recall_at_k=1, mrr=1, ndcg_at_k=1 | `artifacts/evals/20260621_125255/retrieval.json` |

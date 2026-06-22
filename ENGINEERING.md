@@ -448,7 +448,7 @@ eval set (§10) is the floor; new layers must improve it.
 
 `nexus/council/graph.py`. LangGraph state graph for the single product skill:
 
-```
+```text
 START ──► Planner ──► Architect ─┐
                   └─► Domain Expert ├─► Synthesizer ─► Repair ─► Eval ─► Finalizer ─► END
                   └─► Quality Expert┘
@@ -857,7 +857,7 @@ This runner uses `evals/golden.jsonl` skill questions. For each query, it:
 
 Aggregates are simple means over the evaluated items:
 
-```
+```text
 faithfulness      >= 0.85
 answer_correctness >= 0.80
 context_recall    >= 0.75

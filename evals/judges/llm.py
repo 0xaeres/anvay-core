@@ -119,16 +119,17 @@ async def judge_pairwise_preference(
     judge,
     *,
     question: str,
-    contexts: str,
+    contexts: list[str],
     expected_answer: str,
     anti_answer: str,
     expected_is_a: bool,
 ) -> PairwiseJudgment:
     answer_a = expected_answer if expected_is_a else anti_answer
     answer_b = anti_answer if expected_is_a else expected_answer
+    context_text = "\n---\n".join(contexts[:6])
     user = (
         f"QUESTION:\n{question}\n\n"
-        f"CONTEXTS:\n{contexts}\n\n"
+        f"CONTEXTS:\n{context_text}\n\n"
         f"ANSWER_A:\n{answer_a}\n\n"
         f"ANSWER_B:\n{answer_b}\n"
     )

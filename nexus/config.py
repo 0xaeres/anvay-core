@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_VAR_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
@@ -102,6 +102,23 @@ class ModelsCfg(BaseModel):
     light: ModelCfg            # enricher (HQE + doc context)
     embedding: ModelCfg
     reranker: ModelCfg
+
+    @model_validator(mode="before")
+    @classmethod
+    def map_legacy_role_keys(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        aliases = {
+            "drafter": "planner",
+            "critic": "evaluator",
+            "reviser": "repair",
+        }
+        normalized = dict(data)
+        for old, new in aliases.items():
+            if old in normalized and new not in normalized:
+                normalized[new] = normalized[old]
+            normalized.pop(old, None)
+        return normalized
 
 
 class EnrichCfg(BaseModel):

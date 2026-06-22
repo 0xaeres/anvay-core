@@ -42,4 +42,4 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO)
     generate_project(args.out)
-    print(f"Successfully generated synthetic project at {args.out}")
+    log.info("Successfully generated synthetic project at %s", args.out)

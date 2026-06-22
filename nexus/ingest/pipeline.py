@@ -316,6 +316,7 @@ async def run_ingest(
             payload_by_uri = {item.ref.uri: item for item in items}
             graph_extractions: dict[str, GraphExtraction] = {}
             graph_failures: dict[str, str] = {}
+            graph_partials: set[str] = set()
             graph_llm_remaining = config.ingestion.graph.max_resources_per_batch
             for item in items:
                 if delta_enabled:
@@ -348,6 +349,7 @@ async def run_ingest(
                                     )
                             except Exception as e:
                                 stats.graph_errors += 1
+                                graph_partials.add(item.ref.uri)
                                 log.warning("bounded graph LLM skipped for %s: %s", item.ref.uri, e)
                                 await emit(
                                     "warn",
@@ -412,11 +414,13 @@ async def run_ingest(
                 c
                 for c in all_chunks
                 if payload_by_uri[c.resource.uri].action != "graph_refresh"
+                or is_community_summary_chunk(c)
             ]
             graph_refresh_chunks = [
                 c
                 for c in all_chunks
                 if payload_by_uri[c.resource.uri].action == "graph_refresh"
+                and not is_community_summary_chunk(c)
             ]
 
             if not all_chunks and not graph_extractions:
@@ -602,7 +606,7 @@ async def run_ingest(
                             previous_fact_ids=prior.get("graphFactIds", []),
                         )
                         graph_updates[uri] = (
-                            "complete",
+                            "partial" if uri in graph_partials else "complete",
                             fact_ids,
                             indexed_at,
                         )
@@ -625,7 +629,9 @@ async def run_ingest(
             for uri in manifest_uris:
                 chunks = chunks_by_uri.get(uri, [])
                 item = payload_by_uri[uri]
-                vector_changed = item.action != "graph_refresh"
+                vector_changed = item.action != "graph_refresh" or any(
+                    is_community_summary_chunk(chunk) for chunk in chunks
+                )
                 new_ids = (
                     [c.id for c in chunks]
                     if vector_changed

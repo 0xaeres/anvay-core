@@ -16,9 +16,9 @@
       "first_match_rank": 1,
       "tags": [],
       "top_files": [
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/python_demo.py",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/JavaDemo.java",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/kotlin_demo.kt"
+        "evals/fixtures/synthetic_project/python_demo.py",
+        "evals/fixtures/synthetic_project/JavaDemo.java",
+        "evals/fixtures/synthetic_project/kotlin_demo.kt"
       ]
     },
     {
@@ -26,10 +26,10 @@
       "first_match_rank": 1,
       "tags": [],
       "top_files": [
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/typescript_demo.ts",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/tsx_demo.tsx",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/kotlin_demo.kt",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/solidity_demo.sol"
+        "evals/fixtures/synthetic_project/typescript_demo.ts",
+        "evals/fixtures/synthetic_project/tsx_demo.tsx",
+        "evals/fixtures/synthetic_project/kotlin_demo.kt",
+        "evals/fixtures/synthetic_project/solidity_demo.sol"
       ]
     },
     {
@@ -37,10 +37,10 @@
       "first_match_rank": 1,
       "tags": [],
       "top_files": [
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/tsx_demo.tsx",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/typescript_demo.ts",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/kotlin_demo.kt",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/solidity_demo.sol"
+        "evals/fixtures/synthetic_project/tsx_demo.tsx",
+        "evals/fixtures/synthetic_project/typescript_demo.ts",
+        "evals/fixtures/synthetic_project/kotlin_demo.kt",
+        "evals/fixtures/synthetic_project/solidity_demo.sol"
       ]
     },
     {
@@ -48,9 +48,9 @@
       "first_match_rank": 1,
       "tags": [],
       "top_files": [
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/javascript_demo.js",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/JavaDemo.java",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/typescript_demo.ts"
+        "evals/fixtures/synthetic_project/javascript_demo.js",
+        "evals/fixtures/synthetic_project/JavaDemo.java",
+        "evals/fixtures/synthetic_project/typescript_demo.ts"
       ]
     },
     {
@@ -58,9 +58,9 @@
       "first_match_rank": 1,
       "tags": [],
       "top_files": [
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/rust_demo.rs",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/solidity_demo.sol",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/JavaDemo.java"
+        "evals/fixtures/synthetic_project/rust_demo.rs",
+        "evals/fixtures/synthetic_project/solidity_demo.sol",
+        "evals/fixtures/synthetic_project/JavaDemo.java"
       ]
     },
     {
@@ -68,9 +68,9 @@
       "first_match_rank": 1,
       "tags": [],
       "top_files": [
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/go_demo.go",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/tsx_demo.tsx",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/typescript_demo.ts"
+        "evals/fixtures/synthetic_project/go_demo.go",
+        "evals/fixtures/synthetic_project/tsx_demo.tsx",
+        "evals/fixtures/synthetic_project/typescript_demo.ts"
       ]
     },
     {
@@ -78,9 +78,9 @@
       "first_match_rank": 1,
       "tags": [],
       "top_files": [
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/JavaDemo.java",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/javascript_demo.js",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/tsx_demo.tsx"
+        "evals/fixtures/synthetic_project/JavaDemo.java",
+        "evals/fixtures/synthetic_project/javascript_demo.js",
+        "evals/fixtures/synthetic_project/tsx_demo.tsx"
       ]
     },
     {
@@ -88,9 +88,9 @@
       "first_match_rank": 1,
       "tags": [],
       "top_files": [
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/cpp_demo.cpp",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/go_demo.go",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/rust_demo.rs"
+        "evals/fixtures/synthetic_project/cpp_demo.cpp",
+        "evals/fixtures/synthetic_project/go_demo.go",
+        "evals/fixtures/synthetic_project/rust_demo.rs"
       ]
     },
     {
@@ -98,10 +98,10 @@
       "first_match_rank": 1,
       "tags": [],
       "top_files": [
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/kotlin_demo.kt",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/JavaDemo.java",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/typescript_demo.ts",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/tsx_demo.tsx"
+        "evals/fixtures/synthetic_project/kotlin_demo.kt",
+        "evals/fixtures/synthetic_project/JavaDemo.java",
+        "evals/fixtures/synthetic_project/typescript_demo.ts",
+        "evals/fixtures/synthetic_project/tsx_demo.tsx"
       ]
     },
     {
@@ -109,9 +109,9 @@
       "first_match_rank": 1,
       "tags": [],
       "top_files": [
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/solidity_demo.sol",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/rust_demo.rs",
-        "/Users/aeres/Desktop/projects/nexus/evals/fixtures/synthetic_project/JavaDemo.java"
+        "evals/fixtures/synthetic_project/solidity_demo.sol",
+        "evals/fixtures/synthetic_project/rust_demo.rs",
+        "evals/fixtures/synthetic_project/JavaDemo.java"
       ]
     }
   ]

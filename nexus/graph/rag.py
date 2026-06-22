@@ -561,28 +561,56 @@ def _paths_from_graph(
 ) -> list[GraphRAGPath]:
     if not edges:
         return []
-    node_ids = {node.stable_id for node in nodes}
-    edge_ids = [edge.stable_id for edge in edges]
-    avg_conf = sum(edge.confidence for edge in edges) / max(len(edges), 1)
-    relationship_types = sorted({edge.type for edge in edges})
-    source_anchors = _ordered_unique(
-        ref.anchor for edge in edges for ref in edge.source_refs if ref.anchor
-    )[:5]
-    return [
-        GraphRAGPath(
+    nodes_by_id = {node.stable_id: node for node in nodes}
+    edges_by_id = {edge.stable_id: edge for edge in edges}
+    paths_by_seed: dict[str, list[dict]] = {}
+    for path in paths or []:
+        path_node_ids = [str(node_id) for node_id in path.get("node_ids", [])]
+        for seed in seed_nodes:
+            if seed.stable_id in path_node_ids:
+                paths_by_seed.setdefault(seed.stable_id, []).append(path)
+
+    out: list[GraphRAGPath] = []
+    for seed in seed_nodes[:5]:
+        seed_paths = paths_by_seed.get(seed.stable_id, [])
+        if seed_paths:
+            path_edge_ids = _ordered_unique(
+                edge_id
+                for path in seed_paths
+                for edge_id in path.get("edge_ids", [])
+                if edge_id in edges_by_id
+            )
+            path_node_ids = {
+                node_id
+                for path in seed_paths
+                for node_id in path.get("node_ids", [])
+                if node_id in nodes_by_id
+            }
+            path_edges = [edges_by_id[edge_id] for edge_id in path_edge_ids]
+        else:
+            path_edges = list(edges)
+            path_edge_ids = [edge.stable_id for edge in path_edges]
+            path_node_ids = {node.stable_id for node in nodes}
+        if not path_edges:
+            continue
+        avg_conf = sum(edge.confidence for edge in path_edges) / len(path_edges)
+        relationship_types = sorted({edge.type for edge in path_edges})
+        source_anchors = _ordered_unique(
+            ref.anchor for edge in path_edges for ref in edge.source_refs if ref.anchor
+        )[:5]
+        out.append(GraphRAGPath(
             seed_id=seed.stable_id,
             seed_name=_display_name(seed),
-            node_ids=sorted(node_ids),
-            edge_ids=edge_ids,
+            node_ids=sorted(path_node_ids),
+            edge_ids=path_edge_ids,
             relationship_types=relationship_types,
             source_anchors=source_anchors,
-            node_count=len(node_ids),
-            edge_count=len(edge_ids),
-            summary=f"{_display_name(seed)} reached {len(node_ids)} node(s) through {len(edge_ids)} relationship(s)",
+            node_count=len(path_node_ids),
+            edge_count=len(path_edge_ids),
+            summary=f"{_display_name(seed)} reached {len(path_node_ids)} node(s) through {len(path_edge_ids)} relationship(s)",
             confidence=round(avg_conf, 3),
-        )
-        for seed in seed_nodes[:5]
-    ]
+        ))
+    return out
 
 
 def _citation(index: int, hit) -> GraphRAGCitation:

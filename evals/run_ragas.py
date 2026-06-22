@@ -273,9 +273,10 @@ def _print_summary(report: Report) -> None:
     print(f"RAGAS-style eval - {int(a.get('n', 0))} queries")
     print("=" * 60)
     print(f"  faithfulness      {a.get('faithfulness', 0):.3f}  (>= {t.faithfulness})")
-    print(
-        f"  answer_correct    {a.get('answer_correctness', 0):.3f}  "
-        f"(>= {t.answer_correctness})"
+    log.info(
+        "  answer_correct    %.3f  (>= %.3f)",
+        a.get("answer_correctness", 0),
+        t.answer_correctness,
     )
     print(f"  context_recall    {a.get('context_recall', 0):.3f}  (>= {t.context_recall})")
     print()

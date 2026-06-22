@@ -48,12 +48,14 @@ def graph_community_summary_chunk(
     """Build a compact connected-subgraph memory chunk for broad graph search."""
     if not extraction.edges:
         return None
-    lines = [
-        f"Graph community for {resource.uri}.",
+    summary_lines = [
         _flow_summary(extraction),
         _runtime_summary(extraction),
         _doc_code_summary(extraction),
     ]
+    if not any(summary_lines):
+        return None
+    lines = [f"Graph community for {resource.uri}.", *summary_lines]
     content = "\n".join(line for line in lines if line).strip()
     if not content:
         return None

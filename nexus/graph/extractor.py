@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Final
 
-from tree_sitter import Node, Parser
+from tree_sitter import Node, Parser, Tree
 
 from nexus.graph.models import GraphEdge, GraphExtraction, GraphNode, SourceRef
 from nexus.ingest.chunker import _LANGS, _identifier_of, _lang_for
@@ -148,6 +148,8 @@ def extract_resource_graph(
 
     lang = _lang_for(resource.uri)
     if lang:
+        cfg = _LANGS[lang]
+        tree = Parser(cfg.language).parse(content.encode("utf-8"))
         add_node("Module", module_id, properties={"name": _module_name(resource.uri)})
         add_edge("CONTAINS", file_id, module_id)
         symbol_ids = _extract_symbols(
@@ -155,6 +157,7 @@ def extract_resource_graph(
             resource=resource,
             content=content,
             lang=lang,
+            tree=tree,
             now=now,
             source_ref=source_ref,
         )
@@ -164,7 +167,7 @@ def extract_resource_graph(
             if "Test" in node.labels:
                 add_edge("COVERS", node.stable_id, module_id, properties={"coverage_hint": node.properties.get("name")})
         _add_import_edges(product_id, resource, content, module_id, add_node, add_edge)
-        _add_call_edges(product_id, resource, content, lang, symbol_ids, add_edge)
+        _add_call_edges(product_id, resource, content, tree, symbol_ids, add_edge)
         _add_route_edges(product_id, resource, content, file_id, symbol_ids, add_node, add_edge)
         _add_config_edges(product_id, resource, content, file_id, add_node, add_edge)
 
@@ -219,12 +222,10 @@ def _extract_symbols(
     resource: ResourceRef,
     content: str,
     lang: str,
+    tree: Tree,
     now: str,
     source_ref: SourceRef,
 ) -> list[GraphNode]:
-    cfg = _LANGS[lang]
-    parser = Parser(cfg.language)
-    tree = parser.parse(content.encode("utf-8"))
     nodes: list[GraphNode] = []
     stack: list[Node] = [tree.root_node]
     while stack:
@@ -279,11 +280,9 @@ def _add_import_edges(product_id, resource, content, module_id, add_node, add_ed
         add_edge("IMPORTS", module_id, imported_id, properties={"import": imported})
 
 
-def _add_call_edges(product_id, resource, content, lang, symbols, add_edge) -> None:
+def _add_call_edges(product_id, resource, content, tree, symbols, add_edge) -> None:
     if resource.uri.lower().endswith((".go", ".rs", ".java")):
         return
-    cfg = _LANGS[lang]
-    tree = Parser(cfg.language).parse(content.encode("utf-8"))
     by_name = {
         str(symbol.properties.get("name")): symbol
         for symbol in symbols

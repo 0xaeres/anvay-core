@@ -82,7 +82,7 @@ async def test_pairwise_one_order_expected_is_a_correct_pick() -> None:
     item = _item()
     judge = _SmartJudge()
     result = await _pairwise_one_order(
-        item, contexts="ctx", judge=judge, expected_is_a=True
+        item, contexts=["ctx"], judge=judge, expected_is_a=True
     )
     assert result is True
 
@@ -92,7 +92,7 @@ async def test_pairwise_one_order_expected_is_b_correct_pick() -> None:
     item = _item()
     judge = _SmartJudge()
     result = await _pairwise_one_order(
-        item, contexts="ctx", judge=judge, expected_is_a=False
+        item, contexts=["ctx"], judge=judge, expected_is_a=False
     )
     # expected is B; smart judge picks B, so expected wins → True
     assert result is True
@@ -102,7 +102,7 @@ async def test_pairwise_one_order_expected_is_b_correct_pick() -> None:
 async def test_pairwise_one_order_judge_failure_returns_none() -> None:
     item = _item()
     result = await _pairwise_one_order(
-        item, contexts="ctx", judge=_FailingJudge(), expected_is_a=True
+        item, contexts=["ctx"], judge=_FailingJudge(), expected_is_a=True
     )
     assert result is None
 

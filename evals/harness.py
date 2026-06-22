@@ -178,7 +178,7 @@ async def _ingest_fixture(
     fixture_path: Path,
     config: NexusConfig,
 ) -> IngestStats:
-    if fixture_path.name == "synthetic_project" or product_id == "synthetic":
+    if fixture_path.name == "synthetic_project":
         from evals.generate_synthetic_project import generate_project
         generate_project(fixture_path)
 
