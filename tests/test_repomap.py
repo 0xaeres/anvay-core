@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nexus.retrieval.repomap import (
+from anvay.retrieval.repomap import (
     RepoMap,
     Symbol,
     extract_repo_map,

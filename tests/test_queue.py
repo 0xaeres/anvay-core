@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from nexus.council.queue import ProposalQueue
-from nexus.skills.models import Citation, SkillProposal
+from anvay.council.queue import ProposalQueue
+from anvay.skills.models import Citation, SkillProposal
 
 
 def _make_proposal(name: str = "demo", confidence: float = 0.5) -> SkillProposal:

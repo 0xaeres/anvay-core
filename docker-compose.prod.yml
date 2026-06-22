@@ -5,11 +5,11 @@ services:
     env_file:
       - .env
     environment:
-      NEXUS_ALLOWED_ORIGINS: "${NEXUS_ALLOWED_ORIGINS}"
+      ANVAY_ALLOWED_ORIGINS: "${ANVAY_ALLOWED_ORIGINS}"
     volumes:
-      - ./nexus.yaml:/app/nexus.yaml:ro
-      - nexus_data:/var/lib/nexus/data
-      - nexus_skills:/var/lib/nexus/skills
+      - ./anvay.yaml:/app/anvay.yaml:ro
+      - anvay_data:/var/lib/anvay/data
+      - anvay_skills:/var/lib/anvay/skills
     depends_on:
       qdrant:
         condition: service_healthy
@@ -44,15 +44,15 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      NEXUS_API_DOMAIN: "${NEXUS_API_DOMAIN}"
+      ANVAY_API_DOMAIN: "${ANVAY_API_DOMAIN}"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
 
 volumes:
-  nexus_data:
-  nexus_skills:
+  anvay_data:
+  anvay_skills:
   qdrant_data:
   caddy_data:
   caddy_config:

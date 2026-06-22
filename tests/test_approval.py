@@ -13,24 +13,24 @@ from pathlib import Path
 import pytest
 from git import Repo
 
-from nexus.config import (
+from anvay.config import (
+    AnvayConfig,
     EnrichCfg,
     IngestionCfg,
     ModelCfg,
     ModelsCfg,
-    NexusConfig,
     ServerCfg,
     StorageCfg,
     VectorStoreCfg,
 )
-from nexus.council.queue import ProposalQueue
-from nexus.skills.approval import _wrap_markdown_body, approve_proposal
-from nexus.skills.models import Citation, SkillProposal
+from anvay.council.queue import ProposalQueue
+from anvay.skills.approval import _wrap_markdown_body, approve_proposal
+from anvay.skills.models import Citation, SkillProposal
 
 
-def _make_cfg(tmp_path: Path) -> NexusConfig:
+def _make_cfg(tmp_path: Path) -> AnvayConfig:
     m = ModelCfg(provider="deepinfra", model="x")
-    return NexusConfig(
+    return AnvayConfig(
         skills_repo=str(tmp_path / "remote.git"),
         hierarchy_root=tmp_path / "skills",
         connectors=[],
@@ -98,7 +98,7 @@ def test_approve_writes_skill_file_and_flips_status(tmp_path: Path) -> None:
     assert expected.exists()
     contents = expected.read_text(encoding="utf-8")
     assert "description: Use for demo approval tests." in contents
-    assert "nexus_product: forge" in contents
+    assert "anvay_product: forge" in contents
     assert "## Rules" in contents
     assert "[file: a.py:1]" in contents
     # Queue row flipped to approved + actor stamped
@@ -139,7 +139,7 @@ def test_approve_product_skill_writes_flat_file_and_reloads(tmp_path: Path) -> N
     expected = tmp_path / "skills" / "forge" / "forge-skill.md"
     assert result["ok"] is True
     assert expected.exists()
-    from nexus.skills.store import SkillStore
+    from anvay.skills.store import SkillStore
 
     loaded = SkillStore(tmp_path / "skills").load("forge/forge-skill.md")
     assert loaded.name == "forge-skill"
@@ -147,7 +147,7 @@ def test_approve_product_skill_writes_flat_file_and_reloads(tmp_path: Path) -> N
 
 
 def test_approve_unknown_proposal_raises(tmp_path: Path) -> None:
-    from nexus.skills.approval import ApprovalError
+    from anvay.skills.approval import ApprovalError
 
     cfg = _make_cfg(tmp_path)
     queue = ProposalQueue(cfg.storage.proposal_queue)
@@ -173,7 +173,7 @@ def test_approve_twice_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_approve_fails_without_git_commit_and_keeps_pending(tmp_path: Path) -> None:
-    from nexus.skills.approval import ApprovalError
+    from anvay.skills.approval import ApprovalError
 
     cfg = _make_cfg(tmp_path)
     queue = ProposalQueue(cfg.storage.proposal_queue)
@@ -191,7 +191,7 @@ def test_approve_fails_without_git_commit_and_keeps_pending(tmp_path: Path) -> N
 
 
 def test_approve_failed_push_keeps_pending_without_local_commit(tmp_path: Path) -> None:
-    from nexus.skills.approval import ApprovalPublishError
+    from anvay.skills.approval import ApprovalPublishError
 
     cfg = _make_cfg(tmp_path)
     repo = Repo.init(cfg.hierarchy_root)
@@ -213,7 +213,7 @@ def test_approve_failed_push_keeps_pending_without_local_commit(tmp_path: Path) 
 
 
 def test_wrap_markdown_body_wraps_prose_but_preserves_code_fences() -> None:
-    long_sentence = " ".join(["Nexus keeps generated skill prose readable"] * 8)
+    long_sentence = " ".join(["Anvay keeps generated skill prose readable"] * 8)
     body = (
         "# product-skill\n\n"
         f"{long_sentence}\n\n"

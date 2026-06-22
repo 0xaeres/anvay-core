@@ -4,13 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from nexus.council.agents.skill import (  # private guardrails
+from anvay.council.agents.skill import (  # private guardrails
     _align_citations_to_evidence,
     _anchor_uncited_sections,
     repair_loop,
 )
-from nexus.council.errors import CouncilIncompleteSkill
-from nexus.council.skill_parser import (
+from anvay.council.errors import CouncilIncompleteSkill
+from anvay.council.skill_parser import (
     _normalise_name,  # private but stable for tests
     parse_skill_markdown,
     required_sections_for_tier,
@@ -18,8 +18,8 @@ from nexus.council.skill_parser import (
     validate_completeness,
     validate_skill_markdown,
 )
-from nexus.council.state import EvidenceChunk, SkillDraft
-from nexus.llm.client import ChatResponse, TokenUsage
+from anvay.council.state import EvidenceChunk, SkillDraft
+from anvay.llm.client import ChatResponse, TokenUsage
 
 
 def _evi() -> list[EvidenceChunk]:
@@ -106,17 +106,17 @@ def test_parse_accepts_github_uri_citations() -> None:
     evidence = [
         EvidenceChunk(
             chunk_id="gh1",
-            file="github:org/repo/nexus/api/routes/council.py",
+            file="github:org/repo/anvay/api/routes/council.py",
             line=42,
             score=0.9,
             excerpt="route",
         )
     ]
-    md = "# Demo\n\n## Rules\n1. Use route [file: github:org/repo/nexus/api/routes/council.py:42]"
+    md = "# Demo\n\n## Rules\n1. Use route [file: github:org/repo/anvay/api/routes/council.py:42]"
 
     parsed = parse_skill_markdown(md, evidence=evidence)
 
-    assert parsed.citations[0].file == "github:org/repo/nexus/api/routes/council.py"
+    assert parsed.citations[0].file == "github:org/repo/anvay/api/routes/council.py"
     assert parsed.citations[0].id == "gh1"
 
 

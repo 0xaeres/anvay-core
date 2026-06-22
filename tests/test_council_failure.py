@@ -5,15 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from nexus.config import ModelCfg, NexusConfig
-from nexus.council import graph as council_graph
-from nexus.council import runner
-from nexus.council.errors import CouncilAgentError, CouncilNoEvidence
-from nexus.council.queue import ProposalQueue
+from anvay.config import AnvayConfig, ModelCfg
+from anvay.council import graph as council_graph
+from anvay.council import runner
+from anvay.council.errors import CouncilAgentError, CouncilNoEvidence
+from anvay.council.queue import ProposalQueue
 
 
-def _config(tmp_path: Path) -> NexusConfig:
-    return NexusConfig(
+def _config(tmp_path: Path) -> AnvayConfig:
+    return AnvayConfig(
         models={
             "council": {"provider": "deepinfra", "model": "shared"},
             "planner": {"provider": "deepinfra", "model": "draft-model"},

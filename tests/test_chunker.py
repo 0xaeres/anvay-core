@@ -1,5 +1,5 @@
-from nexus.ingest.chunker import chunk_resource
-from nexus.ingest.models import ChunkKind, ResourceRef
+from anvay.ingest.chunker import chunk_resource
+from anvay.ingest.models import ChunkKind, ResourceRef
 
 
 def _res(uri: str, mime: str) -> ResourceRef:

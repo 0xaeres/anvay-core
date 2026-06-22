@@ -1,4 +1,4 @@
-"""Unit tests for nexus.council.skill_evals — trigger query generation.
+"""Unit tests for anvay.council.skill_evals — trigger query generation.
 
 Covers the broadened _positive_trigger_queries helper and the full
 evaluate_skill_draft deterministic gate suite.  No LLM calls needed.
@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.council.skill_evals import _positive_trigger_queries, evaluate_skill_draft
-from nexus.council.state import EvidenceChunk, SkillDraft, SkillPlanItem
+from anvay.council.skill_evals import _positive_trigger_queries, evaluate_skill_draft
+from anvay.council.state import EvidenceChunk, SkillDraft, SkillPlanItem
 
 # --------------------------------------------------------------------------- #
 # _positive_trigger_queries

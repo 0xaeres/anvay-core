@@ -30,7 +30,7 @@ jobs:
         run: uv sync --python ${{ env.PYTHON_VERSION }} --all-extras
 
       - name: Ruff
-        run: uv run ruff check nexus tests evals
+        run: uv run ruff check anvay tests evals
 
       - name: Pytest
         run: uv run pytest -q
@@ -82,21 +82,21 @@ jobs:
       - name: Prepare config
         if: steps.eval_credentials.outputs.available == 'true'
         run: |
-          cp nexus.yaml.example nexus.yaml
+          cp anvay.yaml.example anvay.yaml
 
       - name: Run retrieval eval
         if: steps.eval_credentials.outputs.available == 'true'
         run: |
-          uv run nexus eval run --suite retrieval --out-dir artifacts/evals
-          uv run nexus eval run --suite retrieval --product synthetic --fixture evals/fixtures/synthetic_project --golden evals/synthetic_queries.jsonl --out-dir artifacts/evals-synthetic
+          uv run anvay eval run --suite retrieval --out-dir artifacts/evals
+          uv run anvay eval run --suite retrieval --product synthetic --fixture evals/fixtures/synthetic_project --golden evals/synthetic_queries.jsonl --out-dir artifacts/evals-synthetic
 
       - name: Run full LLM eval
         if: >
           steps.eval_credentials.outputs.available == 'true' &&
           (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         run: |
-          uv run nexus eval run --suite rag,code --limit 10 --out-dir artifacts/evals
-          uv run nexus eval run --suite rag,code --product synthetic --fixture evals/fixtures/synthetic_project --golden evals/synthetic_queries.jsonl --limit 10 --out-dir artifacts/evals-synthetic
+          uv run anvay eval run --suite rag,code --limit 10 --out-dir artifacts/evals
+          uv run anvay eval run --suite rag,code --product synthetic --fixture evals/fixtures/synthetic_project --golden evals/synthetic_queries.jsonl --limit 10 --out-dir artifacts/evals-synthetic
 
       - name: Compare to baseline
         if: >

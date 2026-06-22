@@ -4,7 +4,7 @@
 # Safe to re-run: skips files that already exist.
 #
 # Volumes expected:
-#   /models      — nexus_models (shared with embedder + reranker)
+#   /models      — anvay_models (shared with embedder + reranker)
 #   (Ollama cache managed separately via OLLAMA_BASE_URL env var)
 
 set -euo pipefail

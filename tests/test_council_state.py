@@ -1,4 +1,4 @@
-from nexus.council.state import EvidenceChunk, initial_state
+from anvay.council.state import EvidenceChunk, initial_state
 
 
 def test_initial_state_has_empty_streams() -> None:
@@ -6,7 +6,7 @@ def test_initial_state_has_empty_streams() -> None:
         session_id="cs_1",
         product_id="forge",
         topic="overview",
-        config_path="nexus.yaml",
+        config_path="anvay.yaml",
     )
     assert s["deliberation"] == []
     assert s["costs"] == []

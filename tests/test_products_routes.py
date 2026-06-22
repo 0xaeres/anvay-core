@@ -6,18 +6,18 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import nexus.api.app as api_app
-from nexus.api.app import app
-from nexus.api.deps import get_auth_store, get_config_dep, get_registry
-from nexus.api.routes import products as products_route
-from nexus.auth.store import AuthStore
-from nexus.config import NexusConfig
-from nexus.registry import Registry
-from nexus.tools.delete_product import DeleteProductReport
+import anvay.api.app as api_app
+from anvay.api.app import app
+from anvay.api.deps import get_auth_store, get_config_dep, get_registry
+from anvay.api.routes import products as products_route
+from anvay.auth.store import AuthStore
+from anvay.config import AnvayConfig
+from anvay.registry import Registry
+from anvay.tools.delete_product import DeleteProductReport
 
 
-def _config(tmp_path: Path) -> NexusConfig:
-    return NexusConfig(
+def _config(tmp_path: Path) -> AnvayConfig:
+    return AnvayConfig(
         models={
             "council": {"provider": "test", "model": "test"},
             "light": {"provider": "test", "model": "test"},
@@ -32,12 +32,12 @@ def _config(tmp_path: Path) -> NexusConfig:
 
 
 def _clear_bootstrap_env(monkeypatch) -> None:
-    monkeypatch.delenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL", raising=False)
-    monkeypatch.delenv("NEXUS_BOOTSTRAP_ADMIN_PASSWORD", raising=False)
+    monkeypatch.delenv("ANVAY_BOOTSTRAP_ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("ANVAY_BOOTSTRAP_ADMIN_PASSWORD", raising=False)
 
 
 def test_create_product_accepts_owner_team(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("NEXUS_SECRET_KEY", raising=False)
+    monkeypatch.delenv("ANVAY_SECRET_KEY", raising=False)
     _clear_bootstrap_env(monkeypatch)
     registry = Registry(tmp_path / "registry.db")
     app.dependency_overrides[get_registry] = lambda: registry
@@ -60,7 +60,7 @@ def test_create_product_accepts_owner_team(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_me_requires_auth_when_auth_enabled(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
     _clear_bootstrap_env(monkeypatch)
     auth_store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     registry = Registry(tmp_path / "registry.db")
@@ -78,7 +78,7 @@ def test_me_requires_auth_when_auth_enabled(tmp_path: Path, monkeypatch) -> None
 
 
 def test_owner_can_delete_product(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
     _clear_bootstrap_env(monkeypatch)
     auth_store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     user = auth_store.create_user(
@@ -112,8 +112,8 @@ def test_owner_can_delete_product(tmp_path: Path, monkeypatch) -> None:
                 "password": "correct horse battery staple",
             },
         )
-        csrf = client.cookies.get("nexus_csrf")
-        res = client.delete("/products/demo", headers={"X-Nexus-CSRF": csrf or ""})
+        csrf = client.cookies.get("anvay_csrf")
+        res = client.delete("/products/demo", headers={"X-Anvay-CSRF": csrf or ""})
     finally:
         app.dependency_overrides.pop(get_auth_store, None)
         app.dependency_overrides.pop(get_registry, None)
@@ -126,7 +126,7 @@ def test_owner_can_delete_product(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_viewer_cannot_delete_product(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
     _clear_bootstrap_env(monkeypatch)
     auth_store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     user = auth_store.create_user(
@@ -161,8 +161,8 @@ def test_viewer_cannot_delete_product(tmp_path: Path, monkeypatch) -> None:
                 "password": "correct horse battery staple",
             },
         )
-        csrf = client.cookies.get("nexus_csrf")
-        res = client.delete("/products/demo", headers={"X-Nexus-CSRF": csrf or ""})
+        csrf = client.cookies.get("anvay_csrf")
+        res = client.delete("/products/demo", headers={"X-Anvay-CSRF": csrf or ""})
     finally:
         app.dependency_overrides.pop(get_auth_store, None)
         app.dependency_overrides.pop(get_registry, None)
@@ -173,7 +173,7 @@ def test_viewer_cannot_delete_product(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_delete_product_reports_dependency_failure(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
     _clear_bootstrap_env(monkeypatch)
     auth_store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     auth_store.create_user(
@@ -204,8 +204,8 @@ def test_delete_product_reports_dependency_failure(tmp_path: Path, monkeypatch) 
                 "password": "correct horse battery staple",
             },
         )
-        csrf = client.cookies.get("nexus_csrf")
-        res = client.delete("/products/demo", headers={"X-Nexus-CSRF": csrf or ""})
+        csrf = client.cookies.get("anvay_csrf")
+        res = client.delete("/products/demo", headers={"X-Anvay-CSRF": csrf or ""})
     finally:
         app.dependency_overrides.pop(get_auth_store, None)
         app.dependency_overrides.pop(get_registry, None)
@@ -216,7 +216,7 @@ def test_delete_product_reports_dependency_failure(tmp_path: Path, monkeypatch) 
 
 
 def test_delete_product_returns_404_for_missing_product(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
     _clear_bootstrap_env(monkeypatch)
     auth_store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     auth_store.create_user(
@@ -247,8 +247,8 @@ def test_delete_product_returns_404_for_missing_product(tmp_path: Path, monkeypa
                 "password": "correct horse battery staple",
             },
         )
-        csrf = client.cookies.get("nexus_csrf")
-        res = client.delete("/products/missing", headers={"X-Nexus-CSRF": csrf or ""})
+        csrf = client.cookies.get("anvay_csrf")
+        res = client.delete("/products/missing", headers={"X-Anvay-CSRF": csrf or ""})
     finally:
         app.dependency_overrides.pop(get_auth_store, None)
         app.dependency_overrides.pop(get_registry, None)

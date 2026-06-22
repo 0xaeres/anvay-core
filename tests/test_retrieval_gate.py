@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from nexus.config import ModelCfg, ModelsCfg, NexusConfig
-from nexus.council.agents.skill import _no_evidence_error
-from nexus.retrieval.hybrid import Hit
-from nexus.retrieval.pipeline import _apply_quality_gate
+from anvay.config import AnvayConfig, ModelCfg, ModelsCfg
+from anvay.council.agents.skill import _no_evidence_error
+from anvay.retrieval.hybrid import Hit
+from anvay.retrieval.pipeline import _apply_quality_gate
 
 
 def _hit(score: float) -> Hit:
@@ -22,7 +22,7 @@ def test_quality_gate_reports_filtered_hits_and_best_score() -> None:
 
 def test_drafter_empty_evidence_message_explains_quality_gate() -> None:
     m = ModelCfg(provider="test", model="test")
-    config = NexusConfig(
+    config = AnvayConfig(
         models=ModelsCfg(council=m, light=m, embedding=m, reranker=m),
         ingestion={"quality_gate_threshold": 0.3},
     )

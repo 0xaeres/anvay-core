@@ -23,7 +23,7 @@ htmlcov/
 .ruff_cache/
 
 # Local state
-nexus.yaml
+anvay.yaml
 .env
 *.db
 *.sqlite
@@ -31,8 +31,8 @@ nexus.yaml
 
 # Skills repo clone (runtime state — never committed to the app repo)
 /skills/
-nexus/skills/seed/
-nexus/skills/starter/
+anvay/skills/seed/
+anvay/skills/starter/
 
 # GGUF model weights (large, downloaded out-of-band)
 models/

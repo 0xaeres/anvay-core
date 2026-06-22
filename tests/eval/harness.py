@@ -20,11 +20,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from anvay.config import AnvayConfig
+from anvay.retrieval.evidence import EvidenceCandidate, retrieve_evidence
+from anvay.retrieval.hybrid import Hit
+from anvay.retrieval.pipeline import RetrievalContext
 from evals.metrics import first_match_rank, mean, mrr, ndcg_by_relevance
-from nexus.config import NexusConfig
-from nexus.retrieval.evidence import EvidenceCandidate, retrieve_evidence
-from nexus.retrieval.hybrid import Hit
-from nexus.retrieval.pipeline import RetrievalContext
 
 log = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ def matches_expected(hit: Hit, expected: list[dict]) -> bool:
 
 async def run_eval(
     *,
-    config: NexusConfig,
+    config: AnvayConfig,
     product_id: str,
     top_k: int = 10,
     queries: list[dict] | None = None,
@@ -221,9 +221,9 @@ def _candidate_to_hit(candidate: EvidenceCandidate) -> Hit:
 def _cli() -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run the Nexus retrieval eval set.")
+    parser = argparse.ArgumentParser(description="Run the Anvay retrieval eval set.")
     parser.add_argument("--product", required=True, help="product_id whose index to query")
-    parser.add_argument("--config", default="nexus.yaml", help="path to nexus.yaml")
+    parser.add_argument("--config", default="anvay.yaml", help="path to anvay.yaml")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument(
         "--queries",
@@ -233,7 +233,7 @@ def _cli() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    cfg = NexusConfig.load(args.config)
+    cfg = AnvayConfig.load(args.config)
     meta, queries = load_queries(Path(args.queries))
 
     report = asyncio.run(

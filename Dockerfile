@@ -19,9 +19,9 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
 # Now install the package itself
-COPY nexus ./nexus
+COPY anvay ./anvay
 COPY evals ./evals
-COPY nexus.yaml.example .env.example ./
+COPY anvay.yaml.example .env.example ./
 RUN uv sync --frozen
 
 # ---------- runtime ----------
@@ -44,4 +44,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
     CMD curl -sf http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "nexus.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "anvay.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

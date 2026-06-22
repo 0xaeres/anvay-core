@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.config import NexusConfig
-from nexus.council.agents import skill
-from nexus.council.errors import CouncilNoEvidence
-from nexus.council.skill_catalog import catalog_plan
-from nexus.council.skill_parser import required_sections_for_tier
-from nexus.council.state import CouncilState, EvidenceChunk, SkillDraft, initial_state
-from nexus.llm.client import ChatResponse, TokenUsage
-from nexus.retrieval.hybrid import Hit
-from nexus.retrieval.pipeline import RetrievalResult
+from anvay.config import AnvayConfig
+from anvay.council.agents import skill
+from anvay.council.errors import CouncilNoEvidence
+from anvay.council.skill_catalog import catalog_plan
+from anvay.council.skill_parser import required_sections_for_tier
+from anvay.council.state import CouncilState, EvidenceChunk, SkillDraft, initial_state
+from anvay.llm.client import ChatResponse, TokenUsage
+from anvay.retrieval.hybrid import Hit
+from anvay.retrieval.pipeline import RetrievalResult
 
 _ENUMERABLE = {
     "capabilities and workflows",
@@ -25,8 +25,8 @@ _ENUMERABLE = {
 }
 
 
-def _config(tmp_path) -> NexusConfig:
-    return NexusConfig(
+def _config(tmp_path) -> AnvayConfig:
+    return AnvayConfig(
         hierarchy_root=tmp_path / "skills",
         models={
             "council": {"provider": "test", "model": "test"},
@@ -109,7 +109,7 @@ async def test_product_skill_creates_one_proposal_with_fake_retrieval(tmp_path, 
         session_id="cs_1",
         product_id="demo",
         topic="overview",
-        config_path="nexus.yaml",
+        config_path="anvay.yaml",
     )
 
     state.update(await skill.planner(state, config=cfg, retrieval=retrieval, chat=chat))
@@ -163,7 +163,7 @@ async def test_single_expert_streams_json_and_reports_own_cost(tmp_path, monkeyp
         session_id="cs_1",
         product_id="demo",
         topic="overview",
-        config_path="nexus.yaml",
+        config_path="anvay.yaml",
     )
 
     result = await skill.expert(
@@ -264,7 +264,7 @@ async def test_single_skill_no_evidence_stops_before_drafting(tmp_path, monkeypa
         session_id="cs_1",
         product_id="demo",
         topic="overview",
-        config_path="nexus.yaml",
+        config_path="anvay.yaml",
     )
 
     with pytest.raises(CouncilNoEvidence):
@@ -298,7 +298,7 @@ async def test_eval_failure_keeps_passing_skill_and_reports_failed_skill() -> No
             session_id="cs_1",
             product_id="demo",
             topic="overview",
-            config_path="nexus.yaml",
+            config_path="anvay.yaml",
         ),
         "evidence": evidence,
         "skill_plan": catalog_plan("demo", "overview"),

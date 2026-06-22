@@ -1,4 +1,4 @@
-"""Unified Nexus eval harness.
+"""Unified Anvay eval harness.
 
 Runs retrieval, RAG answer, and code retrieval eval suites with optional fixture
 ingest and machine-readable artifacts. Existing suite runners stay standalone;
@@ -23,9 +23,9 @@ from evals.run_code_eval import CodeReport
 from evals.run_code_eval import run as run_code_eval
 from evals.run_ragas import Report as RagReport
 from evals.run_ragas import run as run_rag_eval
-from nexus.config import NexusConfig
-from nexus.connectors.local_fs import LocalFsConfig, LocalFsSource
-from nexus.ingest.pipeline import IngestStats, run_ingest
+from anvay.config import AnvayConfig
+from anvay.connectors.local_fs import LocalFsConfig, LocalFsSource
+from anvay.ingest.pipeline import IngestStats, run_ingest
 from tests.eval.harness import EvalReport as RetrievalReport
 from tests.eval.harness import load_queries
 from tests.eval.harness import run_eval as run_retrieval_eval
@@ -85,7 +85,7 @@ def suite_defaults(suite: SuiteName) -> SuiteDefaults:
     if suite == "retrieval":
         meta, _ = load_queries()
         return SuiteDefaults(
-            product_id=str(meta.get("ingested_product_id") or "nexus"),
+            product_id=str(meta.get("ingested_product_id") or "anvay"),
             fixture_path=DEFAULT_RETRIEVAL_FIXTURE,
         )
     return SuiteDefaults(product_id="forge", fixture_path=DEFAULT_FORGE_FIXTURE)
@@ -94,7 +94,7 @@ def suite_defaults(suite: SuiteName) -> SuiteDefaults:
 async def run_suites(
     *,
     suites: tuple[SuiteName, ...],
-    config: NexusConfig,
+    config: AnvayConfig,
     config_path: Path,
     out_dir: Path = DEFAULT_OUT_DIR,
     product_id: str | None = None,
@@ -176,7 +176,7 @@ async def _ingest_fixture(
     *,
     product_id: str,
     fixture_path: Path,
-    config: NexusConfig,
+    config: AnvayConfig,
 ) -> IngestStats:
     if fixture_path.name == "synthetic_project":
         from evals.generate_synthetic_project import generate_project
@@ -192,7 +192,7 @@ async def _ingest_fixture(
 
 async def _run_retrieval_suite(
     *,
-    config: NexusConfig,
+    config: AnvayConfig,
     product_id: str,
     out_dir: Path,
     ingest: dict | None,
@@ -254,7 +254,7 @@ async def _run_retrieval_suite(
 
 async def _run_rag_suite(
     *,
-    config: NexusConfig,
+    config: AnvayConfig,
     product_id: str,
     out_dir: Path,
     ingest: dict | None,
@@ -282,7 +282,7 @@ async def _run_rag_suite(
 
 async def _run_code_suite(
     *,
-    config: NexusConfig,
+    config: AnvayConfig,
     product_id: str,
     out_dir: Path,
     ingest: dict | None,
@@ -310,7 +310,7 @@ async def _run_code_suite(
 
 def render_markdown_summary(artifact: EvalRunArtifact) -> str:
     lines = [
-        f"# Nexus Eval Run {artifact.run_id}",
+        f"# Anvay Eval Run {artifact.run_id}",
         "",
         f"- Status: {'PASS' if artifact.passed else 'FAIL'}",
         f"- Generated: {artifact.generated_at}",
@@ -362,7 +362,7 @@ def _redact_url(value: str) -> str:
     return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
-def _config_fingerprint(config: NexusConfig) -> dict:
+def _config_fingerprint(config: AnvayConfig) -> dict:
     return {
         "embedding_provider": config.models.embedding.provider,
         "embedding_model": config.models.embedding.model,
@@ -381,9 +381,9 @@ def _config_fingerprint(config: NexusConfig) -> dict:
 def main() -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run Nexus eval suites.")
+    parser = argparse.ArgumentParser(description="Run Anvay eval suites.")
     parser.add_argument("--suite", default="all", help="all, retrieval, rag, code, or comma list")
-    parser.add_argument("--config", type=Path, default=Path("nexus.yaml"))
+    parser.add_argument("--config", type=Path, default=Path("anvay.yaml"))
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--product", default=None, help="Override suite default product id")
     parser.add_argument("--fixture", type=Path, default=None, help="Override suite default fixture")
@@ -394,7 +394,7 @@ def main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "WARNING"))
-    config = NexusConfig.load(args.config)
+    config = AnvayConfig.load(args.config)
     artifact = asyncio.run(
         run_suites(
             suites=parse_suites(args.suite),

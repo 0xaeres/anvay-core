@@ -1,11 +1,11 @@
 [project]
-name = "nexus"
+name = "anvay"
 version = "0.0.1"
 description = "Sovereign, MCP-native skill server for codebases"
 requires-python = ">=3.13"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Nexus" }]
+authors = [{ name = "Anvay" }]
 
 dependencies = [
     # Web stack
@@ -75,15 +75,15 @@ evals = [
 ]
 
 [project.scripts]
-nexus = "nexus.cli:app"
-nexus-mcp-server = "nexus.mcp_server.server:main"
+anvay = "anvay.cli:app"
+anvay-mcp-server = "anvay.mcp_server.server:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["nexus"]
+packages = ["anvay"]
 
 [tool.ruff]
 line-length = 100
@@ -98,9 +98,9 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 # Typer requires function calls in argument defaults — that's the API.
-"nexus/cli.py" = ["B008"]
+"anvay/cli.py" = ["B008"]
 # FastAPI uses Depends(...) in argument defaults — that's the API.
-"nexus/api/routes/*" = ["B008"]
+"anvay/api/routes/*" = ["B008"]
 # Eval runners build their default thresholds inline; the rule churns the API.
 "evals/run_ragas.py" = ["B008"]
 "evals/run_code_eval.py" = ["B008"]
@@ -111,5 +111,5 @@ testpaths = ["tests"]
 addopts = "-m 'not eval and not live_e2e'"
 markers = [
     "eval: offline retrieval-quality benchmark (requires Qdrant + embedder + reranker; skip by default)",
-    "live_e2e: real live backend E2E (requires Qdrant + embedder + reranker + LLM; set NEXUS_LIVE_E2E=1)",
+    "live_e2e: real live backend E2E (requires Qdrant + embedder + reranker + LLM; set ANVAY_LIVE_E2E=1)",
 ]

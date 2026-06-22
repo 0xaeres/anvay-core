@@ -5,8 +5,8 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-from nexus.config import ModelCfg
-from nexus.llm.client import ChatClient, LLMError, _parse_json_payload
+from anvay.config import ModelCfg
+from anvay.llm.client import ChatClient, LLMError, _parse_json_payload
 
 
 async def _use_mock_transport(

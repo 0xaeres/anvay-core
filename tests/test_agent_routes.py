@@ -5,16 +5,16 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from nexus.api.app import app
-from nexus.api.deps import get_config_dep, get_registry
-from nexus.api.routes import agent
-from nexus.config import NexusConfig
-from nexus.graph.models import GraphRAGAnswer
-from nexus.registry import Registry
+from anvay.api.app import app
+from anvay.api.deps import get_config_dep, get_registry
+from anvay.api.routes import agent
+from anvay.config import AnvayConfig
+from anvay.graph.models import GraphRAGAnswer
+from anvay.registry import Registry
 
 
-def _config(tmp_path: Path) -> NexusConfig:
-    return NexusConfig(
+def _config(tmp_path: Path) -> AnvayConfig:
+    return AnvayConfig(
         models={
             "council": {"provider": "test", "model": "test", "url": "http://llm"},
             "light": {"provider": "test", "model": "test"},

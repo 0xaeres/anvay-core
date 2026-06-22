@@ -42,42 +42,42 @@ def _hit(resource_uri: str) -> object:
 
 
 def test_any_uri_covers_exact_suffix() -> None:
-    uris = ["/abs/path/nexus/retrieval/sparse.py"]
-    assert _any_uri_covers("nexus/retrieval/sparse.py", uris)
+    uris = ["/abs/path/anvay/retrieval/sparse.py"]
+    assert _any_uri_covers("anvay/retrieval/sparse.py", uris)
 
 
 def test_any_uri_covers_full_match() -> None:
-    uris = ["nexus/retrieval/sparse.py"]
-    assert _any_uri_covers("nexus/retrieval/sparse.py", uris)
+    uris = ["anvay/retrieval/sparse.py"]
+    assert _any_uri_covers("anvay/retrieval/sparse.py", uris)
 
 
 def test_any_uri_covers_wrong_file() -> None:
-    uris = ["nexus/retrieval/reranker.py"]
-    assert not _any_uri_covers("nexus/retrieval/sparse.py", uris)
+    uris = ["anvay/retrieval/reranker.py"]
+    assert not _any_uri_covers("anvay/retrieval/sparse.py", uris)
 
 
 def test_any_uri_covers_no_false_positive_from_prefix() -> None:
     """'sparse.py' must NOT match 'sparse_encoder.py' — the old bug."""
-    uris = ["nexus/retrieval/sparse_encoder.py"]
+    uris = ["anvay/retrieval/sparse_encoder.py"]
     assert not _any_uri_covers("sparse.py", uris)
 
 
 def test_any_uri_covers_empty_uris() -> None:
-    assert not _any_uri_covers("nexus/foo.py", [])
+    assert not _any_uri_covers("anvay/foo.py", [])
 
 
 def test_any_uri_covers_empty_uri_string_skipped() -> None:
-    assert not _any_uri_covers("nexus/foo.py", ["", "  "])
+    assert not _any_uri_covers("anvay/foo.py", ["", "  "])
 
 
 def test_any_uri_covers_multiple_uris_first_matches() -> None:
-    uris = ["nexus/retrieval/sparse.py", "nexus/retrieval/reranker.py"]
-    assert _any_uri_covers("nexus/retrieval/sparse.py", uris)
+    uris = ["anvay/retrieval/sparse.py", "anvay/retrieval/reranker.py"]
+    assert _any_uri_covers("anvay/retrieval/sparse.py", uris)
 
 
 def test_any_uri_covers_multiple_uris_second_matches() -> None:
-    uris = ["nexus/retrieval/reranker.py", "nexus/retrieval/sparse.py"]
-    assert _any_uri_covers("nexus/retrieval/sparse.py", uris)
+    uris = ["anvay/retrieval/reranker.py", "anvay/retrieval/sparse.py"]
+    assert _any_uri_covers("anvay/retrieval/sparse.py", uris)
 
 
 # --------------------------------------------------------------------------- #
@@ -91,47 +91,47 @@ def test_recall_no_expected_files_is_one() -> None:
 
 
 def test_recall_all_expected_files_covered() -> None:
-    item = _item("nexus/retrieval/sparse.py", "nexus/retrieval/reranker.py")
+    item = _item("anvay/retrieval/sparse.py", "anvay/retrieval/reranker.py")
     hits = [
-        _hit("nexus/retrieval/sparse.py"),
-        _hit("nexus/retrieval/reranker.py"),
+        _hit("anvay/retrieval/sparse.py"),
+        _hit("anvay/retrieval/reranker.py"),
     ]
     assert _heuristic_context_recall(item, hits) == 1.0
 
 
 def test_recall_partial_coverage() -> None:
-    item = _item("nexus/retrieval/sparse.py", "nexus/retrieval/reranker.py")
-    hits = [_hit("nexus/retrieval/sparse.py")]
+    item = _item("anvay/retrieval/sparse.py", "anvay/retrieval/reranker.py")
+    hits = [_hit("anvay/retrieval/sparse.py")]
     assert _heuristic_context_recall(item, hits) == 0.5
 
 
 def test_recall_zero_when_no_hits_match() -> None:
-    item = _item("nexus/retrieval/sparse.py")
-    hits = [_hit("nexus/retrieval/reranker.py")]
+    item = _item("anvay/retrieval/sparse.py")
+    hits = [_hit("anvay/retrieval/reranker.py")]
     assert _heuristic_context_recall(item, hits) == 0.0
 
 
 def test_recall_no_false_positive_from_old_substring_bug() -> None:
     """'sparse.py' must NOT be credited when only 'sparse_encoder.py' was retrieved."""
-    item = _item("nexus/retrieval/sparse.py")
-    hits = [_hit("nexus/retrieval/sparse_encoder.py")]
+    item = _item("anvay/retrieval/sparse.py")
+    hits = [_hit("anvay/retrieval/sparse_encoder.py")]
     assert _heuristic_context_recall(item, hits) == 0.0
 
 
 def test_recall_absolute_path_uri_matches_relative_expected() -> None:
-    item = _item("nexus/retrieval/sparse.py")
-    hits = [_hit("/home/runner/work/nexus/nexus/retrieval/sparse.py")]
+    item = _item("anvay/retrieval/sparse.py")
+    hits = [_hit("/home/runner/work/anvay/anvay/retrieval/sparse.py")]
     assert _heuristic_context_recall(item, hits) == 1.0
 
 
 def test_recall_case_insensitive() -> None:
-    item = _item("NEXUS/Retrieval/Sparse.py")
-    hits = [_hit("nexus/retrieval/sparse.py")]
+    item = _item("ANVAY/Retrieval/Sparse.py")
+    hits = [_hit("anvay/retrieval/sparse.py")]
     assert _heuristic_context_recall(item, hits) == 1.0
 
 
 def test_recall_empty_hits() -> None:
-    item = _item("nexus/retrieval/sparse.py")
+    item = _item("anvay/retrieval/sparse.py")
     assert _heuristic_context_recall(item, []) == 0.0
 
 
@@ -139,7 +139,7 @@ def test_recall_hit_with_none_payload() -> None:
     class _NullHit:
         payload = None
 
-    item = _item("nexus/retrieval/sparse.py")
+    item = _item("anvay/retrieval/sparse.py")
     assert _heuristic_context_recall(item, [_NullHit()]) == 0.0
 
 

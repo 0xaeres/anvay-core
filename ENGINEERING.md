@@ -1,4 +1,4 @@
-# Nexus — Engineering Reference
+# Anvay — Engineering Reference
 
 The formal spec. Data model, pipeline shapes, API contracts. Code-first; if a
 behaviour diverges from this doc, the code is the source of truth and the doc
@@ -6,7 +6,7 @@ needs a patch.
 
 ## Overview
 
-Nexus indexes a product's code + docs, runs a bounded expert council to draft
+Anvay indexes a product's code + docs, runs a bounded expert council to draft
 a product skill, requires humans to approve proposals, and serves the
 resulting skills (and the raw corpus) over MCP to AI coding clients.
 
@@ -52,9 +52,9 @@ Two hard constraints. Code that violates them is a bug.
 All cross-process boundary types are Pydantic. In-memory-only types use
 `@dataclass`. Tests may use plain dicts.
 
-### Skill (`nexus/skills/models.py`)
+### Skill (`anvay/skills/models.py`)
 
-The unit of curated guidance Nexus serves to agents.
+The unit of curated guidance Anvay serves to agents.
 
 ```python
 class Skill(BaseModel):
@@ -73,7 +73,7 @@ class Skill(BaseModel):
 ```
 
 On disk: `<hierarchy_root>/<product>/<name>/SKILL.md` with Agent Skills
-frontmatter (`name`, `description`, `compatibility`, and `metadata.nexus_*`).
+frontmatter (`name`, `description`, `compatibility`, and `metadata.anvay_*`).
 Legacy `<product>/<name>.skill.md` files remain readable.
 
 ```python
@@ -95,10 +95,10 @@ confidence = citation_density * critic_passes
         critic_passes    = 1.0 if revision_count == 0 else 0.7
 ```
 
-### SkillProposal (`nexus/skills/models.py`)
+### SkillProposal (`anvay/skills/models.py`)
 
 Council output queued for human review. Persisted in the
-`proposals` SQLite table (`nexus/council/queue.py`).
+`proposals` SQLite table (`anvay/council/queue.py`).
 
 ```python
 class SkillProposal(BaseModel):
@@ -125,9 +125,9 @@ class Citation(BaseModel):
 ```
 
 Citations are post-hoc parsed from the proposal body by
-`nexus/council/skill_parser.py` (regex on `[file: path:line]` markers).
+`anvay/council/skill_parser.py` (regex on `[file: path:line]` markers).
 
-### Chunk (`nexus/ingest/models.py`)
+### Chunk (`anvay/ingest/models.py`)
 
 ```python
 class Chunk(BaseModel):
@@ -158,7 +158,7 @@ overwrites the same Qdrant point.
 
 ## 3. Ingestion Pipeline
 
-`nexus/ingest/pipeline.py::run_ingest()` orchestrates the per-product flow.
+`anvay/ingest/pipeline.py::run_ingest()` orchestrates the per-product flow.
 When called from the source sync route it receives the SQLite `Registry` and a
 stable `source_key`, which enables delta-safe resync. The pipeline does:
 
@@ -176,7 +176,7 @@ concurrent at `IngestionCfg.read_concurrency` (default 10). Changed batches are
 processed concurrently up to `IngestionCfg.batch_concurrency` (default 2), and
 the embedder is called once per changed batch, never for unchanged resources.
 
-### Delta-Safe Manifest (`nexus/registry.py`)
+### Delta-Safe Manifest (`anvay/registry.py`)
 
 Qdrant is a derived index. SQLite is the source of truth for what has been
 successfully indexed:
@@ -211,7 +211,7 @@ Ordering rules:
 These rules prevent poisoning: failed embeds keep old good vectors and manifest
 state; failed deletes keep manifest rows so cleanup retries later.
 
-### Chunker (`nexus/ingest/chunker.py`)
+### Chunker (`anvay/ingest/chunker.py`)
 
 - **Code**: tree-sitter (Python, TS, TSX, JS, Rust, Go). Chunk boundaries
   are function / class / impl / trait / interface / method nodes. Oversized
@@ -233,11 +233,11 @@ Don't raise these without checking llama.cpp physical batch errors in the
 embedder log. For larger machines, raise `EMBEDDER_UBATCH`/`EMBEDDER_BATCH`;
 for constrained machines, lower chunk sizes instead.
 
-### Enricher (`nexus/ingest/enricher.py`)
+### Enricher (`anvay/ingest/enricher.py`)
 
 Optional LLM enrichment is available but disabled by default
 (`ingestion.enrich_chunks.docs: false`, `code: false`). The default ingest path
-is raw dense + BM25 indexing so a Nexus-sized repo becomes searchable quickly.
+is raw dense + BM25 indexing so a Anvay-sized repo becomes searchable quickly.
 If enabled, source sync writes the raw index first and queues durable background
 jobs; the worker enriches changed resources and upserts the same deterministic
 chunk IDs.
@@ -270,18 +270,18 @@ preserved.
 `incremental.reindex_resource()` so the enricher has the full doc, not just the
 chunk.
 
-### Embedder (`nexus/ingest/embedder.py`)
+### Embedder (`anvay/ingest/embedder.py`)
 
 OpenAI-compatible client. Defaults to a cloud inference provider (e.g. DeepInfra
 Qwen3 embeddings), or any local llama.cpp server when `provider: jina-local` or
-another locally-hosted profile is set in `nexus.yaml`. The
+another locally-hosted profile is set in `anvay.yaml`. The
 `text_for_embedding()` prefix (`context_summary` from optional enrichment, or
 `context_path`) is included in the input. llama.cpp sometimes reports
 physical-batch token-limit failures as
 HTTP 500; `EmbedderClient` treats those as non-retryable request/config errors
 instead of burning retry backoff.
 
-Current retrieval is text/code only. Nexus does **not** process Confluence
+Current retrieval is text/code only. Anvay does **not** process Confluence
 architecture diagrams, screenshots, or image attachments as visual evidence:
 it may retrieve surrounding page text, but it does not OCR/layout-parse
 diagrams, embed images, extract boxes/arrows, or cite diagram regions. Add a
@@ -315,17 +315,17 @@ physical-batch failures have the same llama.cpp shape as embedder failures:
 raise `RERANKER_UBATCH` on larger machines or reduce retrieved document size
 if running on constrained hardware.
 
-### Indexer (`nexus/ingest/indexer.py`)
+### Indexer (`anvay/ingest/indexer.py`)
 
 The Qdrant indexer implements the async storage contract: ensure storage,
 upsert embedded chunks, dense search, BM25 search, count, delete by chunk IDs,
 delete by resource, delete by product, and close. The retrieval pipeline is
 dense + BM25 -> RRF -> configured reranker.
 
-Qdrant collections (per `nexus.yaml`):
+Qdrant collections (per `anvay.yaml`):
 
-- `nexus_code` — code chunks, dense + sparse vectors
-- `nexus_text` — doc chunks, dense + sparse vectors
+- `anvay_code` — code chunks, dense + sparse vectors
+- `anvay_text` — doc chunks, dense + sparse vectors
 
 Both collections filter payloads on `product_id`; all retrieval paths include
 that filter. Sparse vectors come from BM25 (`Qdrant/bm25` via fastembed). One
@@ -340,7 +340,7 @@ with enriched vectors after the raw index exists. The indexer can delete by
 `resource_uri` for repair paths or by explicit chunk IDs for delta-safe stale
 cleanup.
 
-### Graph Extraction + Summary Chunks (`nexus/ingest/summaries.py`)
+### Graph Extraction + Summary Chunks (`anvay/ingest/summaries.py`)
 
 Ingest always runs deterministic graph extraction first. When
 `ingestion.graph.mode="bounded_llm"` and the light model is reachable, changed
@@ -361,7 +361,7 @@ Both carry product/source/graph metadata as normal chunks. They help broad
 queries find graph-aware overview evidence, but final answers must still cite
 original source chunks for material claims.
 
-### Repo Map (`nexus/retrieval/repomap.py`)
+### Repo Map (`anvay/retrieval/repomap.py`)
 
 Built once at sync time (while the local clone still exists), persisted to
 `<state>/repomaps/<product_id>.json`. Tree-sitter walks the tree, extracting
@@ -382,7 +382,7 @@ files, lexical + structural ranking is within striking distance and avoids
 `networkx` as a dependency. Add PR back if `tests/eval/queries.json` proves
 the gap matters.
 
-### Legacy Per-Resource Ingest (`nexus/ingest/incremental.py`)
+### Legacy Per-Resource Ingest (`anvay/ingest/incremental.py`)
 
 `reindex_resource(product_id, resource, content)` is the daemon's older
 per-resource repair path. It deletes existing chunks for one `resource_uri`,
@@ -393,9 +393,9 @@ blind full-source upserts.
 
 ## 4. Retrieval Pipeline
 
-Nexus has two retrieval layers.
+Anvay has two retrieval layers.
 
-`nexus/retrieval/pipeline.py::retrieve()` remains the low-level hybrid
+`anvay/retrieval/pipeline.py::retrieve()` remains the low-level hybrid
 primitive:
 
 ```
@@ -413,7 +413,7 @@ Keep provider defaults at `0.0` until an eval set calibrates that reranker's
 score scale and proves a higher cutoff improves precision without losing
 needed evidence.
 
-`nexus/retrieval/evidence.py::retrieve_evidence()` is the core product context
+`anvay/retrieval/evidence.py::retrieve_evidence()` is the core product context
 engine used by council, MCP evidence search, and product chat. It runs
 complementary candidate channels, then assembles a coverage-aware evidence set:
 
@@ -446,7 +446,7 @@ eval set (§10) is the floor; new layers must improve it.
 
 ## 5. Council — Expert Product Skill
 
-`nexus/council/graph.py`. LangGraph state graph for the single product skill:
+`anvay/council/graph.py`. LangGraph state graph for the single product skill:
 
 ```text
 START ──► Planner ──► Architect ─┐
@@ -454,7 +454,7 @@ START ──► Planner ──► Architect ─┐
                   └─► Quality Expert┘
 ```
 
-State (`nexus/council/state.py::CouncilState`):
+State (`anvay/council/state.py::CouncilState`):
 
 ```python
 class CouncilState(TypedDict, total=False):
@@ -476,7 +476,7 @@ class CouncilState(TypedDict, total=False):
     costs: list[AgentCost]
 ```
 
-### Skill Agents (`nexus/council/agents/skill.py`)
+### Skill Agents (`anvay/council/agents/skill.py`)
 
 Planner retrieves the initial evidence and creates exactly one `product_master`
 skill outline. Expert fanout runs three bounded lenses: architect,
@@ -496,7 +496,7 @@ match, citation faithfulness, and trigger quality. Finalizer parses the
 complete draft into one `SkillProposal`. `proposal_id` points at that single
 proposal, and sessions persist `proposal_ids` with one entry.
 
-### LLM client (`nexus/llm/client.py`)
+### LLM client (`anvay/llm/client.py`)
 
 OpenAI-compatible (`/chat/completions`) async client. Three methods:
 
@@ -510,14 +510,14 @@ OpenAI-compatible (`/chat/completions`) async client. Three methods:
 `ChatResponse.finish_reason` and `.truncated` are exposed for callers who
 need them.
 
-### Runner (`nexus/council/runner.py`)
+### Runner (`anvay/council/runner.py`)
 
 Background asyncio task. Streams LangGraph node updates onto a per-session
 pub/sub hub (`HUB`) so SSE clients see live deliberation + cost + critique
 + proposal-preview events. On completion the proposal is enqueued and the
 session row is recorded.
 
-### Queue (`nexus/council/queue.py`)
+### Queue (`anvay/council/queue.py`)
 
 SQLite. Two tables:
 
@@ -531,7 +531,7 @@ flow are gone.
 
 ## 6. Approval flow
 
-`nexus/skills/approval.py::approve_proposal()` is the source of truth. Both
+`anvay/skills/approval.py::approve_proposal()` is the source of truth. Both
 the API (`POST /proposals/{id}/approve`) and the CLI call it. Idempotent
 within a session — re-approving a row already at `approved` is a no-op.
 
@@ -547,13 +547,13 @@ Flow:
 5. Embed the body as a doc chunk so the skill is itself retrievable.
 6. Flip the queue row to `approved`.
 
-## 7. MCP Server (`nexus/mcp_server/`)
+## 7. MCP Server (`anvay/mcp_server/`)
 
 Stdio MCP server launched by an MCP client (Claude Desktop, Cursor) as a
 subprocess. One server instance per product:
 
 ```bash
-uv run nexus-mcp-server --product <your-product-id>
+uv run anvay-mcp-server --product <your-product-id>
 ```
 
 ### Tools
@@ -568,12 +568,12 @@ uv run nexus-mcp-server --product <your-product-id>
 
 ### Resources
 
-- `nexus://meta-skill` — Jinja-rendered "how to use Nexus" doc.
-- `nexus://hierarchy` — flat list of all skills for the active product.
-- `nexus://skills/<name>` — markdown body for a named skill.
-- `nexus://corpus/<product>` — counts (chunks, sources) for the product.
+- `anvay://meta-skill` — Jinja-rendered "how to use Anvay" doc.
+- `anvay://hierarchy` — flat list of all skills for the active product.
+- `anvay://skills/<name>` — markdown body for a named skill.
+- `anvay://corpus/<product>` — counts (chunks, sources) for the product.
 
-## 8. API Contracts (`nexus/api/routes/`)
+## 8. API Contracts (`anvay/api/routes/`)
 
 FastAPI. CORS allows `http://localhost:3000`. All routes are listed below
 with their backing logic.
@@ -670,10 +670,10 @@ credentials plus product-scope project keys.
 Aggregate snapshot for the dashboard screen:
 `{daemon, pipeline, pending, recentActivity}`.
 
-## 9. Configuration (`nexus.yaml`)
+## 9. Configuration (`anvay.yaml`)
 
 ```yaml
-skills_repo: git@github.com:org/nexus-skills.git
+skills_repo: git@github.com:org/anvay-skills.git
 hierarchy_root: ./skills
 
 connectors:
@@ -687,8 +687,8 @@ connectors:
 vector_store:
   url: http://localhost:6333
   collections:
-    code: nexus_code
-    text: nexus_text
+    code: anvay_code
+    text: anvay_text
   quantization:
     enabled: true
     type: turboquant              # Qdrant v1.18+ native TurboQuant
@@ -776,15 +776,15 @@ enrichment settings only affects `enrichment_version(config)` and queues
 background enrichment when enabled.
 
 `${VAR}` substitution is performed at load time
-(`nexus/config.py::_expand_env`).
+(`anvay/config.py::_expand_env`).
 
 ## 10. Eval Strategy
 
-Nexus has four eval surfaces:
+Anvay has four eval surfaces:
 
 | Surface | Runner | Scope | CI status |
 |---|---|---|---|
-| Unified eval harness | `nexus eval run --suite all` / `python -m evals.harness` | Runs suite defaults, optionally ingests fixtures, writes JSON + Markdown artifacts | CI uses retrieval on PRs; RAG/code on main/scheduled/manual when credentials exist |
+| Unified eval harness | `anvay eval run --suite all` / `python -m evals.harness` | Runs suite defaults, optionally ingests fixtures, writes JSON + Markdown artifacts | CI uses retrieval on PRs; RAG/code on main/scheduled/manual when credentials exist |
 | Retrieval quality | `pytest -m eval` / `python -m tests.eval.harness` | Production retrieval over `tests/eval/queries.json`; includes local, global, relational, and negative questions | Opt-in; skips when Qdrant/embedder/reranker are absent |
 | RAGAS-style golden eval | `python -m evals.run_ragas` | Golden skill queries over `evals/golden.jsonl`; LLM-judged faithfulness and answer quality | CI via unified harness on main/scheduled/manual when `DEEPINFRA_API_KEY` is configured |
 | Code retrieval eval | `python -m evals.run_code_eval` | Golden-set nDCG/recall and pairwise answer preference | CI via unified harness on main/scheduled/manual when `DEEPINFRA_API_KEY` is configured |
@@ -792,12 +792,12 @@ Nexus has four eval surfaces:
 The preferred entrypoint is:
 
 ```bash
-uv run nexus eval run --suite retrieval
-uv run nexus eval run --suite rag,code --limit 10
+uv run anvay eval run --suite retrieval
+uv run anvay eval run --suite rag,code --limit 10
 ```
 
 Each run writes `artifacts/evals/<run_id>/summary.{json,md}` plus per-suite
-JSON. Suite defaults ingest the Nexus repo for retrieval and the Forge seed
+JSON. Suite defaults ingest the Anvay repo for retrieval and the Forge seed
 skills fixture for RAG/code unless `--no-ingest-fixture` is passed.
 
 ### Retrieval Eval (`tests/eval/`)
@@ -810,7 +810,7 @@ questions, and negative capability questions. Each entry:
 ```json
 {
   "query": "Anthropic contextual retrieval prompt for doc chunks",
-  "expected": [{"file": "nexus/ingest/enricher.py"}],
+  "expected": [{"file": "anvay/ingest/enricher.py"}],
   "tags": ["ingest", "enricher"]
 }
 ```
@@ -906,8 +906,8 @@ retrieval behavior or expanding `evals/golden.jsonl`.
 Product deletion is intentionally guarded behind the CLI:
 
 ```bash
-uv run nexus delete-product --product <pid>        # dry-run
-uv run nexus delete-product --product <pid> --yes  # delete
+uv run anvay delete-product --product <pid>        # dry-run
+uv run anvay delete-product --product <pid> --yes  # delete
 ```
 
 It removes product-scoped registry rows, source manifests/runs, proposals,
@@ -927,7 +927,7 @@ derived index cleanup for offline/local-only recovery.
 - **DeepInfra Qwen3** embeddings/reranker are the default low-resource dev
   profile. Alternative providers — including local llama.cpp servers — are
   supported through the same OpenAI-compatible `ModelCfg` by setting
-  `provider`, `model`, `base_url`, and `dim` in `nexus.yaml`.
+  `provider`, `model`, `base_url`, and `dim` in `anvay.yaml`.
 - **DeepInfra** (OpenAI-compatible) for council LLMs and optional enrichment in
   dev. Swap the `provider` + `base_url` to point at any compatible endpoint.
 - **MCP** (stdio transport) for the agent-facing skill server.

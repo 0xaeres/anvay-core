@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/assets/nexus-wordmark.svg" alt="Nexus" width="280">
+  <img src="./docs/assets/anvay-wordmark.svg" alt="Anvay" width="280">
 </p>
 
 <p align="center">
@@ -10,18 +10,18 @@
   <img alt="RAG" src="https://img.shields.io/badge/RAG-dense%20%2B%20BM25%20%2B%20rerank-7C8CFF.svg">
 </p>
 
-# Nexus
+# Anvay
 
-Nexus is a sovereign, MCP-native context engine for engineering teams. It
+Anvay is a sovereign, MCP-native context engine for engineering teams. It
 ingests a product's code and docs, builds a product-scoped retrieval index,
 runs a bounded expert council to draft Agent Skills, requires human approval,
 and serves approved skills plus raw corpus context over MCP to AI coding
 clients.
 
-Use Nexus when one org has multiple products, each with its own codebase,
+Use Anvay when one org has multiple products, each with its own codebase,
 docs, source credentials, approved guidance, and tenancy boundary.
 
-## What Nexus Guarantees
+## What Anvay Guarantees
 
 - **Product-scoped tenancy.** Every source, chunk, proposal, session, skill,
   and retrieval query carries `product_id`.
@@ -53,7 +53,7 @@ flowchart LR
     Docs["Markdown / text docs"]
   end
 
-  subgraph API["Nexus backend"]
+  subgraph API["Anvay backend"]
     FastAPI["FastAPI API"]
     Registry["SQLite registry"]
     Ingest["Delta ingest pipeline"]
@@ -99,18 +99,18 @@ flowchart LR
   Agents --> MCP
 ```
 
-Nexus separates source-of-truth state from derived serving state:
+Anvay separates source-of-truth state from derived serving state:
 
 | Layer | Component | Responsibility |
 |---|---|---|
-| API | `nexus/api/` | Product, source, council, proposal, skill, setup, auth, and dashboard routes. |
-| Registry | SQLite via `nexus/registry.py` | Products, runtime sources, sync manifests, sync runs, proposal/session metadata. |
-| Ingest | `nexus/ingest/` | Source diff, chunking, optional enrichment, embeddings, sparse vectors, Qdrant/GraphStore writes, stale cleanup. |
-| Retrieval | `nexus/retrieval/` | Multi-channel evidence engine (dense + BM25, exact grep, repo-map symbols, graph-local traversal, summaries, skills), cross-encoder rerank. |
-| Council | `nexus/council/` | Planner, expert fanout, synthesizer, repair, eval, finalizer, SSE progress. |
-| Skills | `nexus/skills/` | Agent Skills parsing, storage, provenance, approval write path, Git commit/push. |
-| MCP | `nexus/mcp_server/` | `find_skills`, `get_skill`, `query_code_context`, `hybrid_search_corpus`. |
-| UI | `../nexus-ui/` | Product onboarding, sync logs, council sessions, review/approval UX. |
+| API | `anvay/api/` | Product, source, council, proposal, skill, setup, auth, and dashboard routes. |
+| Registry | SQLite via `anvay/registry.py` | Products, runtime sources, sync manifests, sync runs, proposal/session metadata. |
+| Ingest | `anvay/ingest/` | Source diff, chunking, optional enrichment, embeddings, sparse vectors, Qdrant/GraphStore writes, stale cleanup. |
+| Retrieval | `anvay/retrieval/` | Multi-channel evidence engine (dense + BM25, exact grep, repo-map symbols, graph-local traversal, summaries, skills), cross-encoder rerank. |
+| Council | `anvay/council/` | Planner, expert fanout, synthesizer, repair, eval, finalizer, SSE progress. |
+| Skills | `anvay/skills/` | Agent Skills parsing, storage, provenance, approval write path, Git commit/push. |
+| MCP | `anvay/mcp_server/` | `find_skills`, `get_skill`, `query_code_context`, `hybrid_search_corpus`. |
+| UI | `../anvay-ui/` | Product onboarding, sync logs, council sessions, review/approval UX. |
 
 For a code-level module map and end-to-end traces, use
 [CONTRIBUTING.md](./CONTRIBUTING.md). For API contracts and data models, use
@@ -122,7 +122,7 @@ For a code-level module map and end-to-end traces, use
 sequenceDiagram
   autonumber
   actor User
-  participant UI as Nexus UI
+  participant UI as Anvay UI
   participant API as FastAPI
   participant Registry as SQLite registry
   participant Ingest as Ingest pipeline
@@ -190,7 +190,7 @@ Prereqs:
 - `uv`
 - Docker or a reachable Qdrant
 - DeepInfra API key for default cloud embeddings/reranking and council LLMs
-- Sibling UI repo at `../nexus-ui/`
+- Sibling UI repo at `../anvay-ui/`
 
 Install backend deps:
 
@@ -201,7 +201,7 @@ uv sync
 Create local config:
 
 ```bash
-cp nexus.yaml.example nexus.yaml
+cp anvay.yaml.example anvay.yaml
 cp .env.example .env
 ```
 
@@ -209,27 +209,27 @@ Required `.env` values for normal development:
 
 ```bash
 DEEPINFRA_API_KEY=...
-NEXUS_TOKEN_KEY=...
-NEXUS_SKILLS_REPO_TOKEN=...
+ANVAY_TOKEN_KEY=...
+ANVAY_SKILLS_REPO_TOKEN=...
 ```
 
-Generate `NEXUS_TOKEN_KEY`:
+Generate `ANVAY_TOKEN_KEY`:
 
 ```bash
-uv run python -c "from nexus.auth.token_cipher import TokenCipher; print(TokenCipher.generate_key())"
+uv run python -c "from anvay.auth.token_cipher import TokenCipher; print(TokenCipher.generate_key())"
 ```
 
 Start the backend stack:
 
 ```bash
 make dev
-uv run uvicorn nexus.api.app:app --port 8000 --reload
+uv run uvicorn anvay.api.app:app --port 8000 --reload
 ```
 
 Start the UI:
 
 ```bash
-cd ../nexus-ui
+cd ../anvay-ui
 npm install
 npm run dev
 ```
@@ -240,11 +240,11 @@ sync it, run council, and review proposals.
 
 ## Configuration Notes
 
-- `nexus.yaml` controls source defaults, retrieval backends, model endpoints,
+- `anvay.yaml` controls source defaults, retrieval backends, model endpoints,
   Qdrant settings, skills repo paths, and local model profiles.
 - Product GitHub PATs are entered during onboarding and stored encrypted per
   product source. They are not global credentials.
-- `NEXUS_SKILLS_REPO_TOKEN` is only for creating/cloning/pushing the org skills
+- `ANVAY_SKILLS_REPO_TOKEN` is only for creating/cloning/pushing the org skills
   repository.
 - Qdrant is derived state. SQLite manifests decide what has been successfully
   indexed.
@@ -258,18 +258,18 @@ Claude Desktop example:
 ```json
 {
   "mcpServers": {
-    "nexus": {
+    "anvay": {
       "command": "uv",
       "args": [
         "--directory",
-        "/absolute/path/to/nexus",
+        "/absolute/path/to/anvay",
         "run",
-        "nexus-mcp-server",
+        "anvay-mcp-server",
         "--product",
         "<your-product-id>"
       ],
       "env": {
-        "NEXUS_CONFIG": "/absolute/path/to/nexus/nexus.yaml"
+        "ANVAY_CONFIG": "/absolute/path/to/anvay/anvay.yaml"
       }
     }
   }
@@ -291,7 +291,7 @@ Exposed MCP tools:
 Production target:
 
 - Backend: Oracle VM, Docker Compose, Caddy TLS, FastAPI, private Qdrant.
-- Frontend: Vercel running `../nexus-ui/`.
+- Frontend: Vercel running `../anvay-ui/`.
 - Auth: Password/session bootstrap and session-based API auth.
 - Observability: Langfuse when configured.
 
@@ -303,14 +303,14 @@ environment variables, smoke tests, backup targets, and upgrade steps.
 Common checks:
 
 ```bash
-uv run ruff check nexus tests evals
+uv run ruff check anvay tests evals
 uv run pytest -q
 ```
 
 Retrieval/eval checks are opt-in:
 
 ```bash
-uv run nexus eval run --suite retrieval
+uv run anvay eval run --suite retrieval
 uv run pytest -m eval
 uv run python -m evals.run_ragas
 uv run python -m evals.run_code_eval
@@ -323,7 +323,7 @@ The evaluation harness enforces strict quality gates across three distinct test 
 
 | Suite | Focus | Target Metric | Required Threshold | Verification Command |
 |---|---|---|---|---|
-| **Retrieval** | Core search quality | Recall@10 | ≥ `0.80` | `uv run nexus eval run --suite retrieval` |
+| **Retrieval** | Core search quality | Recall@10 | ≥ `0.80` | `uv run anvay eval run --suite retrieval` |
 | | | Mean Reciprocal Rank (MRR) | ≥ `0.50` | |
 | **RAG** | Quality & truthfulness | Faithfulness (LLM-as-a-judge) | ≥ `0.85` | `uv run python -m evals.run_ragas` |
 | | | Answer Correctness (LLM-as-a-judge) | ≥ `0.80` | |
@@ -347,7 +347,7 @@ hybrid search, reranking, or repo map generation. See
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Contributor onboarding, code map, end-to-end traces, recipes. |
 | [ENGINEERING.md](./ENGINEERING.md) | Formal architecture, data model, API and pipeline contracts. |
 | [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) | Production deployment and operations. |
-| [../nexus-ui/DESIGN.md](../nexus-ui/DESIGN.md) | Frontend design system and IA rules. |
+| [../anvay-ui/DESIGN.md](../anvay-ui/DESIGN.md) | Frontend design system and IA rules. |
 
 ## License
 

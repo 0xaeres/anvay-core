@@ -1,4 +1,4 @@
-"""Tests for MCP selective-serving in nexus.mcp_server.tools.
+"""Tests for MCP selective-serving in anvay.mcp_server.tools.
 
 Verifies that find_skills honors applies_to.files + applies_to.contexts so
 the LLM context stays tight.
@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock
 
-from nexus.mcp_server.tools import (
+from anvay.mcp_server.tools import (
     ToolState,
     _matches_context,
     _matches_file_globs,
@@ -21,8 +21,8 @@ from nexus.mcp_server.tools import (
     hybrid_search_corpus,
     report_outcome,
 )
-from nexus.skills.models import AppliesTo, Provenance, Skill
-from nexus.skills.store import SkillStore
+from anvay.skills.models import AppliesTo, Provenance, Skill
+from anvay.skills.store import SkillStore
 
 # ---------- helpers ----------------------------------------------------------
 
@@ -252,7 +252,7 @@ def test_grep_corpus_returns_exact_hits(monkeypatch) -> None:
     state._ctx = MagicMock()
 
     async def fake_grep_indexed_chunks(**kwargs):
-        from nexus.council.state import EvidenceChunk
+        from anvay.council.state import EvidenceChunk
 
         assert kwargs["product_id"] == "test"
         return [
@@ -266,7 +266,7 @@ def test_grep_corpus_returns_exact_hits(monkeypatch) -> None:
         ]
 
     monkeypatch.setattr(
-        "nexus.mcp_server.tools.grep_indexed_chunks", fake_grep_indexed_chunks
+        "anvay.mcp_server.tools.grep_indexed_chunks", fake_grep_indexed_chunks
     )
     result = asyncio.run(grep_corpus(state, query="auth"))
     assert result["hits"] == [
@@ -300,7 +300,7 @@ def test_ask_product_graph_returns_generic_graphrag_payload(monkeypatch) -> None
         assert chat is None
         assert product_id == "test"
         assert request.query == "what owns auth?"
-        from nexus.graph.models import GraphRAGAnswer
+        from anvay.graph.models import GraphRAGAnswer
 
         return GraphRAGAnswer(
             product_id=product_id,
@@ -309,7 +309,7 @@ def test_ask_product_graph_returns_generic_graphrag_payload(monkeypatch) -> None
             graph_available=True,
         )
 
-    monkeypatch.setattr("nexus.mcp_server.tools.answer_graph_rag", fake_answer_graph_rag)
+    monkeypatch.setattr("anvay.mcp_server.tools.answer_graph_rag", fake_answer_graph_rag)
 
     result = asyncio.run(
         ask_product_graph(

@@ -8,7 +8,7 @@ quality_score: 0.91
 external_sources:
   - https://owasp.org/www-project-application-security-verification-standard/
   - https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html
-ratified_by: org-admin@nexus
+ratified_by: org-admin@anvay
 ratified_at: 2026-05-18T00:00:00Z
 applies_to:
   files: ["**/*"]

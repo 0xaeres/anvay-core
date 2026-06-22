@@ -5,21 +5,21 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import nexus.api.app as api_app
-from nexus.api.app import app
-from nexus.api.deps import get_auth_store, get_proposal_queue, get_registry, get_skill_store
-from nexus.auth.store import AuthStore
-from nexus.council.queue import ProposalQueue
-from nexus.registry import Registry
-from nexus.skills.models import Citation, SkillProposal
-from nexus.skills.store import SkillStore
+import anvay.api.app as api_app
+from anvay.api.app import app
+from anvay.api.deps import get_auth_store, get_proposal_queue, get_registry, get_skill_store
+from anvay.auth.store import AuthStore
+from anvay.council.queue import ProposalQueue
+from anvay.registry import Registry
+from anvay.skills.models import Citation, SkillProposal
+from anvay.skills.store import SkillStore
 
 
 def test_bootstrap_admin_from_env_creates_password_user(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL", "owner@example.com")
-    monkeypatch.setenv("NEXUS_BOOTSTRAP_ADMIN_PASSWORD", "correct horse battery staple")
+    monkeypatch.setenv("ANVAY_BOOTSTRAP_ADMIN_EMAIL", "owner@example.com")
+    monkeypatch.setenv("ANVAY_BOOTSTRAP_ADMIN_PASSWORD", "correct horse battery staple")
     store = AuthStore(tmp_path / "auth.db", secret_key="secret")
 
     owner = store.get_user_by_email("owner@example.com")
@@ -34,7 +34,7 @@ def test_bootstrap_admin_from_env_creates_password_user(
 
 
 def test_product_owner_can_manage_only_their_product(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
     auth_store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     user = auth_store.create_user(
         email="owner@example.com",
@@ -66,7 +66,7 @@ def test_product_owner_can_manage_only_their_product(tmp_path: Path, monkeypatch
                 "password": "correct horse battery staple",
             },
         )
-        csrf = client.cookies.get("nexus_csrf")
+        csrf = client.cookies.get("anvay_csrf")
         assert login.status_code == 200
 
         products = client.get("/products")
@@ -75,12 +75,12 @@ def test_product_owner_can_manage_only_their_product(tmp_path: Path, monkeypatch
         own = client.post(
             "/products/own/sources",
             json={"name": "github", "type": "github", "config": {"repos": ["https://github.com/a/b"]}},
-            headers={"X-Nexus-CSRF": csrf or ""},
+            headers={"X-Anvay-CSRF": csrf or ""},
         )
         other = client.post(
             "/products/other/sources",
             json={"name": "github", "type": "github", "config": {"repos": ["https://github.com/a/b"]}},
-            headers={"X-Nexus-CSRF": csrf or ""},
+            headers={"X-Anvay-CSRF": csrf or ""},
         )
     finally:
         app.dependency_overrides.pop(get_auth_store, None)
@@ -93,7 +93,7 @@ def test_product_owner_can_manage_only_their_product(tmp_path: Path, monkeypatch
 
 
 def test_viewer_cannot_approve_product_proposal(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
     store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     user = store.create_user(
         email="viewer@example.com",
@@ -129,11 +129,11 @@ def test_viewer_cannot_approve_product_proposal(tmp_path: Path, monkeypatch) -> 
                 "password": "correct horse battery staple",
             },
         )
-        csrf = client.cookies.get("nexus_csrf")
+        csrf = client.cookies.get("anvay_csrf")
         res = client.post(
             "/proposals/prop_demo/reject",
             json={"reason": "no"},
-            headers={"X-Nexus-CSRF": csrf or ""},
+            headers={"X-Anvay-CSRF": csrf or ""},
         )
     finally:
         app.dependency_overrides.pop(get_auth_store, None)

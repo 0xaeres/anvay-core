@@ -5,18 +5,18 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from nexus.config import NexusConfig
-from nexus.council.queue import ProposalQueue
-from nexus.registry import Registry
-from nexus.retrieval.repomap import repomap_path_for
-from nexus.skills.models import AppliesTo, Citation, Provenance, Skill, SkillProposal
-from nexus.skills.store import SkillStore
-from nexus.tools import delete_product as delete_product_module
-from nexus.tools.delete_product import delete_product
+from anvay.config import AnvayConfig
+from anvay.council.queue import ProposalQueue
+from anvay.registry import Registry
+from anvay.retrieval.repomap import repomap_path_for
+from anvay.skills.models import AppliesTo, Citation, Provenance, Skill, SkillProposal
+from anvay.skills.store import SkillStore
+from anvay.tools import delete_product as delete_product_module
+from anvay.tools.delete_product import delete_product
 
 
-def _config(tmp_path: Path) -> NexusConfig:
-    return NexusConfig(
+def _config(tmp_path: Path) -> AnvayConfig:
+    return AnvayConfig(
         models={
             "council": {"provider": "test", "model": "test"},
             "light": {"provider": "test", "model": "test"},

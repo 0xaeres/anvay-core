@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.graph import impact
-from nexus.graph.impact import build_change_impact, build_dependency_trace
-from nexus.graph.models import GraphEdge, GraphNode, GraphQueryResult
-from nexus.retrieval.hybrid import Hit
-from nexus.retrieval.pipeline import RetrievalResult
+from anvay.graph import impact
+from anvay.graph.impact import build_change_impact, build_dependency_trace
+from anvay.graph.models import GraphEdge, GraphNode, GraphQueryResult
+from anvay.retrieval.hybrid import Hit
+from anvay.retrieval.pipeline import RetrievalResult
 
 
 def _node(stable_id: str, labels: list[str], **props) -> GraphNode:

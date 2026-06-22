@@ -3,10 +3,10 @@
 This test intentionally uses real configured infrastructure. It has no mocks,
 fakes, or monkeypatches. Run it after backend changes with:
 
-    NEXUS_LIVE_E2E=1 uv run pytest -q -m live_e2e
+    ANVAY_LIVE_E2E=1 uv run pytest -q -m live_e2e
 
 Required live services/config:
-  - `nexus.yaml`
+  - `anvay.yaml`
   - Qdrant reachable at `vector_store.url`
   - embedder reachable at `models.embedding.url`
   - reranker reachable at `models.reranker.url`
@@ -29,17 +29,17 @@ import pytest
 from fastapi.testclient import TestClient
 from git import Repo
 
-from nexus.api.app import app
-from nexus.api.deps import get_config_dep, get_proposal_queue, get_registry
-from nexus.config import NexusConfig
-from nexus.connectors.local_fs import LocalFsConfig, LocalFsSource
-from nexus.council.queue import ProposalQueue
-from nexus.ingest.indexer_factory import create_indexer
-from nexus.ingest.pipeline import run_ingest
-from nexus.llm.client import ChatClient
-from nexus.registry import Registry
-from nexus.retrieval.pipeline import RetrievalContext, retrieve
-from nexus.skills.models import Citation, SkillProposal
+from anvay.api.app import app
+from anvay.api.deps import get_config_dep, get_proposal_queue, get_registry
+from anvay.config import AnvayConfig
+from anvay.connectors.local_fs import LocalFsConfig, LocalFsSource
+from anvay.council.queue import ProposalQueue
+from anvay.ingest.indexer_factory import create_indexer
+from anvay.ingest.pipeline import run_ingest
+from anvay.llm.client import ChatClient
+from anvay.registry import Registry
+from anvay.retrieval.pipeline import RetrievalContext, retrieve
+from anvay.skills.models import Citation, SkillProposal
 
 pytestmark = pytest.mark.live_e2e
 
@@ -146,7 +146,7 @@ def test_live_backend_e2e_ingest_council_review_flows(tmp_path: Path) -> None:
         master = next(p for p in pending if p["tier"] == "product_master")
         approve_res = client.post(
             f"/proposals/{master['id']}/approve",
-            json={"actor": "live-e2e@nexus.local"},
+            json={"actor": "live-e2e@anvay.local"},
         )
         assert approve_res.status_code == 200, approve_res.text
         approve_body = approve_res.json()
@@ -170,15 +170,15 @@ def test_live_backend_e2e_ingest_council_review_flows(tmp_path: Path) -> None:
 
 
 def _require_live_e2e() -> None:
-    if os.environ.get("NEXUS_LIVE_E2E") != "1":
-        pytest.skip("set NEXUS_LIVE_E2E=1 to run real live E2E")
+    if os.environ.get("ANVAY_LIVE_E2E") != "1":
+        pytest.skip("set ANVAY_LIVE_E2E=1 to run real live E2E")
 
 
-def _live_config(tmp_path: Path) -> NexusConfig:
-    path = Path(os.environ.get("NEXUS_LIVE_E2E_CONFIG", "nexus.yaml"))
+def _live_config(tmp_path: Path) -> AnvayConfig:
+    path = Path(os.environ.get("ANVAY_LIVE_E2E_CONFIG", "anvay.yaml"))
     if not path.exists():
         pytest.fail(f"live E2E config not found: {path}")
-    config = NexusConfig.load(path)
+    config = AnvayConfig.load(path)
     fast_models = config.models.model_copy(
         update={
             "council": config.models.light,
@@ -202,7 +202,7 @@ def _live_config(tmp_path: Path) -> NexusConfig:
     )
 
 
-def _require_infra(config: NexusConfig) -> None:
+def _require_infra(config: AnvayConfig) -> None:
     targets = [("qdrant", config.vector_store.url)]
     if config.models.embedding.provider == "jina-local":
         targets.append(("embedder", config.models.embedding.url or "http://localhost:8080"))
@@ -387,11 +387,11 @@ def _init_live_skills_repo(root: Path) -> None:
     Repo.init(remote, bare=True)
     repo = Repo.clone_from(str(remote), root)
     with repo.config_writer() as writer:
-        writer.set_value("user", "name", "Nexus Live E2E")
-        writer.set_value("user", "email", "live-e2e@nexus.local")
+        writer.set_value("user", "name", "Anvay Live E2E")
+        writer.set_value("user", "email", "live-e2e@anvay.local")
 
 
-async def _vector_counts(config: NexusConfig, product_id: str) -> dict[str, int]:
+async def _vector_counts(config: AnvayConfig, product_id: str) -> dict[str, int]:
     indexer = create_indexer(config)
     try:
         return {
@@ -402,7 +402,7 @@ async def _vector_counts(config: NexusConfig, product_id: str) -> dict[str, int]
         await indexer.aclose()
 
 
-async def _live_retrieval_smoke(config: NexusConfig, product_id: str) -> int:
+async def _live_retrieval_smoke(config: AnvayConfig, product_id: str) -> int:
     ctx = RetrievalContext.from_config(config)
     try:
         result = await retrieve(
@@ -417,7 +417,7 @@ async def _live_retrieval_smoke(config: NexusConfig, product_id: str) -> int:
         await ctx.aclose()
 
 
-async def _live_council_model_smoke(config: NexusConfig) -> int:
+async def _live_council_model_smoke(config: AnvayConfig) -> int:
     tokens: list[str] = []
 
     async def token_sink(token: dict[str, str]) -> None:

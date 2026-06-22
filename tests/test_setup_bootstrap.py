@@ -14,9 +14,9 @@ import httpx
 import pytest
 from git import Repo
 
-from nexus.setup import SetupKV, bootstrap_skills_repo
-from nexus.setup.bootstrap import _redact_token
-from nexus.setup.github_api import GitHubAPIError, create_repo
+from anvay.setup import SetupKV, bootstrap_skills_repo
+from anvay.setup.bootstrap import _redact_token
+from anvay.setup.github_api import GitHubAPIError, create_repo
 
 # ---------- SetupKV ---------------------------------------------------------
 
@@ -49,15 +49,15 @@ def test_create_repo_user_endpoint() -> None:
         captured["headers"] = dict(request.headers)
         captured["json"] = request.read().decode()
         return httpx.Response(
-            201, json={"clone_url": "https://github.com/u/nexus-skills.git"}
+            201, json={"clone_url": "https://github.com/u/anvay-skills.git"}
         )
 
     transport = httpx.MockTransport(handler)
     client = httpx.AsyncClient(transport=transport)
     repo = asyncio.run(
-        create_repo(token="tok", name="nexus-skills", client=client)
+        create_repo(token="tok", name="anvay-skills", client=client)
     )
-    assert repo["clone_url"] == "https://github.com/u/nexus-skills.git"
+    assert repo["clone_url"] == "https://github.com/u/anvay-skills.git"
     assert captured["url"].endswith("/user/repos")
     assert captured["headers"]["authorization"] == "Bearer tok"
     import json as _json
@@ -125,20 +125,20 @@ def test_bootstrap_create_mode_calls_github(tmp_path: Path) -> None:
     fake_repo = {"clone_url": remote_url}
 
     with patch(
-        "nexus.setup.bootstrap.create_repo", new=AsyncMock(return_value=fake_repo)
+        "anvay.setup.bootstrap.create_repo", new=AsyncMock(return_value=fake_repo)
     ) as mock_create:
         result = asyncio.run(
             bootstrap_skills_repo(
                 mode="create",
                 github_token="tok",
                 github_org="acme",
-                repo_name="nexus-skills",
+                repo_name="anvay-skills",
             )
         )
     mock_create.assert_awaited_once()
     kwargs = mock_create.await_args.kwargs
     assert kwargs["org"] == "acme"
-    assert kwargs["name"] == "nexus-skills"
+    assert kwargs["name"] == "anvay-skills"
     assert result.created_repo is True
 
 

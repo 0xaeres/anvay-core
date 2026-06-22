@@ -4,17 +4,17 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import nexus.api.app as api_app
-from nexus.api.app import app
-from nexus.api.deps import get_auth_store, get_proposal_queue, get_registry, get_skill_store
-from nexus.auth.store import CSRF_COOKIE, SESSION_COOKIE, AuthStore
-from nexus.council.queue import ProposalQueue
-from nexus.registry import Registry
-from nexus.skills.store import SkillStore
+import anvay.api.app as api_app
+from anvay.api.app import app
+from anvay.api.deps import get_auth_store, get_proposal_queue, get_registry, get_skill_store
+from anvay.auth.store import CSRF_COOKIE, SESSION_COOKIE, AuthStore
+from anvay.council.queue import ProposalQueue
+from anvay.registry import Registry
+from anvay.skills.store import SkillStore
 
 
 def test_login_sets_secure_session_and_csrf(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
     store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     store.create_user(
         email="owner@example.com",
@@ -40,15 +40,15 @@ def test_login_sets_secure_session_and_csrf(tmp_path: Path, monkeypatch) -> None
         missing = client.post("/auth/logout", json={})
         assert missing.status_code == 403
 
-        ok = client.post("/auth/logout", json={}, headers={"X-Nexus-CSRF": csrf})
+        ok = client.post("/auth/logout", json={}, headers={"X-Anvay-CSRF": csrf})
         assert ok.status_code == 200
     finally:
         app.dependency_overrides.pop(get_auth_store, None)
 
 
 def test_admin_api_key_allows_protected_route(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
-    monkeypatch.setenv("NEXUS_ADMIN_API_KEY", "admin-key")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_ADMIN_API_KEY", "admin-key")
     auth_store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     registry = Registry(tmp_path / "registry.db")
     queue = ProposalQueue(tmp_path / "queue.db")
@@ -75,7 +75,7 @@ def test_admin_api_key_allows_protected_route(tmp_path: Path, monkeypatch) -> No
 
 
 def test_access_request_public_when_auth_enabled(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
     store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     monkeypatch.setattr(api_app, "get_auth_store", lambda: store)
     app.dependency_overrides[get_auth_store] = lambda: store
@@ -92,7 +92,7 @@ def test_access_request_public_when_auth_enabled(tmp_path: Path, monkeypatch) ->
 
 
 def test_access_request_requires_email_for_anonymous(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ANVAY_SECRET_KEY", "test-secret")
     store = AuthStore(tmp_path / "auth.db", secret_key="test-secret")
     monkeypatch.setattr(api_app, "get_auth_store", lambda: store)
     app.dependency_overrides[get_auth_store] = lambda: store

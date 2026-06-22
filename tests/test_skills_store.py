@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from nexus.skills.models import AppliesTo, Provenance, Skill
-from nexus.skills.store import SkillStore
+from anvay.skills.models import AppliesTo, Provenance, Skill
+from anvay.skills.store import SkillStore
 
 
 def test_save_then_load_round_trip(tmp_path: Path) -> None:

@@ -1,5 +1,5 @@
 // JavaDemo.java
-package com.nexus.eval;
+package com.anvay.eval;
 
 public class OrderService {
     private final String dbUrl;

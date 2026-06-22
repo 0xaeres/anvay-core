@@ -1,4 +1,4 @@
-"""Shared deterministic metric helpers for Nexus evals."""
+"""Shared deterministic metric helpers for Anvay evals."""
 
 from __future__ import annotations
 

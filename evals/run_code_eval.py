@@ -25,10 +25,10 @@ from pathlib import Path
 from evals.common import GoldenItem, load_golden
 from evals.judges.llm import evaluator_client, judge_pairwise_preference
 from evals.metrics import mean, ndcg_at_k, recall_at_k
-from nexus.config import NexusConfig
-from nexus.llm.client import ChatClient
-from nexus.retrieval.evidence import retrieve_evidence
-from nexus.retrieval.pipeline import RetrievalContext
+from anvay.config import AnvayConfig
+from anvay.llm.client import ChatClient
+from anvay.retrieval.evidence import retrieve_evidence
+from anvay.retrieval.pipeline import RetrievalContext
 
 log = logging.getLogger("evals.code")
 
@@ -79,7 +79,7 @@ async def run(
     *,
     golden_path: Path,
     product_id: str,
-    config: NexusConfig,
+    config: AnvayConfig,
     output: Path,
     thresholds: CodeThresholds = CodeThresholds(),
     limit: int | None = None,
@@ -278,12 +278,12 @@ def main() -> int:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "WARNING"))
     parser = argparse.ArgumentParser(description="Run code retrieval eval.")
     parser.add_argument("--golden", type=Path, default=Path("evals/golden.jsonl"))
-    parser.add_argument("--config", type=Path, default=Path("nexus.yaml"))
+    parser.add_argument("--config", type=Path, default=Path("anvay.yaml"))
     parser.add_argument("--product", default="forge")
     parser.add_argument("--out", type=Path, default=Path("evals/last_code.json"))
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
-    config = NexusConfig.load(args.config)
+    config = AnvayConfig.load(args.config)
     report = asyncio.run(
         run(
             golden_path=args.golden,

@@ -4,8 +4,8 @@ import httpx
 import pytest
 from qdrant_client.http import models as qm
 
-from nexus.ingest.indexer import Indexer, IndexerError
-from nexus.ingest.models import Chunk, ChunkKind, EmbeddedChunk, ResourceRef
+from anvay.ingest.indexer import Indexer, IndexerError
+from anvay.ingest.models import Chunk, ChunkKind, EmbeddedChunk, ResourceRef
 
 
 def test_indexer_builds_qdrant_turboquant_config() -> None:
@@ -63,7 +63,7 @@ async def test_indexer_retries_transient_qdrant_read_error(monkeypatch) -> None:
     async def fake_sleep(delay: float) -> None:
         sleeps.append(delay)
 
-    monkeypatch.setattr("nexus.ingest.indexer.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("anvay.ingest.indexer.asyncio.sleep", fake_sleep)
 
     ref = ResourceRef(source_id="local:test", uri="a.py", mime="text/x-python")
     chunk = Chunk(

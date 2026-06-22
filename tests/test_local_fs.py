@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from nexus.connectors.local_fs import LocalFsConfig, LocalFsSource
+from anvay.connectors.local_fs import LocalFsConfig, LocalFsSource
 
 
 @pytest.fixture

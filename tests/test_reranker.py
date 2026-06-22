@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.config import ModelCfg
-from nexus.retrieval.reranker import RerankerClient
+from anvay.config import ModelCfg
+from anvay.retrieval.reranker import RerankerClient
 
 
 @pytest.mark.asyncio
