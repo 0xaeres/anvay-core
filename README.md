@@ -2,6 +2,17 @@
   <img src="./docs/assets/anvay-wordmark.svg" alt="Anvay" width="280">
 </p>
 
+<h1 align="center">Anvay</h1>
+
+<p align="center">
+  <strong>Give every contributor and coding agent a maintainer's map of your project.</strong>
+</p>
+
+<p align="center">
+  Anvay turns repos and docs into reviewed, cited project intelligence served
+  directly to AI coding tools over MCP.
+</p>
+
 <p align="center">
   <a href="./LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-7C8CFF.svg"></a>
   <img alt="Python 3.13+" src="https://img.shields.io/badge/python-3.13%2B-12121A.svg">
@@ -10,16 +21,69 @@
   <img alt="RAG" src="https://img.shields.io/badge/RAG-dense%20%2B%20BM25%20%2B%20rerank-7C8CFF.svg">
 </p>
 
-# Anvay
+<p align="center">
+  <a href="#quick-start">Quick Start</a>
+  ·
+  <a href="#mcp-usage">MCP Usage</a>
+  ·
+  <a href="#system-architecture">Architecture</a>
+  ·
+  <a href="./CONTRIBUTING.md">Contributing</a>
+  ·
+  <a href="./ENGINEERING.md">Engineering Spec</a>
+</p>
 
-Anvay is a sovereign, MCP-native context engine for engineering teams. It
-ingests a product's code and docs, builds a product-scoped retrieval index,
-runs a bounded expert council to draft Agent Skills, requires human approval,
-and serves approved skills plus raw corpus context over MCP to AI coding
-clients.
+---
 
-Use Anvay when one org has multiple products, each with its own codebase,
-docs, source credentials, approved guidance, and tenancy boundary.
+Open-source projects have a context problem. New contributors do not know where
+to start. Maintainers answer the same questions again and again. Docs drift.
+Issues repeat. AI agents jump into code without understanding project
+conventions, architecture, or blast radius.
+
+Anvay turns that scattered project knowledge into something agents can actually
+use: a product-scoped evidence index, a repo map, a dependency graph, and a
+human-approved Agent Skill that captures how the project should be understood
+and changed.
+
+Point Anvay at a project, review the generated knowledge pack, then serve it to
+Claude, Codex, Cursor, Continue, and any other MCP-capable coding client.
+
+Anvay calls each isolated knowledge boundary a **product**. For open-source
+users, a product is usually one project or one tightly related set of repos. The
+same engine later fits internal engineering products without changing the core
+model.
+
+## Why Anvay
+
+| Open-source pain | What Anvay gives you |
+|---|---|
+| New contributors ask, "where do I even start?" | Grounded onboarding answers over code, docs, repo maps, graph context, and maintainer-approved guidance. |
+| AI agents miss project rules. | A reviewed `SKILL.md` loaded into coding agents before they touch code. |
+| Maintainers repeat tribal knowledge. | One reusable project knowledge pack instead of copy-pasting context into every chat. |
+| PRs need impact context. | Product-scoped retrieval plus graph traversal across symbols, files, and dependencies. |
+| OSS launch needs public proof. | Real demos on public repos without asking companies for private IP. |
+
+Ask Anvay:
+
+- Where should a new contributor start?
+- Which files, conventions, and tests matter for this change?
+- What does this module depend on, and what might break if it changes?
+- What project-specific guidance should every AI coding agent follow?
+- Which docs or explanations should become a reusable contributor skill?
+
+## What Anvay Produces
+
+- A product-scoped retrieval index for code and docs.
+- A tree-sitter repo map that helps agents understand symbols and structure.
+- A FalkorDB product graph for local dependency and impact traversal.
+- A pending `product_master` Agent Skill drafted by a bounded expert council.
+- A human-approved `SKILL.md` committed to a skills repo.
+- An MCP server that exposes approved skills and cited project context to agents.
+
+Current source connectors cover GitHub repositories, local filesystems, Jira,
+and Confluence. For the OSS launch, the wedge is repo and docs understanding
+first; GitHub issues, PRs, discussions, release notes, and community archives
+are natural next sources.
 
 ## What Anvay Guarantees
 
@@ -50,53 +114,93 @@ flowchart LR
   subgraph Sources["Product sources"]
     GitHub["GitHub repos"]
     Local["Local filesystem"]
-    Docs["Markdown / text docs"]
+    Jira["Jira"]
+    Confluence["Confluence"]
   end
 
-  subgraph API["Anvay backend"]
-    FastAPI["FastAPI API"]
-    Registry["SQLite registry"]
+  subgraph App["Anvay backend process"]
+    FastAPI["FastAPI routes"]
+    SourceSync["Source sync tasks"]
     Ingest["Delta ingest pipeline"]
-    Retrieval["Retrieval pipeline"]
-    Council["Bounded expert council"]
-    Approval["Human approval flow"]
-    MCP["MCP server"]
+    Retrieval["RetrievalContext + retrieve_evidence"]
+    Council["LangGraph council runner"]
+    Approval["Proposal approval"]
+    MCP["stdio MCP server"]
+    AgentAPI["Product GraphRAG API"]
   end
 
-  subgraph Stores["Derived stores"]
-    Qdrant["Qdrant vectors + BM25 sparse"]
-    GraphStore["FalkorDB graph store"]
-    RepoMap["Repo maps"]
-    SkillsRepo["Git skills repo"]
+  subgraph State["Source-of-truth state"]
+    Registry["SQLite registry\nproducts, sources, manifests"]
+    Queue["SQLite proposal queue\nsessions, proposals, signals"]
+    Checkpoints["LangGraph checkpoints"]
+    Skills["Skills checkout\napproved SKILL.md"]
+    SetupAuth["SQLite setup + auth"]
   end
 
-  subgraph Clients["Consumers"]
+  subgraph Derived["Derived serving indexes"]
+    Qdrant["Qdrant\ncode/text dense + BM25"]
+    GraphStore["FalkorDB\nproduct graph"]
+    RepoMap["Repo map JSON\nsymbol outline"]
+  end
+
+  subgraph Models["External model services"]
+    Embedder["Embedding model"]
+    Reranker["Reranker"]
+    LLM["Council/chat LLMs"]
+  end
+
+  subgraph Clients["User-facing clients"]
     UI["Next.js UI"]
     Agents["Claude / Codex / Cursor / Continue"]
   end
 
-  GitHub --> Ingest
-  Local --> Ingest
-  Docs --> Ingest
   UI --> FastAPI
+  Agents --> MCP
+
   FastAPI --> Registry
-  FastAPI --> Ingest
+  FastAPI --> SetupAuth
+  FastAPI --> SourceSync
+  FastAPI --> Council
+  FastAPI --> Approval
+  FastAPI --> AgentAPI
+
+  GitHub --> SourceSync
+  Local --> SourceSync
+  Jira --> SourceSync
+  Confluence --> SourceSync
+  SourceSync --> Ingest
   Ingest --> Registry
+  Ingest --> Embedder
+  Ingest --> LLM
   Ingest --> Qdrant
   Ingest --> GraphStore
   Ingest --> RepoMap
+
+  Retrieval --> Embedder
   Retrieval --> Qdrant
-  Retrieval --> GraphStore
+  Retrieval --> Reranker
   Retrieval --> RepoMap
-  FastAPI --> Council
+  Retrieval --> GraphStore
+  Retrieval --> Skills
+
   Council --> Retrieval
-  Council --> Registry
-  FastAPI --> Approval
-  Approval --> SkillsRepo
+  Council --> LLM
+  Council --> Queue
+  Council --> Checkpoints
+
+  Approval --> Queue
+  Approval --> Skills
+  Approval --> Embedder
   Approval --> Qdrant
-  MCP --> SkillsRepo
+
+  AgentAPI --> Retrieval
+  AgentAPI --> GraphStore
+  AgentAPI --> LLM
+
+  MCP --> Skills
   MCP --> Retrieval
-  Agents --> MCP
+  MCP --> GraphStore
+  MCP --> Queue
 ```
 
 Anvay separates source-of-truth state from derived serving state:
@@ -104,12 +208,13 @@ Anvay separates source-of-truth state from derived serving state:
 | Layer | Component | Responsibility |
 |---|---|---|
 | API | `anvay/api/` | Product, source, council, proposal, skill, setup, auth, and dashboard routes. |
-| Registry | SQLite via `anvay/registry.py` | Products, runtime sources, sync manifests, sync runs, proposal/session metadata. |
-| Ingest | `anvay/ingest/` | Source diff, chunking, optional enrichment, embeddings, sparse vectors, Qdrant/GraphStore writes, stale cleanup. |
-| Retrieval | `anvay/retrieval/` | Multi-channel evidence engine (dense + BM25, exact grep, repo-map symbols, graph-local traversal, summaries, skills), cross-encoder rerank. |
-| Council | `anvay/council/` | Planner, expert fanout, synthesizer, repair, eval, finalizer, SSE progress. |
-| Skills | `anvay/skills/` | Agent Skills parsing, storage, provenance, approval write path, Git commit/push. |
-| MCP | `anvay/mcp_server/` | `find_skills`, `get_skill`, `query_code_context`, `hybrid_search_corpus`. |
+| Registry | SQLite via `anvay/registry.py` | Products, product membership, runtime sources, sync manifests, sync runs, enrichment jobs. |
+| Queue | SQLite via `anvay/council/queue.py` | Council sessions, proposal rows, eval results, improvement signals. |
+| Ingest | `anvay/ingest/` | Source diff, chunking, optional enrichment, embeddings, sparse vectors, graph extraction, derived-index writes, stale cleanup. |
+| Retrieval | `anvay/retrieval/` | Dense + BM25 search, RRF, configured rerank, plus evidence assembly from grep, repo-map symbols, graph-local candidates, summaries, and approved skills. |
+| Council | `anvay/council/` | Planner, expert fanout, synthesizer, repair, eval, finalizer, LangGraph checkpoints, SSE progress. |
+| Skills | `anvay/skills/` | Agent Skills parsing, storage, provenance, approval write path, Git commit/push, approved-skill indexing. |
+| MCP | `anvay/mcp_server/` | `find_skills`, `get_skill`, `query_code_context`, `grep_corpus`, `hybrid_search_corpus`, `evidence_search_corpus`, `ask_product_graph`. |
 | UI | `../anvay-ui/` | Product onboarding, sync logs, council sessions, review/approval UX. |
 
 For a code-level module map and end-to-end traces, use
@@ -125,57 +230,84 @@ sequenceDiagram
   participant UI as Anvay UI
   participant API as FastAPI
   participant Registry as SQLite registry
+  participant Source as Source adapter
   participant Ingest as Ingest pipeline
   participant Qdrant
   participant Graph as FalkorDB Graph
+  participant RepoMap as Repo map JSON
+  participant Queue as Proposal queue
   participant Council as Expert council
-  participant Skills as Skills repo
-  participant MCP as MCP clients
+  participant Skills as Skills checkout
+  participant MCP as MCP server
+  participant Agent as MCP client
 
   User->>UI: Create product + add source
-  UI->>API: POST /products/{id}/sources
-  API->>Registry: Store encrypted source credentials
+  UI->>API: POST /products + POST /products/{product}/sources
+  API->>Registry: Store product, membership, encrypted source config
   User->>UI: Sync source
-  UI->>API: POST /sources/{id}/sync
-  API->>Ingest: Start background sync
+  UI->>API: POST /products/{product}/sources/{source}/sync
+  API->>Registry: Mark runtime source syncing
+  API-->>UI: Return queued=true
+  API->>Source: Clone repo or open filesystem / Jira / Confluence source
+  Source->>Ingest: Stream resource refs + contents
   Ingest->>Registry: Load manifest + compute diff
-  Ingest->>Qdrant: Upsert changed chunks
-  Ingest->>Graph: Upsert changed entities/edges
-  Ingest->>Qdrant: Delete stale/removed chunks
-  Ingest->>Graph: Retire deleted graph resources
-  Ingest->>Registry: Persist successful manifest
+  Ingest->>Qdrant: Upsert changed code/text chunks with product_id
+  Ingest->>Graph: Upsert changed graph nodes/edges
+  Ingest->>Qdrant: Delete stale chunk IDs after successful upsert
+  Ingest->>Graph: Retire removed graph facts
+  Ingest->>Registry: Persist manifest + sync run counts
+  API->>RepoMap: Save combined symbol outline for product
+  API-->>UI: Stream sync log until done
+
   User->>UI: Run council
-  UI->>API: POST /council/sessions
-  API->>Council: Start bounded LangGraph workflow
-  Council->>Qdrant: Retrieve hybrid vector/text context
-  Council->>Graph: Resolve & traverse graph paths
-  Council->>Registry: Queue skill proposals
+  UI->>API: POST /products/{product}/council/sessions
+  API->>Queue: Create session + load prior skill signals
+  API->>Council: Start background LangGraph run
+  Council->>Qdrant: Dense + BM25 search, RRF, rerank
+  Council->>RepoMap: Add lexically ranked symbol outline
+  Council->>Graph: Resolve anchors + traverse local graph when useful
+  Council-->>UI: Stream planner/expert/synth/eval events over SSE
+  Council->>Queue: Enqueue complete proposal + eval results
+
   User->>UI: Review + approve
-  UI->>API: POST /proposals/{id}/approve
-  API->>Skills: Commit approved SKILL.md
-  API->>Qdrant: Index approved skill body
-  MCP->>Skills: Serve approved skills
-  MCP->>Qdrant: Serve product-scoped vector context
-  MCP->>Graph: Serve graph context
+  UI->>API: POST /proposals/{proposal}/approve
+  API->>Queue: Load pending proposal
+  API->>Skills: Write SKILL.md, commit, push
+  API->>Qdrant: Embed + index approved skill body
+  API->>Queue: Mark approved + record approval signal
+
+  Agent->>MCP: find_skills / get_skill
+  MCP->>Skills: Load approved product skills
+  Agent->>MCP: query_code_context / hybrid_search_corpus
+  MCP->>Qdrant: Product-scoped dense + BM25 retrieval
+  Agent->>MCP: evidence_search_corpus / ask_product_graph
+  MCP->>Graph: Resolve graph anchors + paths
+  MCP->>Qdrant: Fetch cited evidence
+  Agent->>MCP: report_outcome
+  MCP->>Queue: Record skill outcome signal
 ```
 
 ## Product Skill Lifecycle
 
 ```mermaid
 flowchart TD
-  Topic["Council topic"] --> Planner["Planner"]
-  Planner --> Experts["Expert reports: architect, domain, quality"]
-  Experts --> Synth["Synthesizer writes Markdown skill"]
-  Synth --> Parse["Parse citations + validate 13-section structure"]
-  Parse --> Complete{"Complete + faithful?"}
-  Complete -- "no" --> Repair["Targeted repair, max 3 attempts"]
-  Repair --> Parse
-  Complete -- "yes" --> Eval["Deterministic eval checks"]
-  Eval --> Queue["Queue proposal"]
+  Topic["Council topic"] --> Planner["Planner builds evidence plan"]
+  Planner --> Architect["Architect report"]
+  Planner --> Domain["Domain expert report"]
+  Planner --> Quality["Quality expert report"]
+  Architect --> Synth["Synthesizer writes product_master Markdown"]
+  Domain --> Synth
+  Quality --> Synth
+  Synth --> Repair["Completeness repair loop, max 3 attempts"]
+  Repair --> Eval["Deterministic checks: identity, structure, name, citations, trigger"]
+  Eval --> Complete{"Complete and faithful?"}
+  Complete -- "no" --> Stop["Stop session, no proposal queued"]
+  Complete -- "yes" --> Finalizer["Finalizer emits proposal"]
+  Finalizer --> Queue["Queue pending proposal"]
   Queue --> Review["Human review"]
-  Review -->|approve| Publish["Commit SKILL.md + index skill"]
-  Review -->|edit| Publish
-  Review -->|reject| Stop["No skill written"]
+  Review -->|approve| Publish["Write SKILL.md, commit/push, index skill body"]
+  Review -->|edit then approve| Publish
+  Review -->|reject| Reject["Record rejection signal, no skill written"]
 ```
 
 The council emits one Markdown product skill, not JSON. Incomplete drafts never enter the
