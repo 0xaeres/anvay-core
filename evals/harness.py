@@ -19,13 +19,13 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, computed_field
 
+from anvay.config import AnvayConfig
+from anvay.connectors.local_fs import LocalFsConfig, LocalFsSource
+from anvay.ingest.pipeline import IngestStats, run_ingest
 from evals.run_code_eval import CodeReport
 from evals.run_code_eval import run as run_code_eval
 from evals.run_ragas import Report as RagReport
 from evals.run_ragas import run as run_rag_eval
-from anvay.config import AnvayConfig
-from anvay.connectors.local_fs import LocalFsConfig, LocalFsSource
-from anvay.ingest.pipeline import IngestStats, run_ingest
 from tests.eval.harness import EvalReport as RetrievalReport
 from tests.eval.harness import load_queries
 from tests.eval.harness import run_eval as run_retrieval_eval

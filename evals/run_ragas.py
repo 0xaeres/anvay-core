@@ -30,6 +30,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from anvay.config import AnvayConfig
+from anvay.llm.client import ChatClient
+from anvay.retrieval.pipeline import RetrievalContext, retrieve
 from evals.common import GoldenItem, load_golden
 from evals.judges.llm import (
     evaluator_client,
@@ -38,9 +41,6 @@ from evals.judges.llm import (
     judge_score,
 )
 from evals.metrics import mean
-from anvay.config import AnvayConfig
-from anvay.llm.client import ChatClient
-from anvay.retrieval.pipeline import RetrievalContext, retrieve
 
 log = logging.getLogger("evals.ragas")
 
