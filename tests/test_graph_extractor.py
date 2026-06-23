@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from nexus.graph.extractor import extract_resource_graph, graph_node_ids_for_chunk
-from nexus.ingest.chunker import chunk_resource
-from nexus.ingest.models import ResourceRef
+from anvay.graph.extractor import extract_resource_graph, graph_node_ids_for_chunk
+from anvay.ingest.chunker import chunk_resource
+from anvay.ingest.models import ResourceRef
 
 
 def test_python_resource_graph_extracts_symbols_routes_imports_and_config() -> None:

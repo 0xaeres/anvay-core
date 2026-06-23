@@ -1,4 +1,4 @@
-from nexus.retrieval.hybrid import Hit, rrf_merge
+from anvay.retrieval.hybrid import Hit, rrf_merge
 
 
 def _h(id_: str, source: str = "dense") -> Hit:

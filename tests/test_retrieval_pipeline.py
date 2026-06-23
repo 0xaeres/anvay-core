@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nexus.retrieval import pipeline
+from anvay.retrieval import pipeline
 
 
 class FakeEmbedder:

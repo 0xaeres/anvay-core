@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from nexus.registry import Registry
+from anvay.registry import Registry
 
 
 @pytest.fixture
@@ -131,11 +131,11 @@ def test_registry_resource_manifest_roundtrip(registry: Registry) -> None:
 
 
 def test_registry_refuses_plaintext_source_secrets(registry: Registry, monkeypatch) -> None:
-    from nexus.auth.token_cipher import TokenCipherError
+    from anvay.auth.token_cipher import TokenCipherError
 
-    monkeypatch.delenv("NEXUS_TOKEN_KEY", raising=False)
+    monkeypatch.delenv("ANVAY_TOKEN_KEY", raising=False)
 
-    with pytest.raises(TokenCipherError, match="NEXUS_TOKEN_KEY is required"):
+    with pytest.raises(TokenCipherError, match="ANVAY_TOKEN_KEY is required"):
         registry.upsert_source(
             {
                 "product": "test-prod",
@@ -147,10 +147,10 @@ def test_registry_refuses_plaintext_source_secrets(registry: Registry, monkeypat
 
 
 def test_registry_source_encryption(registry: Registry, monkeypatch) -> None:
-    from nexus.auth.token_cipher import TokenCipher
+    from anvay.auth.token_cipher import TokenCipher
 
     key = TokenCipher.generate_key()
-    monkeypatch.setenv("NEXUS_TOKEN_KEY", key)
+    monkeypatch.setenv("ANVAY_TOKEN_KEY", key)
 
     source = {
         "product": "test-prod",

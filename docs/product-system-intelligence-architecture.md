@@ -1,8 +1,8 @@
-# Nexus Product-System Intelligence Architecture
+# Anvay Product-System Intelligence Architecture
 
 ## Executive Summary
 
-Nexus should evolve from a product-scoped skill and RAG engine into a
+Anvay should evolve from a product-scoped skill and RAG engine into a
 product-system intelligence layer that helps coding and non-coding agents answer
 questions about product geography, change impact, similar work, ownership,
 debugging paths, under-documented areas, and technical debt. This should be an
@@ -11,9 +11,9 @@ extension of the current architecture, not a rewrite.
 The durable design principle is: Qdrant remains the evidence retrieval layer,
 SQLite remains the sync source of truth, and FalkorDB is the required
 product-scoped derived graph index. FalkorDB is part of the baseline runtime
-because Nexus needs reliable multi-hop topology for product-system questions.
+because Anvay needs reliable multi-hop topology for product-system questions.
 Eval gates decide whether graph-shaped answers are good enough for default UX
-confidence and promotion, not whether the graph backend exists. Current Nexus
+confidence and promotion, not whether the graph backend exists. Current Anvay
 retrieval remains deliberately simple and measured; graph traversal seeds,
 filters, and explains retrieval evidence rather than replacing dense + BM25 ->
 RRF -> reranker.
@@ -49,7 +49,7 @@ External references used in this design:
 
 ## Target Architecture
 
-Nexus should use a three-store model:
+Anvay should use a three-store model:
 
 - SQLite registry: source of truth for products, runtime sources, sync runs,
   source manifests, proposal state, council sessions, and graph extraction
@@ -72,12 +72,12 @@ Alternatives are historical context, not active implementation targets:
 - Qdrant + repo map only: lowest operational risk, enough for many coding
   context tasks, weak at transitive impact and ownership paths.
 - Neo4j: already present as a dependency, mature Cypher ecosystem, but
-  GraphRAG was previously cut from Nexus and needs a measured win before being
+  GraphRAG was previously cut from Anvay and needs a measured win before being
   reintroduced.
 - Kuzu or another embedded graph: attractive for local single-node dev and low
   ops, weaker for multi-user enterprise deployments and remote product indexes.
 
-The required direction is a graph adapter boundary. Internally, Nexus talks to
+The required direction is a graph adapter boundary. Internally, Anvay talks to
 `GraphStore` concepts rather than FalkorDB-specific APIs. FalkorDB is the
 backend from the start. Graph-powered answer quality remains eval-gated, but
 the graph service is not optional and there is no graph-disabled mode.
@@ -107,8 +107,8 @@ manifest should add graph fields alongside existing embedding/enrichment fields:
 
 Repository parsing should start deterministic:
 
-- Reuse tree-sitter parsing already used by `nexus/ingest/chunker.py` and
-  `nexus/retrieval/repomap.py`.
+- Reuse tree-sitter parsing already used by `anvay/ingest/chunker.py` and
+  `anvay/retrieval/repomap.py`.
 - Extract `CodeFile`, `Module`, `Function`, `Class`, imports/exports, route
   handlers, test declarations, migrations, config files, feature flag reads, and
   schema definitions from syntax and file conventions.
@@ -137,7 +137,7 @@ Jira and Confluence should be optional source types:
 - Jira REST paging and expansion should be handled explicitly so descriptions,
   comments, links, and status history do not require blind refetch loops.
 - Confluence sync should ingest page text and metadata first. Visual diagrams,
-  screenshots, and attachments are out of scope until Nexus has a visual
+  screenshots, and attachments are out of scope until Anvay has a visual
   document pipeline.
 
 Failure handling must preserve good existing state:
@@ -313,8 +313,8 @@ Tenancy model:
 
 Keep the current two-collection strategy unless evals show a better layout:
 
-- `nexus_code`: code chunks with dense vector and BM25 sparse vector.
-- `nexus_text`: docs, skills, tickets, PR summaries, runbooks, incidents, and
+- `anvay_code`: code chunks with dense vector and BM25 sparse vector.
+- `anvay_text`: docs, skills, tickets, PR summaries, runbooks, incidents, and
   natural-language chunks with dense vector and BM25 sparse vector.
 
 Current payload fields remain mandatory:
@@ -365,7 +365,7 @@ Graph ids in Qdrant should be used as:
 
 ## E. Query And GraphRAG Orchestration
 
-Nexus should answer arbitrary product questions through one generic GraphRAG
+Anvay should answer arbitrary product questions through one generic GraphRAG
 engine. The system must not depend on hardcoded feature routes to answer
 multi-hop questions. Named intents such as context lookup, change impact,
 dependency trace, ownership discovery, similar work, observability, and effort
@@ -517,7 +517,7 @@ Latency targets for agent thought loops:
 Failure behavior:
 
 - If FalkorDB is unavailable, startup, sync, health, and GraphRAG calls fail
-  clearly; Nexus does not silently switch to graph-disabled behavior.
+  clearly; Anvay does not silently switch to graph-disabled behavior.
 - If Qdrant is unavailable, final cited answers cannot be produced; topology
   alone is insufficient for material claims.
 - If reranker fails, keep current soft-fail behavior and return fused order with

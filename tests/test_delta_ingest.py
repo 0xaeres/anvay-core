@@ -7,15 +7,15 @@ from typing import ClassVar
 
 import pytest
 
-from nexus.config import EnrichCfg, NexusConfig
-from nexus.ingest import pipeline
-from nexus.ingest.models import EmbeddedChunk, ResourceRef
-from nexus.registry import Registry
-from nexus.retrieval.sparse import SparseVector
+from anvay.config import AnvayConfig, EnrichCfg
+from anvay.ingest import pipeline
+from anvay.ingest.models import EmbeddedChunk, ResourceRef
+from anvay.registry import Registry
+from anvay.retrieval.sparse import SparseVector
 
 
-def _config(tmp_path: Path) -> NexusConfig:
-    return NexusConfig(
+def _config(tmp_path: Path) -> AnvayConfig:
+    return AnvayConfig(
         models={
             "council": {"provider": "test", "model": "test"},
             "light": {"provider": "test", "model": "test"},

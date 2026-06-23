@@ -7,10 +7,10 @@ import pytest
 from falkordb.edge import Edge
 from falkordb.node import Node
 
-from nexus.config import GraphStoreCfg
-from nexus.graph.extractor import extract_resource_graph
-from nexus.graph.store import FalkorGraphStore, _query_result_to_graph
-from nexus.ingest.models import ResourceRef
+from anvay.config import GraphStoreCfg
+from anvay.graph.extractor import extract_resource_graph
+from anvay.graph.store import FalkorGraphStore, _query_result_to_graph
+from anvay.ingest.models import ResourceRef
 
 
 class FakeQueryResult:
@@ -144,17 +144,17 @@ def test_falkordb_result_conversion_handles_path_nodes_and_relationships() -> No
 
 @pytest.mark.asyncio
 async def test_falkordb_store_contract_live() -> None:
-    host = os.environ.get("NEXUS_FALKORDB_HOST")
+    host = os.environ.get("ANVAY_FALKORDB_HOST")
     if not host:
-        pytest.skip("set NEXUS_FALKORDB_HOST to run FalkorDB contract test")
+        pytest.skip("set ANVAY_FALKORDB_HOST to run FalkorDB contract test")
 
     cfg = GraphStoreCfg(
         host=host,
-        port=int(os.environ.get("NEXUS_FALKORDB_PORT", "6379")),
-        username=os.environ.get("NEXUS_FALKORDB_USERNAME") or None,
-        password=os.environ.get("NEXUS_FALKORDB_PASSWORD") or None,
-        ssl=os.environ.get("NEXUS_FALKORDB_SSL") == "1",
-        graph_prefix="nexus_test",
+        port=int(os.environ.get("ANVAY_FALKORDB_PORT", "6379")),
+        username=os.environ.get("ANVAY_FALKORDB_USERNAME") or None,
+        password=os.environ.get("ANVAY_FALKORDB_PASSWORD") or None,
+        ssl=os.environ.get("ANVAY_FALKORDB_SSL") == "1",
+        graph_prefix="anvay_test",
     )
     store = FalkorGraphStore(cfg)
     product_id = f"contract-{uuid.uuid4().hex[:8]}"

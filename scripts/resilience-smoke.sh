@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Slice 7 resilience smoke - exercises degradation modes per ENGINEERING.md §17 gate 14b.
 #
-# Requires: docker compose stack already up, nexus API running on :8000, and a
+# Requires: docker compose stack already up, anvay API running on :8000, and a
 # product with at least one ingested resource.
 
 set -euo pipefail

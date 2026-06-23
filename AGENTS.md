@@ -1,9 +1,9 @@
-# Nexus — agent & contributor context
+# Anvay — agent & contributor context
 
-This is the Python backend for **Nexus**, a sovereign, MCP-native **context
+This is the Python backend for **Anvay**, a sovereign, MCP-native **context
 engine**: it ingests an org's code + docs, runs a bounded expert LLM council to
 draft one curated **product skill** (human-approved), and serves it via MCP to any AI
-client. The sibling repo `../nexus-ui/` is the Next.js web UI.
+client. The sibling repo `../anvay-ui/` is the Next.js web UI.
 
 ## Read first
 
@@ -52,7 +52,7 @@ client. The sibling repo `../nexus-ui/` is the Next.js web UI.
   token-budgeted. Built at sync time, persisted under
   `<state>/repomaps/<product>.json`.
 - **Evidence chunks per session is capped** at `EVIDENCE_CHUNKS_PER_SESSION_CAP = 20`
-  in [`nexus/council/agents/skill.py`](./nexus/council/agents/skill.py).
+  in [`anvay/council/agents/skill.py`](./anvay/council/agents/skill.py).
 
 ## Conventions
 
@@ -61,13 +61,13 @@ client. The sibling repo `../nexus-ui/` is the Next.js web UI.
 - **Pydantic** for data crossing process boundaries; **dataclasses** for
   in-memory only; plain dicts only in tests.
 - **Async by default** for anything touching the network or significant I/O.
-- Import order: stdlib → third-party → `nexus.*` (ruff enforces).
+- Import order: stdlib → third-party → `anvay.*` (ruff enforces).
 - No `print()` — use `log = logging.getLogger(__name__)`.
 
 ## Before you commit
 
 ```bash
-uv run ruff check nexus tests        # lint — must be clean
+uv run ruff check anvay tests        # lint — must be clean
 uv run pytest -q                     # tests — must be green (146 at last count)
 ```
 
@@ -90,5 +90,5 @@ change against a live product index.
   cache / circuit breakers) without an eval-set or feedback win to justify
   the complexity.
 - Don't store secrets in plaintext — connector tokens are Fernet-encrypted
-  (`NEXUS_TOKEN_KEY`). Credentials are scoped per product source, not as a
+  (`ANVAY_TOKEN_KEY`). Credentials are scoped per product source, not as a
   global or product-wide credential bundle.

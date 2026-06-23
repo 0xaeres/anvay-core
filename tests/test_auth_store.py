@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from nexus.auth.store import AuthError, AuthStore, hash_password
+from anvay.auth.store import AuthError, AuthStore, hash_password
 
 
 def test_password_hash_uses_argon2_and_unique_salts() -> None:
@@ -88,8 +88,8 @@ def test_auth_store_migrates_legacy_user_roles(tmp_path: Path) -> None:
 def test_bootstrap_admin_repairs_existing_matching_user(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.delenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL", raising=False)
-    monkeypatch.delenv("NEXUS_BOOTSTRAP_ADMIN_PASSWORD", raising=False)
+    monkeypatch.delenv("ANVAY_BOOTSTRAP_ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("ANVAY_BOOTSTRAP_ADMIN_PASSWORD", raising=False)
     store = AuthStore(tmp_path / "auth.db", secret_key="session-secret")
     user = store.create_user(
         email="owner@example.com",
@@ -97,8 +97,8 @@ def test_bootstrap_admin_repairs_existing_matching_user(
         role="viewer",
         status="pending",
     )
-    monkeypatch.setenv("NEXUS_BOOTSTRAP_ADMIN_EMAIL", "owner@example.com")
-    monkeypatch.setenv("NEXUS_BOOTSTRAP_ADMIN_PASSWORD", "another secure password")
+    monkeypatch.setenv("ANVAY_BOOTSTRAP_ADMIN_EMAIL", "owner@example.com")
+    monkeypatch.setenv("ANVAY_BOOTSTRAP_ADMIN_PASSWORD", "another secure password")
     AuthStore(tmp_path / "auth.db", secret_key="session-secret")
 
     loaded = store.get_user_by_email("owner@example.com")

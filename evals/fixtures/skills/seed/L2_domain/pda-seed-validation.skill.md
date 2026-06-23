@@ -13,7 +13,7 @@ composes_with:
   - org/owasp-input-validation
 provenance:
   council_session: cs_eval_fixture_pda_seed_validation
-  validated_by: eval-fixture@nexus
+  validated_by: eval-fixture@anvay
   validated_at: 2026-05-18T00:00:00Z
   evidence_chunks: []
   adversary_critique: "edge case on PDA bump seeds when client supplies an off-curve seed"

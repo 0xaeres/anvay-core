@@ -1,8 +1,8 @@
 // kotlin_demo.kt
-package com.nexus.eval
+package com.anvay.eval
 
 object AppDatabase {
-    val databaseName = "nexus_eval_db"
+    val databaseName = "anvay_eval_db"
 }
 
 class UserRepository {

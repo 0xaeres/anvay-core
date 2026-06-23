@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.graph import rag
-from nexus.graph.models import GraphEdge, GraphNode, GraphQueryResult, GraphRAGQuery
-from nexus.graph.rag import answer_graph_rag
-from nexus.llm.client import ChatResponse, TokenUsage
-from nexus.retrieval.hybrid import Hit
-from nexus.retrieval.pipeline import RetrievalResult
+from anvay.graph import rag
+from anvay.graph.models import GraphEdge, GraphNode, GraphQueryResult, GraphRAGQuery
+from anvay.graph.rag import answer_graph_rag
+from anvay.llm.client import ChatResponse, TokenUsage
+from anvay.retrieval.hybrid import Hit
+from anvay.retrieval.pipeline import RetrievalResult
 
 
 def _node(stable_id: str, labels: list[str], **props) -> GraphNode:
@@ -312,7 +312,7 @@ async def test_graph_rag_broad_flow_question_retrieves_before_clarifying(monkeyp
                     score=0.8,
                     source="dense",
                     payload={
-                        "resource_uri": "nexus/retrieval/pipeline.py",
+                        "resource_uri": "anvay/retrieval/pipeline.py",
                         "start_line": 1,
                         "content": "Retrieval pipeline: dense + sparse -> RRF merge -> rerank.",
                         "graph_node_ids": [],
@@ -337,8 +337,8 @@ async def test_graph_rag_broad_flow_question_retrieves_before_clarifying(monkeyp
     )
 
     assert answer.needs_clarification is False
-    assert answer.citations[0].anchor == "nexus/retrieval/pipeline.py:1"
-    assert graph.resolved == [("prod", "nexus/retrieval/pipeline.py", 3)]
+    assert answer.citations[0].anchor == "anvay/retrieval/pipeline.py:1"
+    assert graph.resolved == [("prod", "anvay/retrieval/pipeline.py", 3)]
     assert calls[0][0] == "can you please explain how the retrieval flow works like, in detail?"
 
 

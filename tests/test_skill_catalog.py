@@ -1,4 +1,4 @@
-from nexus.council.skill_catalog import MAX_SKILL_NAME_CHARS, SKILL_CATALOG, catalog_plan
+from anvay.council.skill_catalog import MAX_SKILL_NAME_CHARS, SKILL_CATALOG, catalog_plan
 
 
 def test_catalog_has_single_product_skill() -> None:

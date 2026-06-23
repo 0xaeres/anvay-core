@@ -5,18 +5,18 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from nexus.config import NexusConfig
-from nexus.council.queue import ProposalQueue
-from nexus.registry import Registry
-from nexus.retrieval.repomap import repomap_path_for
-from nexus.skills.models import AppliesTo, Citation, Provenance, Skill, SkillProposal
-from nexus.skills.store import SkillStore
-from nexus.tools import delete_product as delete_product_module
-from nexus.tools.delete_product import delete_product
+from anvay.config import AnvayConfig
+from anvay.council.queue import ProposalQueue
+from anvay.registry import Registry
+from anvay.retrieval.repomap import repomap_path_for
+from anvay.skills.models import AppliesTo, Citation, Provenance, Skill, SkillProposal
+from anvay.skills.store import SkillStore
+from anvay.tools import delete_product as delete_product_module
+from anvay.tools.delete_product import delete_product
 
 
-def _config(tmp_path: Path) -> NexusConfig:
-    return NexusConfig(
+def _config(tmp_path: Path) -> AnvayConfig:
+    return AnvayConfig(
         models={
             "council": {"provider": "test", "model": "test"},
             "light": {"provider": "test", "model": "test"},
@@ -154,3 +154,57 @@ def test_delete_product_dry_run_then_removes_local_state(
     assert not repomap_path.exists()
     with sqlite3.connect(cfg.storage.council_checkpoint) as conn:
         assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+
+
+def test_delete_product_continues_when_derived_stores_are_gone(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cfg = _config(tmp_path)
+    registry = Registry(tmp_path / "registry.db")
+    now = datetime.now(UTC).isoformat()
+    registry.upsert_product({
+        "id": "demo",
+        "name": "Demo",
+        "tagline": "",
+        "owner": {},
+        "onboardedAt": now,
+    })
+
+    class MissingIndexer:
+        async def count_by_product(self, *, product_id: str) -> dict[str, int]:
+            raise RuntimeError("qdrant unavailable")
+
+        async def delete_by_product(self, *, product_id: str) -> dict[str, int]:
+            raise RuntimeError("qdrant unavailable")
+
+        async def aclose(self) -> None:
+            pass
+
+    class MissingGraphStore:
+        async def delete_product(self, *, product_id: str) -> int:
+            raise RuntimeError("falkordb unavailable")
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        delete_product_module,
+        "create_indexer",
+        lambda config: MissingIndexer(),
+    )
+    monkeypatch.setattr(
+        delete_product_module,
+        "create_graph_store",
+        lambda config: MissingGraphStore(),
+    )
+
+    report = asyncio.run(delete_product(product_id="demo", config=cfg, dry_run=False))
+
+    assert registry.get_product("demo") is None
+    assert report.index == {}
+    assert report.graph_deleted is False
+    assert report.derived_errors == [
+        "qdrant purge skipped: qdrant unavailable",
+        "graph purge skipped: falkordb unavailable",
+    ]

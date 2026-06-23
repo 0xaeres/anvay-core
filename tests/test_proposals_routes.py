@@ -5,17 +5,17 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from nexus.api.app import app
-from nexus.api.deps import get_config_dep, get_proposal_queue, get_registry
-from nexus.api.routes import proposals
-from nexus.config import NexusConfig
-from nexus.council.queue import ProposalQueue
-from nexus.registry import Registry
-from nexus.skills.models import Citation, SkillProposal
+from anvay.api.app import app
+from anvay.api.deps import get_config_dep, get_proposal_queue, get_registry
+from anvay.api.routes import proposals
+from anvay.config import AnvayConfig
+from anvay.council.queue import ProposalQueue
+from anvay.registry import Registry
+from anvay.skills.models import Citation, SkillProposal
 
 
-def _config(tmp_path: Path) -> NexusConfig:
-    return NexusConfig(
+def _config(tmp_path: Path) -> AnvayConfig:
+    return AnvayConfig(
         models={
             "council": {"provider": "test", "model": "test"},
             "light": {"provider": "test", "model": "test"},

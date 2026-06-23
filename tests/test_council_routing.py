@@ -1,22 +1,22 @@
 """Routing shape of the single product-skill council graph."""
 
-from nexus.config import (
+from anvay.config import (
+    AnvayConfig,
     EnrichCfg,
     IngestionCfg,
     ModelCfg,
     ModelsCfg,
-    NexusConfig,
     ServerCfg,
     StorageCfg,
     VectorStoreCfg,
 )
-from nexus.council.graph import build_graph
-from nexus.council.state import initial_state
+from anvay.council.graph import build_graph
+from anvay.council.state import initial_state
 
 
-def _make_cfg() -> NexusConfig:
+def _make_cfg() -> AnvayConfig:
     m = ModelCfg(provider="deepinfra", model="x")
-    return NexusConfig(
+    return AnvayConfig(
         skills_repo="git@example:repo.git",
         connectors=[],
         vector_store=VectorStoreCfg(),
@@ -48,7 +48,7 @@ def test_initial_state_revision_zero() -> None:
 
 def test_build_graph_has_skill_nodes() -> None:
     """Smoke: graph has the bounded product-skill council nodes."""
-    from nexus.council.graph import CouncilHandles
+    from anvay.council.graph import CouncilHandles
 
     handles = CouncilHandles.__new__(CouncilHandles)
     handles.retrieval = None  # type: ignore[assignment]

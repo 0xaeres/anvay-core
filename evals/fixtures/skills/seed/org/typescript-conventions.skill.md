@@ -8,7 +8,7 @@ quality_score: 0.88
 external_sources:
   - https://www.typescriptlang.org/docs/handbook/declaration-files/do-s-and-don-ts.html
   - https://google.github.io/styleguide/tsguide.html
-ratified_by: org-admin@nexus
+ratified_by: org-admin@anvay
 ratified_at: 2026-05-18T00:00:00Z
 applies_to:
   files: ["**/*.ts", "**/*.tsx"]

@@ -10,7 +10,7 @@
 # Listens on $EMBEDDER_PORT (default 8080). Endpoint:
 #   POST /v1/embeddings   { "input": [...] }  -> OpenAI-compatible embeddings
 #
-# Task-LoRA dual mode is handled at the client layer (nexus/ingest/embedder.py)
+# Task-LoRA dual mode is handled at the client layer (anvay/ingest/embedder.py)
 # by prepending the appropriate instruction prefix per chunk type.
 
 set -euo pipefail

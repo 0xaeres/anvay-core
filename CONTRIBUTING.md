@@ -1,4 +1,4 @@
-# Contributing to Nexus
+# Contributing to Anvay
 
 > **Audience:** software engineers comfortable with basic LLM / RAG concepts
 > (embeddings, chunking, retrieval).
@@ -10,17 +10,17 @@
 
 Read these in order:
 
-1. [`README.md`](./README.md) — what Nexus is + local setup.
+1. [`README.md`](./README.md) — what Anvay is + local setup.
 2. [`AGENTS.md`](./AGENTS.md) — the invariants you cannot break.
 3. [`ENGINEERING.md`](./ENGINEERING.md) — the formal spec. Skim §1-5 now;
    come back as needed.
 
 ## 1. Mental model
 
-Nexus is a **per-product RAG + curation pipeline** with a hard human-in-the-
+Anvay is a **per-product RAG + curation pipeline** with a hard human-in-the-
 loop gate. The flow has three big phases.
 
-**Phase 1 — Ingest (continuous).** A source yields resources. Nexus first
+**Phase 1 — Ingest (continuous).** A source yields resources. Anvay first
 computes a source manifest diff in SQLite (`added`, `updated`, `removed`,
 `unchanged`) using canonical resource URIs + SHA-256 content hashes +
 embedding config version. Unchanged resources are skipped. Changed resources
@@ -55,7 +55,7 @@ served via MCP to any AI client connected to the product.
 
 Code that breaks either invariant is a bug, regardless of how clever it is.
 
-## 3. Backend code map (`nexus/`)
+## 3. Backend code map (`anvay/`)
 
 ```
 api/
@@ -128,14 +128,14 @@ setup/
 
 daemon.py           Continuous index daemon — bootstrap + manager.updates() loop
 registry.py         SQLite products/users/runtime-sources/sync manifests
-config.py           NexusConfig + ${env} substitution
-cli.py              `nexus council draft`, `nexus skill show`, etc.
+config.py           AnvayConfig + ${env} substitution
+cli.py              `anvay council draft`, `anvay skill show`, etc.
 ```
 
 The trees you'll touch most are `ingest/`, `retrieval/`, and
 `council/agents/`. Most bugs hide there.
 
-## 4. Frontend code map (`../nexus-ui/`)
+## 4. Frontend code map (`../anvay-ui/`)
 
 ```
 app/                Next.js routes
@@ -168,7 +168,7 @@ lib/
   product-context.ts  React context for current product + perms
 ```
 
-See [`../nexus-ui/DESIGN.md`](../nexus-ui/DESIGN.md) for the design system
+See [`../anvay-ui/DESIGN.md`](../anvay-ui/DESIGN.md) for the design system
 rules + IA contract.
 
 ## 5. End-to-end traces
@@ -178,7 +178,7 @@ rules + IA contract.
 1. UI: `/new` creates a product, then `POST /products/{id}/sources` with
    `type: "github"`, a product service-account PAT, and `repos: string[]`.
    The standalone source screen can add GitHub or local filesystem later.
-2. Backend: `nexus/api/routes/sources.py::add_source` upserts into the
+2. Backend: `anvay/api/routes/sources.py::add_source` upserts into the
    registry, returns the new source.
 3. UI: `POST /products/{id}/sources/{name}/sync` → `syncSource(...)`.
 4. Backend: `sources.py::sync_source` schedules `_sync_source_contents(...)` as a
@@ -272,7 +272,7 @@ This ordering prevents knowledge-base poisoning:
 
 ### Trace 3 — Synthesizer writes the product skill
 
-`nexus/council/agents/skill.py`:
+`anvay/council/agents/skill.py`:
 
 1. `retrieve(ctx, product_id, topic, top_k=20, mode="auto")` →
    `RetrievalResult.hits`. Hits become planner `EvidenceChunk`s.
@@ -295,7 +295,7 @@ This ordering prevents knowledge-base poisoning:
 
 ### Trace 4 — Approve a proposal
 
-`nexus/skills/approval.py::approve_proposal`:
+`anvay/skills/approval.py::approve_proposal`:
 
 1. `queue.get(proposal_id)` — abort if missing; no-op if already approved.
 2. `_row_to_skill(row, actor)` — builds the `Skill` Pydantic model.
@@ -311,13 +311,13 @@ This ordering prevents knowledge-base poisoning:
 
 ```bash
 uv sync
-cp nexus.yaml.example nexus.yaml
+cp anvay.yaml.example anvay.yaml
 cp .env.example .env       # fill DEEPINFRA_API_KEY at minimum
 make services-up           # Qdrant + optional local llama.cpp embedder/reranker
-uv run uvicorn nexus.api.app:app --port 8000 --reload
+uv run uvicorn anvay.api.app:app --port 8000 --reload
 ```
 
-Default `nexus.yaml.example` uses Qdrant plus DeepInfra Qwen embedding/rerank
+Default `anvay.yaml.example` uses Qdrant plus DeepInfra Qwen embedding/rerank
 models, so low-resource machines do not need local model servers. Use
 `make local-models-up` when testing the optional `jina-local` profile
 (llama.cpp serving local Jina v4 embeddings + Jina Reranker v3 for offline/high-resource machines). Qdrant v1.18+ native
@@ -331,7 +331,7 @@ to CPU. Useful knobs:
 ```bash
 EMBEDDER_DEVICE=cpu RERANKER_DEVICE=cpu make services-up   # force CPU
 EMBEDDER_UBATCH=2048 RERANKER_UBATCH=2048 make services-up # larger RAM machine
-NEXUS_LOG_LEVEL=DEBUG uv run uvicorn nexus.api.app:app --port 8000 --reload
+ANVAY_LOG_LEVEL=DEBUG uv run uvicorn anvay.api.app:app --port 8000 --reload
 ```
 
 Default local embedder physical batch is intentionally conservative (`1024`) for
@@ -351,14 +351,14 @@ When switching embedding or reranking providers, update config deliberately:
   new reranker score scale
 - resync/reindex products after embedding provider/model/dim/profile changes
 
-Nexus does not currently process visual Confluence diagrams or image
+Anvay does not currently process visual Confluence diagrams or image
 attachments. Text around a diagram may be indexed, but boxes/arrows/labels in
 the image are not extracted, embedded, or cited.
 
 ### Frontend
 
 ```bash
-cd ../nexus-ui
+cd ../anvay-ui
 npm install
 npm run dev                # http://localhost:3000
 ```
@@ -366,7 +366,7 @@ npm run dev                # http://localhost:3000
 ### Tests + lint
 
 ```bash
-uv run ruff check nexus tests           # must be clean
+uv run ruff check anvay tests           # must be clean
 uv run pytest -q                        # unit + integration
 uv run pytest -m eval                   # opt-in retrieval benchmark
                                         #   (skips if Qdrant/embedder/reranker absent)
@@ -385,13 +385,13 @@ decisions compare the current stack against the published floors.
 
 ```bash
 # Run a council draft from the CLI (no UI):
-uv run nexus council draft --product my-api --topic "auth middleware"
+uv run anvay council draft --product my-api --topic "auth middleware"
 
 # Dry-run product cleanup:
-uv run nexus delete-product --product my-api
+uv run anvay delete-product --product my-api
 
 # Delete product-scoped SQLite rows, skills, repo map, checkpoints, and index entries:
-uv run nexus delete-product --product my-api --yes
+uv run anvay delete-product --product my-api --yes
 ```
 
 `--skip-qdrant` keeps the command usable when the retrieval backend is offline,
@@ -400,7 +400,7 @@ but leaves derived index entries behind until you clean that product later.
 ### MCP server
 
 ```bash
-uv run nexus-mcp-server --product my-api
+uv run anvay-mcp-server --product my-api
 # Add an entry in Claude Desktop's claude_desktop_config.json — see README.
 ```
 
@@ -409,7 +409,7 @@ uv run nexus-mcp-server --product my-api
 Five tinkering exercises to grow your intuition. Do them in order.
 
 **1. Reduce a chunker constant and watch the test fail.** Edit
-`nexus/ingest/chunker.py` and set `MAX_CHUNK_CHARS = 200`. Run
+`anvay/ingest/chunker.py` and set `MAX_CHUNK_CHARS = 200`. Run
 `uv run pytest tests/test_chunker.py -q`. Read the failure. Revert.
 
 **2. Add a query to the eval set + watch the floor break.** Edit
@@ -419,12 +419,12 @@ isn't well-indexed (e.g. a bullet-list-only doc). Run
 populated index. Watch recall drop. Revert (or fix the pipeline).
 
 **3. Trace a Synthesizer call through the LLM client.** In
-`nexus/llm/client.py::chat_markdown`, add a `log.info(...)` at the top of
+`anvay/llm/client.py::chat_markdown`, add a `log.info(...)` at the top of
 the continuation loop. Run a council session via the UI. Watch the logs.
 Remove the log statement.
 
 **4. Add a connector option to the UI.** In
-`nexus-ui/components/screens/ConnectorNew.tsx`, find the `CONNECTOR_OPTIONS`
+`anvay-ui/components/screens/ConnectorNew.tsx`, find the `CONNECTOR_OPTIONS`
 list. Add a stub option only when the backend can sync it. Confluence/Jira are
 planned as product-scoped source configs, but should not appear until wired.
 Roll back.
@@ -443,28 +443,28 @@ left alone and a background enrichment job is queued.
 
 ### Add a new API endpoint
 
-1. Create the handler in `nexus/api/routes/<area>.py` using an existing
+1. Create the handler in `anvay/api/routes/<area>.py` using an existing
    router (e.g. `router = APIRouter(tags=["foo"])`).
-2. Include the router in `nexus/api/app.py` if it's a new file.
-3. Add the typed client in `nexus-ui/lib/api/index.ts`.
+2. Include the router in `anvay/api/app.py` if it's a new file.
+3. Add the typed client in `anvay-ui/lib/api/index.ts`.
 4. Add a screen that calls it (or wire it into an existing screen).
 5. Add an integration test under `tests/test_<area>.py` using `TestClient`
    and `dependency_overrides`.
 
 ### Add a new tool to the MCP server
 
-1. Define the handler in `nexus/mcp_server/tools.py` (async function
+1. Define the handler in `anvay/mcp_server/tools.py` (async function
    `(state, **kwargs) -> dict`).
-2. Register the schema + dispatch in `nexus/mcp_server/server.py`'s
+2. Register the schema + dispatch in `anvay/mcp_server/server.py`'s
    `list_tools()` + `call_tool()`.
 3. Add a test against the helper that doesn't require a live MCP client.
 
 ### Add a new chunker language
 
 1. Add the tree-sitter package to `pyproject.toml`.
-2. Extend `nexus/ingest/chunker.py::_LANGS` with the new `_LangCfg`.
+2. Extend `anvay/ingest/chunker.py::_LANGS` with the new `_LangCfg`.
 3. Extend `_lang_for()` to map the extension.
-4. Mirror the new node types in `nexus/retrieval/repomap.py::_KIND_BY_NODE`
+4. Mirror the new node types in `anvay/retrieval/repomap.py::_KIND_BY_NODE`
    so the repo map captures them too.
 5. Add a test in `tests/test_chunker.py` with a small sample file.
 
@@ -521,9 +521,9 @@ for nDCG@10 `>= 0.75`, Recall@10 `>= 0.80`, and pairwise preference accuracy
 - **Async by default** for anything touching the network or doing
   significant I/O.
 - **No `print()`.** Use `log = logging.getLogger(__name__)`. API startup
-  calls `nexus.logging_config.setup_logging()`, and `NEXUS_LOG_LEVEL=DEBUG`
+  calls `anvay.logging_config.setup_logging()`, and `ANVAY_LOG_LEVEL=DEBUG`
   is the normal way to turn up backend detail.
-- Import order: stdlib → third-party → `nexus.*`. Ruff/isort enforces.
+- Import order: stdlib → third-party → `anvay.*`. Ruff/isort enforces.
 - **Type-annotate everything** that crosses a function boundary. The
   ergonomic value of annotations on locals is debatable; on signatures
   it's not.
@@ -553,11 +553,11 @@ for nDCG@10 `>= 0.75`, Recall@10 `>= 0.80`, and pairwise preference accuracy
 - [`README.md`](./README.md) — quickstart.
 - [`AGENTS.md`](./AGENTS.md) — invariants.
 - [`ENGINEERING.md`](./ENGINEERING.md) — the formal spec.
-- [`../nexus-ui/DESIGN.md`](../nexus-ui/DESIGN.md) — UI design system.
+- [`../anvay-ui/DESIGN.md`](../anvay-ui/DESIGN.md) — UI design system.
 - Reflexion paper (Shinn et al. 2023, `arxiv.org/abs/2303.11366`) — the
-  draft/critique/revise pattern Nexus's council follows.
+  draft/critique/revise pattern Anvay's council follows.
 - Anthropic Contextual Retrieval (Sep 2024,
   `anthropic.com/news/contextual-retrieval`) — the optional doc enrichment
   technique.
 - aider repo map (`aider.chat/docs/repomap.html`) — the symbol-outline
-  technique Nexus's repomap is modelled on (minus PageRank for v1).
+  technique Anvay's repomap is modelled on (minus PageRank for v1).

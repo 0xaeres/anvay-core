@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from nexus.connectors.confluence import (
+from anvay.connectors.confluence import (
     ConfluenceClient,
     ConfluenceConfig,
     ConfluenceSource,

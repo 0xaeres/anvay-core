@@ -30,6 +30,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from anvay.config import AnvayConfig
+from anvay.llm.client import ChatClient
+from anvay.retrieval.pipeline import RetrievalContext, retrieve
 from evals.common import GoldenItem, load_golden
 from evals.judges.llm import (
     evaluator_client,
@@ -38,9 +41,6 @@ from evals.judges.llm import (
     judge_score,
 )
 from evals.metrics import mean
-from nexus.config import NexusConfig
-from nexus.llm.client import ChatClient
-from nexus.retrieval.pipeline import RetrievalContext, retrieve
 
 log = logging.getLogger("evals.ragas")
 
@@ -105,7 +105,7 @@ async def run(
     *,
     golden_path: Path,
     product_id: str,
-    config: NexusConfig,
+    config: AnvayConfig,
     output: Path,
     thresholds: Thresholds = Thresholds(),
     limit: int | None = None,
@@ -290,13 +290,13 @@ def _print_summary(report: Report) -> None:
 def _make_runner() -> Callable[[], Awaitable[Report]]:
     parser = argparse.ArgumentParser(description="Run RAGAS-style eval.")
     parser.add_argument("--golden", type=Path, default=Path("evals/golden.jsonl"))
-    parser.add_argument("--config", type=Path, default=Path("nexus.yaml"))
+    parser.add_argument("--config", type=Path, default=Path("anvay.yaml"))
     parser.add_argument("--product", default="forge")
     parser.add_argument("--out", type=Path, default=Path("evals/last_ragas.json"))
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
 
-    config = NexusConfig.load(args.config)
+    config = AnvayConfig.load(args.config)
 
     async def _go() -> Report:
         return await run(

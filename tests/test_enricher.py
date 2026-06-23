@@ -9,12 +9,12 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-from nexus.ingest.enricher import (
+from anvay.ingest.enricher import (
     _DOC_TRUNCATE_CHARS,
     ContextualEnricher,
     _truncate_doc,
 )
-from nexus.ingest.models import Chunk, ChunkKind, ResourceRef
+from anvay.ingest.models import Chunk, ChunkKind, ResourceRef
 
 # ---------- helpers ---------------------------------------------------------
 

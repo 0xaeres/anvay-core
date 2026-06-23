@@ -16,7 +16,7 @@ fi
 # Start ollama in the background if it isn't already
 if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
   echo "Starting ollama server in background..."
-  nohup ollama serve >/tmp/nexus-ollama.log 2>&1 &
+  nohup ollama serve >/tmp/anvay-ollama.log 2>&1 &
   for i in $(seq 1 30); do
     sleep 0.5
     if curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then

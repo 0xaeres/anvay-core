@@ -1,9 +1,9 @@
-# Nexus Eval Harness
+# Anvay Eval Harness
 
-Nexus evals are split by product behavior, but run through one command:
+Anvay evals are split by product behavior, but run through one command:
 
 ```bash
-uv run nexus eval run --suite all
+uv run anvay eval run --suite all
 ```
 
 Each run writes:
@@ -16,14 +16,14 @@ Each run writes:
 
 | Suite | Dataset | Default fixture | Product | Metrics |
 |---|---|---|---|---|
-| `retrieval` | `tests/eval/queries.json` | repo root (`.`) | `nexus` | `recall_at_k`, `mrr`, `ndcg_at_k` |
+| `retrieval` | `tests/eval/queries.json` | repo root (`.`) | `anvay` | `recall_at_k`, `mrr`, `ndcg_at_k` |
 | `rag` | `evals/golden.jsonl` | `evals/fixtures/skills/seed` | `forge` | `faithfulness`, `answer_correctness`, `context_recall` |
 | `code` | `evals/golden.jsonl` | `evals/fixtures/skills/seed` | `forge` | `ndcg_at_10`, `recall_at_10`, pairwise preference |
 
 Suite defaults can be overridden:
 
 ```bash
-uv run nexus eval run \
+uv run anvay eval run \
   --suite retrieval \
   --product my-product \
   --fixture /path/to/source \
@@ -37,7 +37,7 @@ Use `--no-ingest-fixture` only when the target product index is already loaded.
 To evaluate retrieval, RAG, and code search capabilities across all 10 supported programming languages (Python, TS, TSX, JS, Rust, Go, Java, C++, Kotlin, Solidity) in a unified run, use the synthetic dataset:
 
 ```bash
-uv run nexus eval run \
+uv run anvay eval run \
   --suite retrieval,rag,code \
   --product synthetic \
   --fixture evals/fixtures/synthetic_project \
@@ -74,7 +74,7 @@ systematic first-position bias that would otherwise inflate PPA scores.
 
 The judge prompt also returns rationale JSON: `{"reasoning": "...", "choice": "A"|"B", "rationale": "..."}`.
 
-### Inner-loop skill eval (`nexus/council/skill_evals.py`)
+### Inner-loop skill eval (`anvay/council/skill_evals.py`)
 
 The council pipeline runs **5 deterministic checks** (identity, structure, name
 match, citation faithfulness, trigger routing) — deliberately *not* an LLM

@@ -3,7 +3,7 @@
 PIDDIR := .pids
 
 help:
-	@echo "Nexus dev orchestration"
+	@echo "Anvay dev orchestration"
 	@echo ""
 	@echo "  make install        — uv sync (Python deps)"
 	@echo "  make services-up    — bring up Qdrant + FalkorDB"
@@ -77,7 +77,7 @@ services-down: docker-down
 
 # ---------------------------------------------------------------- App
 api:
-	uv run uvicorn nexus.api.app:app --reload --port 8000
+	uv run uvicorn anvay.api.app:app --reload --port 8000
 
 dev: services-up api
 
@@ -86,13 +86,13 @@ test:
 	uv run pytest
 
 test-live-e2e:
-	NEXUS_LIVE_E2E=1 uv run pytest -q -m live_e2e
+	ANVAY_LIVE_E2E=1 uv run pytest -q -m live_e2e
 
 lint:
-	uv run ruff check nexus tests
+	uv run ruff check anvay tests
 
 format:
-	uv run ruff format nexus tests
+	uv run ruff format anvay tests
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache build dist *.egg-info

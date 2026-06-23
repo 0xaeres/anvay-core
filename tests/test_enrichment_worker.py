@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from nexus.config import NexusConfig
-from nexus.ingest.enrichment_worker import EnrichmentWorker
-from nexus.ingest.models import EmbeddedChunk
-from nexus.registry import Registry
-from nexus.retrieval.sparse import SparseVector
+from anvay.config import AnvayConfig
+from anvay.ingest.enrichment_worker import EnrichmentWorker
+from anvay.ingest.models import EmbeddedChunk
+from anvay.registry import Registry
+from anvay.retrieval.sparse import SparseVector
 
 
-def _config(tmp_path: Path) -> NexusConfig:
-    return NexusConfig(
+def _config(tmp_path: Path) -> AnvayConfig:
+    return AnvayConfig(
         models={
             "council": {"provider": "test", "model": "test"},
             "light": {"provider": "test", "model": "test"},
@@ -96,7 +96,7 @@ def _enqueue(registry: Registry, *, manifest_hash: str = "h1") -> None:
 
 @pytest.mark.asyncio
 async def test_worker_processes_enrichment_job(tmp_path: Path, monkeypatch) -> None:
-    from nexus.ingest import enrichment_worker
+    from anvay.ingest import enrichment_worker
 
     registry = Registry(tmp_path / "registry.db")
     _enqueue(registry)

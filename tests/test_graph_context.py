@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.graph import context
-from nexus.graph.context import build_code_context_pack
-from nexus.graph.models import GraphEdge, GraphNode, GraphQueryResult, SourceRef
-from nexus.retrieval.hybrid import Hit
-from nexus.retrieval.pipeline import RetrievalResult
+from anvay.graph import context
+from anvay.graph.context import build_code_context_pack
+from anvay.graph.models import GraphEdge, GraphNode, GraphQueryResult, SourceRef
+from anvay.retrieval.hybrid import Hit
+from anvay.retrieval.pipeline import RetrievalResult
 
 
 def _node(stable_id: str, *, name: str, resource_uri: str = "app.py") -> GraphNode:

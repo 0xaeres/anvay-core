@@ -3,7 +3,7 @@
 Marked `@pytest.mark.eval` so it's skipped by default — `pytest -m eval` to
 run. Requires Qdrant + embedder + reranker to be reachable and a product
 index to already be populated. The product id is taken from
-`NEXUS_EVAL_PRODUCT` (defaults to the dataset's `_meta.ingested_product_id`).
+`ANVAY_EVAL_PRODUCT` (defaults to the dataset's `_meta.ingested_product_id`).
 
 The thresholds in `queries.json` (`_meta.min_recall_at_10`, `_meta.min_mrr`)
 are deliberately conservative — they should track real progress on the
@@ -17,7 +17,7 @@ import os
 import httpx
 import pytest
 
-from nexus.config import NexusConfig
+from anvay.config import AnvayConfig
 
 from .harness import load_queries, run_eval
 
@@ -26,9 +26,9 @@ from .harness import load_queries, run_eval
 async def test_retrieval_quality() -> None:
     config = _load_config_or_skip()
     meta, queries = load_queries()
-    product_id = os.environ.get("NEXUS_EVAL_PRODUCT") or meta.get("ingested_product_id")
+    product_id = os.environ.get("ANVAY_EVAL_PRODUCT") or meta.get("ingested_product_id")
     if not product_id:
-        pytest.skip("no product_id configured (set NEXUS_EVAL_PRODUCT or _meta.ingested_product_id)")
+        pytest.skip("no product_id configured (set ANVAY_EVAL_PRODUCT or _meta.ingested_product_id)")
 
     _skip_unless_infra_reachable(config)
 
@@ -46,14 +46,14 @@ async def test_retrieval_quality() -> None:
 # ---------------------------------------------------------------- helpers
 
 
-def _load_config_or_skip() -> NexusConfig:
+def _load_config_or_skip() -> AnvayConfig:
     try:
-        return NexusConfig.load("nexus.yaml")
+        return AnvayConfig.load("anvay.yaml")
     except FileNotFoundError as e:
-        pytest.skip(f"nexus.yaml not found: {e}")
+        pytest.skip(f"anvay.yaml not found: {e}")
 
 
-def _skip_unless_infra_reachable(config: NexusConfig) -> None:
+def _skip_unless_infra_reachable(config: AnvayConfig) -> None:
     """Probe each upstream Qdrant + embedder + reranker is up before running
     the full eval. Cheap connection checks; skip cleanly when anything's down.
     """

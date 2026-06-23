@@ -2,7 +2,7 @@
 #include <string>
 #include <vector>
 
-namespace nexus::core {
+namespace anvay::core {
 
 class Engine {
 public:
@@ -17,4 +17,4 @@ T max_value(T a, T b) {
     return (a > b) ? a : b;
 }
 
-} // namespace nexus::core
+} // namespace anvay::core

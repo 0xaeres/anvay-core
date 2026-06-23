@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.auth.token_cipher import TokenCipher, TokenCipherError
+from anvay.auth.token_cipher import TokenCipher, TokenCipherError
 
 
 def test_encrypt_decrypt_round_trip() -> None:

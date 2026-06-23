@@ -1,3 +1,3 @@
-"""Evaluator judges used by Nexus eval suites."""
+"""Evaluator judges used by Anvay eval suites."""
 
 from __future__ import annotations

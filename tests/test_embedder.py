@@ -6,8 +6,8 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-from nexus.config import ModelCfg
-from nexus.ingest.embedder import EmbedderClient, EmbedderError
+from anvay.config import ModelCfg
+from anvay.ingest.embedder import EmbedderClient, EmbedderError
 
 
 async def _use_mock_transport(client: EmbedderClient, handler) -> None:

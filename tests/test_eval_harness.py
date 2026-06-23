@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nexus.retrieval.hybrid import Hit
+from anvay.retrieval.hybrid import Hit
 from tests.eval.harness import (
     EvalReport,
     QueryResult,
@@ -24,40 +24,40 @@ def _hit(uri: str, *, start: int = 1, end: int | None = None) -> Hit:
 
 
 def test_matches_expected_by_file_suffix() -> None:
-    h = _hit("/abs/path/to/nexus/retrieval/sparse.py")
-    assert matches_expected(h, [{"file": "nexus/retrieval/sparse.py"}])
+    h = _hit("/abs/path/to/anvay/retrieval/sparse.py")
+    assert matches_expected(h, [{"file": "anvay/retrieval/sparse.py"}])
 
 
 def test_matches_expected_rejects_unrelated_file() -> None:
-    h = _hit("nexus/retrieval/sparse.py")
-    assert not matches_expected(h, [{"file": "nexus/retrieval/reranker.py"}])
+    h = _hit("anvay/retrieval/sparse.py")
+    assert not matches_expected(h, [{"file": "anvay/retrieval/reranker.py"}])
 
 
 def test_matches_expected_any_of_listed_files() -> None:
-    h = _hit("nexus/retrieval/hybrid.py")
+    h = _hit("anvay/retrieval/hybrid.py")
     assert matches_expected(
         h,
         [
-            {"file": "nexus/retrieval/sparse.py"},
-            {"file": "nexus/retrieval/hybrid.py"},
+            {"file": "anvay/retrieval/sparse.py"},
+            {"file": "anvay/retrieval/hybrid.py"},
         ],
     )
 
 
 def test_matches_expected_line_range_overlap() -> None:
-    h = _hit("nexus/foo.py", start=50, end=60)
-    assert matches_expected(h, [{"file": "nexus/foo.py", "line_start": 55, "line_end": 70}])
-    assert not matches_expected(h, [{"file": "nexus/foo.py", "line_start": 100, "line_end": 110}])
+    h = _hit("anvay/foo.py", start=50, end=60)
+    assert matches_expected(h, [{"file": "anvay/foo.py", "line_start": 55, "line_end": 70}])
+    assert not matches_expected(h, [{"file": "anvay/foo.py", "line_start": 100, "line_end": 110}])
 
 
 def test_matches_expected_no_line_range_means_whole_file() -> None:
-    h = _hit("nexus/foo.py", start=999, end=1000)
-    assert matches_expected(h, [{"file": "nexus/foo.py"}])
+    h = _hit("anvay/foo.py", start=999, end=1000)
+    assert matches_expected(h, [{"file": "anvay/foo.py"}])
 
 
 def test_matches_expected_empty_uri_never_matches() -> None:
     h = Hit(id="x", score=1.0, payload={"resource_uri": ""}, source="dense")
-    assert not matches_expected(h, [{"file": "nexus/foo.py"}])
+    assert not matches_expected(h, [{"file": "anvay/foo.py"}])
 
 
 # ---------- EvalReport metrics ----------------------------------------------

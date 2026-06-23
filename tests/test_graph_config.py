@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from nexus.config import GraphIngestionCfg, GraphStoreCfg
+from anvay.config import GraphIngestionCfg, GraphStoreCfg
 
 
 def test_graph_store_config_rejects_empty_host() -> None:

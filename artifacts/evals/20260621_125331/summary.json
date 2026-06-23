@@ -1,7 +1,7 @@
 {
   "run_id": "20260621_125331",
   "generated_at": "2026-06-21T12:55:37.246338+00:00",
-  "config_path": "nexus.yaml",
+  "config_path": "anvay.yaml",
   "config_fingerprint": {
     "embedding_provider": "deepinfra",
     "embedding_model": "Qwen/Qwen3-Embedding-4B",
@@ -13,8 +13,8 @@
     "council_model": "google/gemma-4-31B-it",
     "qdrant_url": "http://localhost:6333",
     "qdrant_collections": {
-      "code": "nexus_code",
-      "text": "nexus_text"
+      "code": "anvay_code",
+      "text": "anvay_text"
     },
     "quantization": {
       "enabled": true,

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 286 72" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Anvay</title>
+  <desc id="desc">Anvay context engine logo and wordmark</desc>
+  <defs>
+    <linearGradient id="anvay-doc-frame" x1="10" y1="7" x2="62" y2="65" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#B88722"/>
+      <stop offset=".5" stop-color="#0BAA7B"/>
+      <stop offset="1" stop-color="#4B69D6"/>
+    </linearGradient>
+    <linearGradient id="anvay-doc-thread" x1="20" y1="18" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#161A24"/>
+      <stop offset="1" stop-color="#28385E"/>
+    </linearGradient>
+  </defs>
+  <path d="M36 6.5 63.2 22.2v31.6L36 69.5 8.8 53.8V22.2L36 6.5Z" fill="#FFFFFF"/>
+  <path d="M36 6.5 63.2 22.2v31.6L36 69.5 8.8 53.8V22.2L36 6.5Z" stroke="url(#anvay-doc-frame)" stroke-width="2.8" stroke-linejoin="round"/>
+  <path d="M20 56.5 36 20.5l16 36" stroke="url(#anvay-doc-thread)" stroke-width="6.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26 45.5c5.4-4.7 14.6-4.7 20 0" stroke="url(#anvay-doc-frame)" stroke-width="4.6" stroke-linecap="round"/>
+  <circle cx="36" cy="20.5" r="3.8" fill="#B88722"/>
+  <circle cx="20" cy="56.5" r="3.8" fill="#0BAA7B"/>
+  <circle cx="52" cy="56.5" r="3.8" fill="#4B69D6"/>
+  <circle cx="36" cy="43.5" r="6.4" fill="#FFFFFF" stroke="#B88722" stroke-width="2"/>
+  <circle cx="36" cy="43.5" r="2" fill="#161A24"/>
+  <text x="88" y="47.5" fill="#151923" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="31" font-weight="650" letter-spacing="3.2">ANVAY</text>
+</svg>

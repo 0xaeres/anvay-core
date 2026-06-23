@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from nexus.connectors.jira import JiraClient, JiraConfig, JiraSource, render_issue
+from anvay.connectors.jira import JiraClient, JiraConfig, JiraSource, render_issue
 
 
 def _issue(key: str, *, summary: str = "Token work") -> dict:

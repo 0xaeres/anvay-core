@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.graph.extractor import extract_resource_graph
-from nexus.graph.llm_extractor import merge_llm_graph_facts, parse_llm_graph_facts
-from nexus.ingest.models import ResourceRef
+from anvay.graph.extractor import extract_resource_graph
+from anvay.graph.llm_extractor import merge_llm_graph_facts, parse_llm_graph_facts
+from anvay.ingest.models import ResourceRef
 
 
 def test_parse_llm_graph_facts_filters_and_caps() -> None:
@@ -69,7 +69,7 @@ def test_parse_llm_graph_facts_rejects_contains_edge() -> None:
             """
             {
               "facts": [{
-                "subject": "nexus/ingest/enricher.py",
+                "subject": "anvay/ingest/enricher.py",
                 "predicate": "CONTAINS",
                 "object": "ContextualEnricher",
                 "evidence": "class ContextualEnricher",

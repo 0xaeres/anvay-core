@@ -1,11 +1,11 @@
-"""Shared LLM-as-judge helpers for Nexus evals."""
+"""Shared LLM-as-judge helpers for Anvay evals."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 
-from nexus.llm.client import ChatClient
+from anvay.llm.client import ChatClient
 
 log = logging.getLogger(__name__)
 

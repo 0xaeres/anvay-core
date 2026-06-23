@@ -4,12 +4,12 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from nexus.api.app import app
-from nexus.api.deps import get_proposal_queue, get_registry
-from nexus.api.routes import council
-from nexus.council.queue import ProposalQueue
-from nexus.council.runner import HUB
-from nexus.registry import Registry
+from anvay.api.app import app
+from anvay.api.deps import get_proposal_queue, get_registry
+from anvay.api.routes import council
+from anvay.council.queue import ProposalQueue
+from anvay.council.runner import HUB
+from anvay.registry import Registry
 
 
 def test_council_stream_route_matches_before_session_detail(tmp_path: Path) -> None:

@@ -7,17 +7,17 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from nexus.api.app import app
-from nexus.api.deps import get_config_dep, get_registry
-from nexus.api.routes import sources
-from nexus.auth.token_cipher import TokenCipher
-from nexus.config import NexusConfig
-from nexus.ingest.pipeline import IngestStats
-from nexus.registry import Registry
+from anvay.api.app import app
+from anvay.api.deps import get_config_dep, get_registry
+from anvay.api.routes import sources
+from anvay.auth.token_cipher import TokenCipher
+from anvay.config import AnvayConfig
+from anvay.ingest.pipeline import IngestStats
+from anvay.registry import Registry
 
 
-def _config(tmp_path: Path) -> NexusConfig:
-    return NexusConfig(
+def _config(tmp_path: Path) -> AnvayConfig:
+    return AnvayConfig(
         models={
             "council": {"provider": "test", "model": "test"},
             "light": {"provider": "test", "model": "test"},
@@ -32,7 +32,7 @@ def _config(tmp_path: Path) -> NexusConfig:
 
 
 def test_add_source_refuses_plaintext_secret_without_key(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("NEXUS_TOKEN_KEY", raising=False)
+    monkeypatch.delenv("ANVAY_TOKEN_KEY", raising=False)
     registry = Registry(tmp_path / "registry.db")
     app.dependency_overrides[get_registry] = lambda: registry
     app.dependency_overrides[get_config_dep] = lambda: _config(tmp_path)
@@ -54,11 +54,11 @@ def test_add_source_refuses_plaintext_secret_without_key(tmp_path: Path, monkeyp
         app.dependency_overrides.pop(get_config_dep, None)
 
     assert r.status_code == 400
-    assert "NEXUS_TOKEN_KEY is required" in r.json()["detail"]
+    assert "ANVAY_TOKEN_KEY is required" in r.json()["detail"]
 
 
 def test_filesystem_source_rejected_in_production(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_ENABLE_LOCAL_FS_SOURCES", "false")
+    monkeypatch.setenv("ANVAY_ENABLE_LOCAL_FS_SOURCES", "false")
     registry = Registry(tmp_path / "registry.db")
     app.dependency_overrides[get_registry] = lambda: registry
     app.dependency_overrides[get_config_dep] = lambda: _config(tmp_path)
@@ -106,7 +106,7 @@ def test_github_repo_urls_validate_all_before_clone() -> None:
 def test_github_sync_clones_all_repos_and_aggregates_count(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("NEXUS_TOKEN_KEY", TokenCipher.generate_key())
+    monkeypatch.setenv("ANVAY_TOKEN_KEY", TokenCipher.generate_key())
     registry = Registry(tmp_path / "registry.db")
     cfg = _config(tmp_path)
     runtime = {
@@ -160,7 +160,7 @@ def test_github_sync_clones_all_repos_and_aggregates_count(
 
 
 def test_jira_sync_uses_direct_source_and_updates_count(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NEXUS_TOKEN_KEY", TokenCipher.generate_key())
+    monkeypatch.setenv("ANVAY_TOKEN_KEY", TokenCipher.generate_key())
     registry = Registry(tmp_path / "registry.db")
     cfg = _config(tmp_path)
     runtime = {
@@ -248,7 +248,7 @@ def test_sync_source_dedupes_in_flight_runs(tmp_path: Path, monkeypatch) -> None
 def test_confluence_sync_uses_direct_source_and_updates_count(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("NEXUS_TOKEN_KEY", TokenCipher.generate_key())
+    monkeypatch.setenv("ANVAY_TOKEN_KEY", TokenCipher.generate_key())
     registry = Registry(tmp_path / "registry.db")
     cfg = _config(tmp_path)
     runtime = {

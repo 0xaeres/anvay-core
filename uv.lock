@@ -2206,7 +2206,7 @@ wheels = [
 ]
 
 [[package]]
-name = "nexus"
+name = "anvay"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [

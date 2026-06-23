@@ -1,8 +1,8 @@
-# Nexus Eval Run 20260621_125255
+# Anvay Eval Run 20260621_125255
 
 - Status: PASS
 - Generated: 2026-06-21T12:53:26.096788+00:00
-- Config: `nexus.yaml`
+- Config: `anvay.yaml`
 - Output: `artifacts/evals/20260621_125255`
 
 | Suite | Product | Status | Metrics | Output |

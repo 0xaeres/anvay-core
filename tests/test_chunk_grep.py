@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.retrieval.chunk_grep import grep_indexed_chunks
+from anvay.retrieval.chunk_grep import grep_indexed_chunks
 
 
 class _FakeIndexer:
@@ -11,7 +11,7 @@ class _FakeIndexer:
         assert batch_size == 256
         if vector_kind == "code":
             yield "c1", {
-                "resource_uri": "github:org/repo/nexus/api/routes/council.py",
+                "resource_uri": "github:org/repo/anvay/api/routes/council.py",
                 "start_line": 40,
                 "context_path": "create_session",
                 "content": "def create_session():\n    run_council()\n    return session_id\n",
@@ -35,6 +35,6 @@ async def test_chunk_grep_finds_payload_match_with_line_offset() -> None:
 
     assert hits
     assert hits[0].chunk_id == "c1"
-    assert hits[0].file.endswith("nexus/api/routes/council.py")
+    assert hits[0].file.endswith("anvay/api/routes/council.py")
     assert hits[0].line == 41
     assert "run_council" in hits[0].excerpt

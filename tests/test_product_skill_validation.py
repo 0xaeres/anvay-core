@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.council.skill_catalog import OPTIONAL_PRODUCT_SKILL_SECTIONS
-from nexus.council.skill_evals import evaluate_skill_draft
-from nexus.council.skill_parser import required_sections_for_tier, validate_skill_markdown
-from nexus.council.state import EvidenceChunk, SkillDraft
+from anvay.council.skill_catalog import OPTIONAL_PRODUCT_SKILL_SECTIONS
+from anvay.council.skill_evals import evaluate_skill_draft
+from anvay.council.skill_parser import required_sections_for_tier, validate_skill_markdown
+from anvay.council.state import EvidenceChunk, SkillDraft
 
 _ENUMERABLE = {
     "capabilities and workflows",

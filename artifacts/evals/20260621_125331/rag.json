@@ -61,7 +61,7 @@
       "faithfulness": 1.0,
       "answer_relevancy": 1.0,
       "context_recall": 1.0,
-      "answer": "In the `nexus::core` namespace, the `Engine` class contains a `run_task` method that accepts a `const std::string& name`. Additionally, the `max_value` template in the same namespace takes two arguments of type `T` and returns the greater of the two.",
+      "answer": "In the `anvay::core` namespace, the `Engine` class contains a `run_task` method that accepts a `const std::string& name`. Additionally, the `max_value` template in the same namespace takes two arguments of type `T` and returns the greater of the two.",
       "notes": "All claims regarding the namespace, class method, and template function are directly supported by the provided context. | The answer accurately describes both the Engine::run_task method and the max_value template within the specified namespace, matching the expected content."
     },
     {
@@ -69,7 +69,7 @@
       "faithfulness": 1.0,
       "answer_relevancy": 1.0,
       "context_recall": 1.0,
-      "answer": "The `UserRepository` class contains a `fetchUser` function that takes a `userId` string and returns `\"User-$userId\"`. Additionally, there is a Kotlin `AppDatabase` object with a `databaseName` property set to `\"nexus_eval_db\"`.",
+      "answer": "The `UserRepository` class contains a `fetchUser` function that takes a `userId` string and returns `\"User-$userId\"`. Additionally, there is a Kotlin `AppDatabase` object with a `databaseName` property set to `\"anvay_eval_db\"`.",
       "notes": "All claims regarding the UserRepository class, the fetchUser function, and the AppDatabase object are explicitly supported by the provided contexts. | The answer provides all the specific details mentioned in the expected answer and adds precise implementation details."
     },
     {

@@ -24,7 +24,7 @@ def test_parse_suites_rejects_unknown() -> None:
 
 
 def test_suite_defaults_are_product_specific() -> None:
-    assert suite_defaults("retrieval").product_id == "nexus"
+    assert suite_defaults("retrieval").product_id == "anvay"
     assert suite_defaults("rag").product_id == "forge"
     assert suite_defaults("code").fixture_path.parts[-2:] == ("skills", "seed")
 
@@ -33,14 +33,14 @@ def test_markdown_summary_includes_suite_rows() -> None:
     artifact = EvalRunArtifact(
         run_id="r1",
         generated_at="2026-01-01T00:00:00Z",
-        config_path="nexus.yaml",
+        config_path="anvay.yaml",
         config_fingerprint={},
         output_dir="artifacts/evals/r1",
         suites=[
             SuiteArtifact(
                 suite="retrieval",
                 passed=True,
-                product_id="nexus",
+                product_id="anvay",
                 output_json="artifacts/evals/r1/retrieval.json",
                 metrics={"recall_at_k": 1.0, "mrr": 0.5},
                 thresholds={"min_recall_at_10": 0.6, "min_mrr": 0.35},
@@ -51,4 +51,4 @@ def test_markdown_summary_includes_suite_rows() -> None:
     out = render_markdown_summary(artifact)
 
     assert "Status: PASS" in out
-    assert "| retrieval | `nexus` | PASS |" in out
+    assert "| retrieval | `anvay` | PASS |" in out

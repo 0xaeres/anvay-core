@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from nexus.api.app import app
-from nexus.api.deps import get_proposal_queue, get_registry, get_skill_store
-from nexus.council.queue import ProposalQueue
-from nexus.registry import Registry
-from nexus.skills.models import AppliesTo, Citation, Provenance, Skill, SkillProposal
-from nexus.skills.store import SkillStore
+from anvay.api.app import app
+from anvay.api.deps import get_proposal_queue, get_registry, get_skill_store
+from anvay.council.queue import ProposalQueue
+from anvay.registry import Registry
+from anvay.skills.models import AppliesTo, Citation, Provenance, Skill, SkillProposal
+from anvay.skills.store import SkillStore
 
 
 @pytest.fixture

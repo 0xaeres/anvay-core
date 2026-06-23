@@ -5,25 +5,25 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nexus.graph.models import GraphNode, GraphQueryResult
-from nexus.ingest.models import ResourceRef
-from nexus.ingest.summaries import (
+from anvay.graph.models import GraphNode, GraphQueryResult
+from anvay.ingest.models import ResourceRef
+from anvay.ingest.summaries import (
     graph_community_summary_chunk,
     graph_summary_chunk,
     is_community_summary_chunk,
     is_summary_chunk,
 )
-from nexus.retrieval import evidence
-from nexus.retrieval.evidence import (
+from anvay.retrieval import evidence
+from anvay.retrieval.evidence import (
     EvidenceCandidate,
     merge_candidates,
     retrieve_evidence,
     understand_query,
 )
-from nexus.retrieval.hybrid import Hit
-from nexus.retrieval.pipeline import RetrievalResult
-from nexus.retrieval.repomap import RepoMap, Symbol, repomap_path_for, save_repo_map
-from nexus.skills.models import AppliesTo, Provenance, Skill
+from anvay.retrieval.hybrid import Hit
+from anvay.retrieval.pipeline import RetrievalResult
+from anvay.retrieval.repomap import RepoMap, Symbol, repomap_path_for, save_repo_map
+from anvay.skills.models import AppliesTo, Provenance, Skill
 
 
 def test_understand_query_classifies_global_chunking_strategy() -> None:
@@ -40,7 +40,7 @@ def test_merge_candidates_preserves_exact_and_doc_hits() -> None:
             channel="hybrid",
             role="implementation",
             score=100 - i,
-            file="nexus/ingest/enricher.py",
+            file="anvay/ingest/enricher.py",
             line=i + 1,
             excerpt="enricher",
         )
@@ -53,7 +53,7 @@ def test_merge_candidates_preserves_exact_and_doc_hits() -> None:
                 channel="grep",
                 role="definition",
                 score=3,
-                file="nexus/ingest/chunker.py",
+                file="anvay/ingest/chunker.py",
                 line=29,
                 excerpt="MAX_CHUNK_CHARS = 1200",
             ),
@@ -73,12 +73,12 @@ def test_merge_candidates_preserves_exact_and_doc_hits() -> None:
         understanding=understand_query("explain our chunking strategy"),
         top_k=5,
     )
-    assert any(c.file == "nexus/ingest/chunker.py" for c in merged)
+    assert any(c.file == "anvay/ingest/chunker.py" for c in merged)
     assert any(c.file == "ENGINEERING.md" for c in merged)
 
 
 def test_graph_summary_chunk_is_source_backed_summary() -> None:
-    from nexus.graph.extractor import extract_resource_graph
+    from anvay.graph.extractor import extract_resource_graph
 
     resource = ResourceRef(source_id="repo", uri="app.py", mime="text/x-python")
     graph = extract_resource_graph(
@@ -96,7 +96,7 @@ def test_graph_summary_chunk_is_source_backed_summary() -> None:
 
 
 def test_graph_community_summary_chunk_captures_relationships() -> None:
-    from nexus.graph.extractor import extract_resource_graph
+    from anvay.graph.extractor import extract_resource_graph
 
     resource = ResourceRef(source_id="repo", uri="app.py", mime="text/x-python")
     graph = extract_resource_graph(
@@ -229,7 +229,7 @@ async def test_retrieve_evidence_drift_lite_adds_query_plan_and_followups(monkey
                     score=0.7,
                     source="rerank",
                     payload={
-                        "resource_uri": "nexus/retrieval/evidence.py",
+                        "resource_uri": "anvay/retrieval/evidence.py",
                         "start_line": 101,
                         "content": "async def retrieve_evidence(...):",
                         "kind": "code",
@@ -271,7 +271,7 @@ async def test_retrieve_evidence_combines_hybrid_grep_repomap_graph_and_skills(
                 Symbol(
                     kind="function",
                     name="chunk_resource",
-                    file="nexus/ingest/chunker.py",
+                    file="anvay/ingest/chunker.py",
                     line=249,
                     signature="def chunk_resource(product_id, resource, content)",
                 )
@@ -288,7 +288,7 @@ async def test_retrieve_evidence_combines_hybrid_grep_repomap_graph_and_skills(
                     "id": "graph-1",
                     "score": 1.0,
                     "payload": {
-                        "resource_uri": "nexus/ingest/chunker.py",
+                        "resource_uri": "anvay/ingest/chunker.py",
                         "start_line": 249,
                         "content": "def chunk_resource(product_id, resource, content):",
                         "graph_node_ids": kwargs["graph_node_ids"],
@@ -302,9 +302,9 @@ async def test_retrieve_evidence_combines_hybrid_grep_repomap_graph_and_skills(
                 nodes=[
                     GraphNode(
                         product_id=product_id,
-                        stable_id="file:p:nexus/ingest/chunker.py",
+                        stable_id="file:p:anvay/ingest/chunker.py",
                         labels=["CodeFile"],
-                        properties={"resource_uri": "nexus/ingest/chunker.py"},
+                        properties={"resource_uri": "anvay/ingest/chunker.py"},
                         last_seen="2026-01-01T00:00:00+00:00",
                     )
                 ]
@@ -333,12 +333,12 @@ async def test_retrieve_evidence_combines_hybrid_grep_repomap_graph_and_skills(
         )
 
     async def fake_grep_indexed_chunks(**kwargs):
-        from nexus.council.state import EvidenceChunk
+        from anvay.council.state import EvidenceChunk
 
         return [
             EvidenceChunk(
                 chunk_id="grep-1",
-                file="nexus/ingest/chunker.py",
+                file="anvay/ingest/chunker.py",
                 line=29,
                 score=30,
                 excerpt="MAX_CHUNK_CHARS = 1200",
@@ -363,7 +363,7 @@ async def test_retrieve_evidence_combines_hybrid_grep_repomap_graph_and_skills(
         ctx=ctx,
         graph_store=FakeGraph(),
         product_id="p",
-        query="explain nexus/ingest/chunker.py chunking strategy",
+        query="explain anvay/ingest/chunker.py chunking strategy",
         top_k=8,
         skills=[skill],
     )
@@ -372,4 +372,4 @@ async def test_retrieve_evidence_combines_hybrid_grep_repomap_graph_and_skills(
     assert result.coverage.sufficient is True
     assert {c.channel for c in result.candidates} >= {"hybrid", "grep", "repo_map", "graph", "skill"}
     assert any(c.file == "ENGINEERING.md" for c in result.candidates)
-    assert any(c.file == "nexus/ingest/chunker.py" for c in result.candidates)
+    assert any(c.file == "anvay/ingest/chunker.py" for c in result.candidates)
