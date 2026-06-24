@@ -75,15 +75,12 @@ Ask Anvay:
 
 - A product-scoped retrieval index for code and docs.
 - A tree-sitter repo map that helps agents understand symbols and structure.
-- A FalkorDB product graph for local dependency and impact traversal.
-- A pending `product_master` Agent Skill drafted by a bounded expert council.
-- A human-approved `SKILL.md` committed to a skills repo.
-- An MCP server that exposes approved skills and cited project context to agents.
+- A knowledge graph for answering in-depth queries.
+- An LLM assited, but human-approved `SKILL.md` committed to a skills repo.
+- An MCP server that exposes approved skills and the project context to agents.
 
 Current source connectors cover GitHub repositories, local filesystems, Jira,
-and Confluence. For the OSS launch, the wedge is repo and docs understanding
-first; GitHub issues, PRs, discussions, release notes, and community archives
-are natural next sources.
+and Confluence.
 
 ## What Anvay Guarantees
 
@@ -100,9 +97,9 @@ are natural next sources.
   approved skill memories. Results are dynamically mixed via cross-encoder
   reranking and gated by continuous evaluation metrics (e.g., faithfulness ≥ 0.85,
   nDCG@10 ≥ 0.75).
-- **Portable output.** Approved skills are ordinary Agent Skills directories
-  served through MCP, so Claude, Codex, Cursor, Continue, and other clients can
-  consume the same product guidance.
+- **Portable output.** Approved skills are ordinary Agent Skills served through MCP, so
+  Claude, Codex, Cursor, Continue, and other clients can consume the same product
+  guidance.
 
 See [AGENTS.md](./AGENTS.md) for contributor invariants and
 [ENGINEERING.md](./ENGINEERING.md) for the formal backend spec.
