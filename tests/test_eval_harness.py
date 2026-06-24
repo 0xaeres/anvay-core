@@ -120,3 +120,90 @@ def test_queries_json_meta_has_thresholds() -> None:
     assert "min_mrr" in meta
     assert 0.0 <= meta["min_recall_at_10"] <= 1.0
     assert 0.0 <= meta["min_mrr"] <= 1.0
+
+
+# ---------- graph ablation (no infra; retrieve_evidence is monkeypatched) ----
+
+
+def test_filter_by_tags_selects_graph_slice() -> None:
+    from tests.eval.harness import filter_by_tags
+
+    queries = [
+        {"query": "a", "tags": ["graph", "relational"]},
+        {"query": "b", "tags": ["ingest"]},
+        {"query": "c", "tags": ["RELATIONAL"]},
+    ]
+    selected = filter_by_tags(queries, ("relational",))
+    assert [q["query"] for q in selected] == ["a", "c"]
+
+
+def test_ablation_report_graph_helps_logic() -> None:
+    from tests.eval.harness import AblationReport, EvalReport, QueryResult
+
+    def _report(hit: bool) -> EvalReport:
+        return EvalReport(
+            results=[
+                QueryResult(
+                    query="q",
+                    top_k_hits=[],
+                    first_match_rank=1 if hit else None,
+                    tags=["graph"],
+                    relevance=[hit],
+                    expected_count=1,
+                )
+            ],
+            top_k=10,
+        )
+
+    helps = AblationReport(tags=["graph"], with_graph=_report(True), without_graph=_report(False))
+    assert helps.delta_recall == 1.0
+    assert helps.graph_helps is True
+
+    regresses = AblationReport(
+        tags=["graph"], with_graph=_report(False), without_graph=_report(True)
+    )
+    assert regresses.graph_helps is False
+
+
+async def test_run_ablation_diffs_graph_on_vs_off(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from anvay.retrieval.evidence import EvidenceCandidate
+    from tests.eval import harness
+
+    async def fake_retrieve_evidence(**kwargs):
+        # Graph on -> resolve the expected file; graph off -> miss.
+        if kwargs.get("graph_store") is not None:
+            candidates = [
+                EvidenceCandidate(
+                    chunk_id="g1",
+                    channel="graph",
+                    role="relationship",
+                    score=1.0,
+                    file="anvay/graph/store.py",
+                    line=1,
+                )
+            ]
+        else:
+            candidates = []
+        return SimpleNamespace(candidates=candidates)
+
+    monkeypatch.setattr(harness, "retrieve_evidence", fake_retrieve_evidence)
+    queries = [
+        {"query": "how does traversal reach neighbors", "expected": [{"file": "anvay/graph/store.py"}], "tags": ["graph"]},
+        {"query": "unrelated ingest question", "expected": [{"file": "x.py"}], "tags": ["ingest"]},
+    ]
+    report = await harness.run_ablation(
+        config=SimpleNamespace(),
+        product_id="p",
+        graph_store=object(),
+        top_k=10,
+        tags=("graph",),
+        queries=queries,
+        ctx=object(),  # injected: no RetrievalContext built, no infra touched
+    )
+    assert report.without_graph.total == 1  # only the graph-tagged query
+    assert report.without_graph.recall_at_k == 0.0
+    assert report.with_graph.recall_at_k == 1.0
+    assert report.graph_helps is True
+    assert "Δ+1.000" in report.render()

@@ -227,3 +227,51 @@ def test_merge_llm_graph_facts_adds_source_backed_edge() -> None:
     call_edges = [edge for edge in merged.edges if edge.type == "CALLS"]
     assert len(call_edges) == 1
     assert any(ref.anchor == "app.py:2" for ref in call_edges[0].source_refs)
+
+
+def test_merge_llm_graph_facts_does_not_over_merge_cross_file_namesakes() -> None:
+    """An LLM fact naming a symbol in another file must not hijack the local one."""
+    content = "def handler():\n    return 1\n"
+    resource = ResourceRef(source_id="local:test", uri="app.py", mime="text/x-python")
+    base = extract_resource_graph(
+        product_id="prod",
+        source_key="src",
+        resource=resource,
+        content=content,
+        indexed_at="2026-01-01T00:00:00+00:00",
+    )
+    local_handler_ids = {
+        node.stable_id
+        for node in base.nodes
+        if node.properties.get("name") == "handler"
+    }
+    facts = parse_llm_graph_facts(
+        """
+        {
+          "facts": [{
+            "subject": {"name": "handler", "label": "Function", "resource_uri": "other.py"},
+            "predicate": "CALLS",
+            "object": {"name": "helper", "label": "Function", "resource_uri": "other.py"},
+            "evidence": "handler calls helper in other.py",
+            "start_line": 1,
+            "end_line": 2,
+            "confidence": 0.9
+          }]
+        }
+        """,
+        confidence_floor=0.65,
+        max_facts=10,
+    )
+    merged = merge_llm_graph_facts(
+        base=base,
+        product_id="prod",
+        source_key="src",
+        resource=resource,
+        facts=facts,
+        indexed_at="2026-01-01T00:00:00+00:00",
+    )
+    call_edges = [edge for edge in merged.edges if edge.type == "CALLS"]
+    assert len(call_edges) == 1
+    # The cross-file handler resolved to an other.py-scoped node, not the local one.
+    assert "other.py" in call_edges[0].from_id
+    assert call_edges[0].from_id not in local_handler_ids

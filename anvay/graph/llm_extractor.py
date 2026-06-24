@@ -373,13 +373,15 @@ def _node_id_for_entity(
     now: str,
 ) -> str:
     key = _norm(entity.name)
+    resource_uri = entity.resource_uri or resource.uri
     existing = aliases.get(key)
-    if existing:
+    if existing and _alias_compatible(nodes[existing], resource_uri):
         node = nodes[existing]
         node.source_refs = _merge_refs(node.source_refs, [ref])
         node.confidence = max(node.confidence, 0.8)
         return existing
-    resource_uri = entity.resource_uri or resource.uri
+    # Alias collision across resources (e.g. two files each defining `handler`):
+    # mint a resource-scoped node instead of over-merging onto the first match.
     stable_id = _sid(entity.label.lower(), product_id, resource_uri, entity.name)
     node = GraphNode(
         product_id=product_id,
@@ -399,6 +401,19 @@ def _node_id_for_entity(
     nodes[stable_id] = node
     aliases[key] = stable_id
     return stable_id
+
+
+def _alias_compatible(node: GraphNode, resource_uri: str) -> bool:
+    """True when an existing same-name node may absorb a fact from `resource_uri`.
+
+    A node with no resource_uri (an abstract/global entity) always absorbs. A
+    node anchored to a different file must NOT, or distinct cross-file symbols
+    that happen to share a name would collapse into one.
+    """
+    existing_uri = node.properties.get("resource_uri")
+    if not isinstance(existing_uri, str) or not existing_uri:
+        return True
+    return existing_uri == resource_uri
 
 
 def _aliases(nodes: Sequence[GraphNode]) -> dict[str, str]:

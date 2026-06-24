@@ -151,6 +151,8 @@ class QueryPlan(BaseModel):
     unknowns: list[str] = Field(default_factory=list)
     coverage: EvidenceCoverage | None = None
     fallbacks: list[str] = Field(default_factory=list)
+    budget_ms: float | None = None
+    budget_exceeded: bool = False
     latency_ms: float = 0.0
 
 
@@ -177,12 +179,25 @@ async def retrieve_evidence(
     current_file: str | None = None,
     max_depth: int = 2,
     query_mode: EvidenceMode = "auto",
+    budget_ms: float | None = None,
 ) -> EvidenceSet:
-    """Retrieve a coverage-oriented evidence set for product/code questions."""
+    """Retrieve a coverage-oriented evidence set for product/code questions.
+
+    `budget_ms` is a soft deadline. The core fan-out always runs; the optional
+    enrichment stages (DRIFT-lite follow-ups and coverage repair) are skipped
+    once the budget is spent, returning best-effort evidence rather than
+    blocking on the long tail. `None` (default) keeps the unbounded behavior.
+    """
     started = time.perf_counter()
     understanding = understand_query(query, current_file=current_file)
     plan = _query_plan(understanding, query_mode=query_mode)
+    plan.budget_ms = budget_ms
     trace: list[RetrievalTrace] = []
+
+    def _over_budget() -> bool:
+        if budget_ms is None:
+            return False
+        return (time.perf_counter() - started) * 1000 >= budget_ms
 
     hybrid_task = hybrid_candidates(
         ctx=ctx,
@@ -258,7 +273,10 @@ async def retrieve_evidence(
         for candidate in pooled
         if candidate.metadata.get("artifact_type") == "graph_community_summary"
     )
-    if plan.mode == "drift_lite":
+    if plan.mode == "drift_lite" and _over_budget():
+        plan.budget_exceeded = True
+        plan.fallbacks.append("latency_budget_skipped_drift_lite")
+    elif plan.mode == "drift_lite":
         plan.followups = _drift_followup_queries(query, pooled)
         drifted, drift_trace, drift_reranked = await drift_lite_candidates(
             ctx=ctx,
@@ -280,7 +298,10 @@ async def retrieve_evidence(
         )
     merged = merge_candidates(pooled, understanding=understanding, top_k=top_k)
     coverage = assess_coverage(understanding, merged)
-    if not coverage.sufficient:
+    if not coverage.sufficient and _over_budget():
+        plan.budget_exceeded = True
+        plan.fallbacks.append("latency_budget_skipped_coverage_repair")
+    elif not coverage.sufficient:
         plan.fallbacks.append("coverage_repair")
         repaired, repair_trace = await repair_missing_facets(
             ctx=ctx,
@@ -960,6 +981,11 @@ def _graph_rank_by_id(
     return ranks
 
 
+# Graph/channel ranking weights below are hand-set priors, not constants of
+# nature. They are calibrated against the `relational`/`graph` slice of
+# tests/eval/queries.json via `tests.eval.harness.run_ablation`: a weight change
+# is only justified when it moves recall@k/MRR/nDCG on that slice without
+# regressing it. Don't tune these blind.
 def _edge_type_weight(edge_type: str) -> float:
     return {
         "DECLARES": 1.4,

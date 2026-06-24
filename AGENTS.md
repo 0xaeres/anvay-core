@@ -29,9 +29,16 @@ client. The sibling repo `../anvay-ui/` is the Next.js web UI.
   unchanged}` from the SQLite source manifest. Unchanged resources are skipped;
   changed resources are re-embedded before stale old chunk IDs are deleted.
   Don't reintroduce blind full-source upserts.
-- **Retrieval is three stages: dense + BM25 → RRF → configured reranker.** No
-  classifier, no HyDE, no semantic cache, no graph expansion, no circuit
-  breakers. Don't reintroduce them without an eval-set win to justify it.
+- **Low-level retrieval is three stages: dense + BM25 → RRF → configured
+  reranker** (`retrieval/pipeline.py::retrieve`). No classifier, no HyDE, no
+  semantic cache, no circuit breakers. Don't reintroduce those without an
+  eval-set win.
+- **Evidence retrieval is the product layer on top**
+  (`retrieval/evidence.py::retrieve_evidence`): hybrid + grep + repo-map +
+  **graph-local traversal** + structural/community summaries + skills, mixed
+  reranked, coverage-assessed, with deterministic DRIFT-lite follow-ups (no
+  HyDE). The graph is an active **navigation** layer here — it seeds and biases
+  retrieval; it is never an answer source on its own. See ENGINEERING.md §3–4.
 - **Chunks carry their context.** Code chunks get HQE (3 hypothetical
   questions) at ingest; doc chunks get Anthropic's Contextual Retrieval
   blurb. Both prepend at embed time via `text_for_embedding()`.
@@ -42,7 +49,10 @@ client. The sibling repo `../anvay-ui/` is the Next.js web UI.
   missing_questions); the Synthesizer builds the full 13-section
   `product_master` Markdown skill from those reports + evidence + repo map.
   Incomplete skills are never queued; the Eval node runs 5 deterministic
-  checks (identity, structure, name match, citation faithfulness, trigger).
+  checks (identity, structure, name match, citation-anchor faithfulness,
+  trigger) plus a bounded, fail-soft LLM entailment gate
+  (`skill_evals.py::_faithfulness_failures`) that rejects cited claims not
+  supported by their cited excerpt. Human approval remains the final gate.
 - **Synthesizer emits Markdown skills, not JSON.** Citations are regex-parsed
   post-hoc. Long outputs auto-continue on `finish_reason="length"`. Missing
   sections trigger targeted section-fill repair, capped at 3 attempts per skill;
@@ -85,10 +95,17 @@ change against a live product index.
   their own via the wizard. Product onboarding creates a required GitHub
   source with a product service-account PAT and one or more repo URLs.
 - Don't skip the proposal/approval step for any write action (Invariant 2).
-- Don't reintroduce the cut layers (Assistant / Jira / Confluence, Neo4j /
-  GraphRAG, org library / composition / SkillKind, HyDE / classifier /
-  cache / circuit breakers) without an eval-set or feedback win to justify
-  the complexity.
+- Don't reintroduce the cut layers (Assistant, org library / composition /
+  SkillKind, HyDE / classifier / cache / circuit breakers) without an eval-set
+  or feedback win to justify the complexity.
+- The graph **is** active, not cut: deterministic tree-sitter extraction
+  (`graph/extractor.py`) plus a bounded, source-anchored LLM fact layer
+  (`graph/llm_extractor.py`), served from a per-product FalkorDB graph and used
+  as a retrieval navigation layer + GraphRAG answer engine (`graph/rag.py`).
+  Keep it bounded: don't add free-form/unbounded LLM graph extraction, swap the
+  store to Neo4j, or promote the graph to a standalone answer source without an
+  eval-set win. New graph behavior must be measured by the graph eval
+  (`tests/test_graph_extractor.py` golden + `evals` ablation).
 - Don't store secrets in plaintext — connector tokens are Fernet-encrypted
   (`ANVAY_TOKEN_KEY`). Credentials are scoped per product source, not as a
   global or product-wide credential bundle.

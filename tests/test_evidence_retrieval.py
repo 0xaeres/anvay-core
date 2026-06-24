@@ -260,6 +260,48 @@ async def test_retrieve_evidence_drift_lite_adds_query_plan_and_followups(monkey
 
 
 @pytest.mark.asyncio
+async def test_retrieve_evidence_latency_budget_skips_drift_lite(monkeypatch) -> None:
+    calls: list[str] = []
+
+    async def fake_retrieve(**kwargs):
+        calls.append(kwargs["query"])
+        return RetrievalResult(
+            hits=[
+                Hit(
+                    id=f"summary-{len(calls)}",
+                    score=0.8,
+                    source="rerank",
+                    payload={
+                        "resource_uri": "ENGINEERING.md",
+                        "start_line": 345,
+                        "content": "Graph summary for retrieval architecture.",
+                        "artifact_type": "summary",
+                        "kind": "doc",
+                    },
+                )
+            ],
+            reranked=True,
+            seed_count=1,
+        )
+
+    monkeypatch.setattr(evidence, "retrieve", fake_retrieve)
+    result = await retrieve_evidence(
+        ctx=object(),
+        product_id="p",
+        query="explain retrieval architecture",
+        top_k=6,
+        query_mode="drift_lite",
+        budget_ms=0.0,  # exhausted immediately -> skip optional stages
+    )
+
+    assert result.query_plan is not None
+    assert result.query_plan.budget_exceeded is True
+    assert "latency_budget_skipped_drift_lite" in result.query_plan.fallbacks
+    assert "drift_lite" not in result.query_plan.channels_run
+    assert not any(t.channel == "drift_lite" for t in result.trace)
+
+
+@pytest.mark.asyncio
 async def test_retrieve_evidence_combines_hybrid_grep_repomap_graph_and_skills(
     monkeypatch, tmp_path
 ) -> None:
