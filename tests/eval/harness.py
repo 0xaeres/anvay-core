@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -162,12 +163,20 @@ async def run_eval(
     product_id: str,
     top_k: int = 10,
     queries: list[dict] | None = None,
+    ctx: RetrievalContext | None = None,
+    graph_store: object | None = None,
 ) -> EvalReport:
-    """Drive the retrieval pipeline over the loaded queries and score them."""
+    """Drive the retrieval pipeline over the loaded queries and score them.
+
+    Pass `graph_store` to exercise the graph-local channel (it is otherwise
+    inert). Pass `ctx` to reuse a context across runs (e.g. graph ablation);
+    when omitted, a context is built from `config` and closed on exit.
+    """
     if queries is None:
         _, queries = load_queries()
 
-    ctx = RetrievalContext.from_config(config)
+    own_ctx = ctx is None
+    ctx = ctx or RetrievalContext.from_config(config)
     try:
         results: list[QueryResult] = []
         for q in queries:
@@ -176,7 +185,12 @@ async def run_eval(
             tags = q.get("tags") or []
             try:
                 rr = await retrieve_evidence(
-                    ctx=ctx, product_id=product_id, query=text, top_k=top_k, mode="auto"
+                    ctx=ctx,
+                    product_id=product_id,
+                    query=text,
+                    top_k=top_k,
+                    mode="auto",
+                    graph_store=graph_store,
                 )
                 hits = [_candidate_to_hit(candidate) for candidate in rr.candidates]
             except Exception as e:
@@ -196,7 +210,105 @@ async def run_eval(
             )
         return EvalReport(results=results, top_k=top_k)
     finally:
-        await ctx.aclose()
+        if own_ctx:
+            await ctx.aclose()
+
+
+def filter_by_tags(queries: list[dict], tags: Sequence[str]) -> list[dict]:
+    """Return queries carrying at least one of `tags`."""
+    wanted = {t.lower() for t in tags}
+    return [q for q in queries if wanted & {str(t).lower() for t in (q.get("tags") or [])}]
+
+
+@dataclass
+class AblationReport:
+    """Graph-channel ablation: the same query slice with graph on vs. off.
+
+    The graph is justified only if it moves the number on this slice — the same
+    bar AGENTS.md sets for every retrieval layer.
+    """
+
+    tags: list[str]
+    with_graph: EvalReport
+    without_graph: EvalReport
+
+    @property
+    def delta_recall(self) -> float:
+        return self.with_graph.recall_at_k - self.without_graph.recall_at_k
+
+    @property
+    def delta_mrr(self) -> float:
+        return self.with_graph.mrr - self.without_graph.mrr
+
+    @property
+    def delta_ndcg(self) -> float:
+        return self.with_graph.ndcg_at_k - self.without_graph.ndcg_at_k
+
+    @property
+    def graph_helps(self) -> bool:
+        """True when graph does not regress and improves at least one metric."""
+        non_regressing = (
+            self.delta_recall >= 0 and self.delta_mrr >= 0 and self.delta_ndcg >= 0
+        )
+        improves = self.delta_recall > 0 or self.delta_mrr > 0 or self.delta_ndcg > 0
+        return non_regressing and improves
+
+    def render(self) -> str:
+        return "\n".join(
+            [
+                f"graph ablation over tags={self.tags} ({self.without_graph.total} queries)",
+                f"  recall@{self.with_graph.top_k}: "
+                f"{self.without_graph.recall_at_k:.3f} -> {self.with_graph.recall_at_k:.3f} "
+                f"(Δ{self.delta_recall:+.3f})",
+                f"  MRR:        {self.without_graph.mrr:.3f} -> {self.with_graph.mrr:.3f} "
+                f"(Δ{self.delta_mrr:+.3f})",
+                f"  nDCG@{self.with_graph.top_k}:   {self.without_graph.ndcg_at_k:.3f} -> "
+                f"{self.with_graph.ndcg_at_k:.3f} (Δ{self.delta_ndcg:+.3f})",
+                f"  graph_helps: {self.graph_helps}",
+            ]
+        )
+
+
+async def run_ablation(
+    *,
+    config: AnvayConfig,
+    product_id: str,
+    graph_store: object,
+    top_k: int = 10,
+    tags: Sequence[str] = ("relational", "graph"),
+    queries: list[dict] | None = None,
+    ctx: RetrievalContext | None = None,
+) -> AblationReport:
+    """Run the graph-tagged slice twice (graph off, then on) and diff the metrics."""
+    if queries is None:
+        _, queries = load_queries()
+    slice_queries = filter_by_tags(queries, tags)
+
+    own_ctx = ctx is None
+    ctx = ctx or RetrievalContext.from_config(config)
+    try:
+        without_graph = await run_eval(
+            config=config,
+            product_id=product_id,
+            top_k=top_k,
+            queries=slice_queries,
+            ctx=ctx,
+            graph_store=None,
+        )
+        with_graph = await run_eval(
+            config=config,
+            product_id=product_id,
+            top_k=top_k,
+            queries=slice_queries,
+            ctx=ctx,
+            graph_store=graph_store,
+        )
+    finally:
+        if own_ctx:
+            await ctx.aclose()
+    return AblationReport(
+        tags=list(tags), with_graph=with_graph, without_graph=without_graph
+    )
 
 
 def _candidate_to_hit(candidate: EvidenceCandidate) -> Hit:

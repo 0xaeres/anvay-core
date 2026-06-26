@@ -19,7 +19,7 @@ import pytest
 
 from anvay.config import AnvayConfig
 
-from .harness import load_queries, run_eval
+from .harness import load_queries, run_ablation, run_eval
 
 
 @pytest.mark.eval
@@ -41,6 +41,46 @@ async def test_retrieval_quality() -> None:
         f"recall@10 = {report.recall_at_k:.3f} below floor {floor_recall}"
     )
     assert report.mrr >= floor_mrr, f"MRR = {report.mrr:.3f} below floor {floor_mrr}"
+
+
+@pytest.mark.eval
+async def test_graph_channel_helps_on_relational_slice() -> None:
+    """Ablation: the graph channel must not regress the relational/graph slice.
+
+    Enforces AGENTS.md's rule that the graph is a navigation layer justified by
+    an eval-set win. Requires a live graph store in addition to the retrieval
+    stack; skips cleanly when either is down.
+    """
+    from anvay.graph.store import create_graph_store
+
+    config = _load_config_or_skip()
+    meta, queries = load_queries()
+    product_id = os.environ.get("ANVAY_EVAL_PRODUCT") or meta.get("ingested_product_id")
+    if not product_id:
+        pytest.skip("no product_id configured (set ANVAY_EVAL_PRODUCT or _meta.ingested_product_id)")
+
+    _skip_unless_infra_reachable(config)
+
+    graph_store = create_graph_store(config)
+    if not await graph_store.health():
+        await graph_store.aclose()
+        pytest.skip("graph store unreachable")
+    try:
+        report = await run_ablation(
+            config=config,
+            product_id=product_id,
+            graph_store=graph_store,
+            top_k=10,
+            tags=("relational", "graph"),
+            queries=queries,
+        )
+    finally:
+        await graph_store.aclose()
+    print("\n" + report.render())
+
+    assert report.delta_recall >= 0, f"graph regressed recall: {report.render()}"
+    assert report.delta_mrr >= 0, f"graph regressed MRR: {report.render()}"
+    assert report.delta_ndcg >= 0, f"graph regressed nDCG: {report.render()}"
 
 
 # ---------------------------------------------------------------- helpers
