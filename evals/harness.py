@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, computed_field
 from anvay.config import AnvayConfig
 from anvay.connectors.local_fs import LocalFsConfig, LocalFsSource
 from anvay.ingest.pipeline import IngestStats, run_ingest
+from evals.corpus import PRODUCTS, has_suite_data
 from evals.run_code_eval import CodeReport
 from evals.run_code_eval import run as run_code_eval
 from evals.run_ragas import Report as RagReport
@@ -101,6 +102,7 @@ async def run_suites(
     fixture_path: Path | None = None,
     ingest_fixture: bool = True,
     golden_path: Path = DEFAULT_GOLDEN,
+    queries_path: Path | None = None,
     limit: int | None = None,
     top_k: int = 10,
 ) -> EvalRunArtifact:
@@ -130,7 +132,9 @@ async def run_suites(
                     product_id=suite_product,
                     out_dir=run_dir,
                     ingest=ingest,
-                    golden_path=golden_path,
+                    # retrieval reads its own queries golden; fall back to
+                    # golden_path (today's behavior) when no explicit path given.
+                    golden_path=queries_path or golden_path,
                     top_k=top_k,
                 )
             )
@@ -170,6 +174,44 @@ async def run_suites(
     )
     (run_dir / "summary.md").write_text(render_markdown_summary(artifact), encoding="utf-8")
     return artifact
+
+
+async def run_for_product(
+    *,
+    product_id: str,
+    suites: tuple[SuiteName, ...],
+    config: AnvayConfig,
+    config_path: Path,
+    out_dir: Path = DEFAULT_OUT_DIR,
+    ingest_fixture: bool | None = None,
+    limit: int | None = None,
+    top_k: int = 10,
+) -> EvalRunArtifact:
+    """Run the requested suites for one registered product.
+
+    Thin wrapper over :func:`run_suites` that pulls the product's eval assets
+    from the corpus registry. Only suites with an authored dataset for this
+    product are run; callers that need a "skipped" signal should filter against
+    :func:`evals.corpus.has_suite_data` before calling. When the product has a
+    fixture path, ingest it for a self-contained run; otherwise query the live
+    index (``ingest_fixture`` defaults to whether a fixture exists).
+    """
+    p = PRODUCTS[product_id]
+    runnable = tuple(s for s in suites if has_suite_data(p, s))
+    do_ingest = ingest_fixture if ingest_fixture is not None else p.fixture_path is not None
+    return await run_suites(
+        suites=runnable,
+        config=config,
+        config_path=config_path,
+        out_dir=out_dir,
+        product_id=p.product_id,
+        fixture_path=p.fixture_path,
+        ingest_fixture=do_ingest,
+        golden_path=p.golden_path or DEFAULT_GOLDEN,
+        queries_path=p.queries_path,
+        limit=limit,
+        top_k=top_k,
+    )
 
 
 async def _ingest_fixture(
