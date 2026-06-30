@@ -74,12 +74,13 @@ Ask Anvay:
 
 - A product-scoped retrieval index for code and docs.
 - A tree-sitter repo map that helps agents understand symbols and structure.
-- A knowledge graph for answering in-depth queries.
-- An LLM assited, but human-approved `SKILL.md` committed to a skills repo.
-- An MCP server that exposes approved skills and the project context to agents.
+- A knowledge graph for answering in-depth queries and tracing change impact.
+- Graph community summaries embedded alongside corpus chunks for broad context.
+- An LLM-assisted, human-approved `SKILL.md` committed to a skills repo.
+- An MCP server that exposes approved skills and project context to agents.
 
-Current source connectors cover GitHub repositories, local filesystems, Jira,
-and Confluence.
+Current source connectors: GitHub repositories, local filesystems, Jira,
+Confluence, and remote MCP servers (Streamable HTTP).
 
 ## What Anvay Guarantees
 
@@ -92,13 +93,13 @@ and Confluence.
   resources from derived indexes.
 - **Measured retrieval.** The serving path is a multi-channel evidence engine
   managed by `retrieve_evidence()`. It integrates dense + BM25 vector search,
-  exact text grep, repo-map symbol outlines, graph-local path traversal, and
-  approved skill memories. Results are dynamically mixed via cross-encoder
-  reranking and gated by continuous evaluation metrics (e.g., faithfulness ≥ 0.85,
-  nDCG@10 ≥ 0.75).
-- **Portable output.** Approved skills are ordinary Agent Skills served through MCP, so
-  Claude, Codex, Cursor, Continue, and other clients can consume the same product
-  guidance.
+  exact text grep, repo-map symbol outlines, graph-local path traversal,
+  community summaries, and approved skill memories. Results are dynamically
+  mixed via cross-encoder reranking and gated by continuous evaluation metrics
+  (e.g., faithfulness ≥ 0.85, nDCG@10 ≥ 0.75).
+- **Portable output.** Approved skills are ordinary Agent Skills served through
+  MCP, so Claude, Codex, Cursor, Continue, and other clients can consume the
+  same product guidance.
 
 See [AGENTS.md](./AGENTS.md) for contributor invariants and
 [ENGINEERING.md](./ENGINEERING.md) for the formal backend spec.
@@ -112,11 +113,13 @@ flowchart LR
     Local["Local filesystem"]
     Jira["Jira"]
     Confluence["Confluence"]
+    RemoteMCP["Remote MCP servers"]
   end
 
   subgraph App["Anvay backend process"]
     FastAPI["FastAPI routes"]
     SourceSync["Source sync tasks"]
+    Daemon["Index daemon\ncontinuous watch"]
     Ingest["Delta ingest pipeline"]
     Retrieval["RetrievalContext + retrieve_evidence"]
     Council["LangGraph council runner"]
@@ -164,6 +167,14 @@ flowchart LR
   Local --> SourceSync
   Jira --> SourceSync
   Confluence --> SourceSync
+  RemoteMCP --> SourceSync
+
+  GitHub --> Daemon
+  Confluence --> Daemon
+  Jira --> Daemon
+  RemoteMCP --> Daemon
+  Daemon --> Ingest
+
   SourceSync --> Ingest
   Ingest --> Registry
   Ingest --> Embedder
@@ -203,14 +214,16 @@ Anvay separates source-of-truth state from derived serving state:
 
 | Layer | Component | Responsibility |
 |---|---|---|
-| API | `anvay/api/` | Product, source, council, proposal, skill, setup, auth, and dashboard routes. |
+| API | `anvay/api/` | Product, source, council, proposal, skill, agent (GraphRAG), evals, setup, auth, and dashboard routes. |
 | Registry | SQLite via `anvay/registry.py` | Products, product membership, runtime sources, sync manifests, sync runs, enrichment jobs. |
 | Queue | SQLite via `anvay/council/queue.py` | Council sessions, proposal rows, eval results, improvement signals. |
-| Ingest | `anvay/ingest/` | Source diff, chunking, optional enrichment, embeddings, sparse vectors, graph extraction, derived-index writes, stale cleanup. |
-| Retrieval | `anvay/retrieval/` | Dense + BM25 search, RRF, configured rerank, plus evidence assembly from grep, repo-map symbols, graph-local candidates, summaries, and approved skills. |
-| Council | `anvay/council/` | Planner, expert fanout, synthesizer, repair, eval, finalizer, LangGraph checkpoints, SSE progress. |
+| Connectors | `anvay/connectors/` | GitHub, local filesystem, Jira, Confluence, remote MCP (Streamable HTTP). Continuous-watch daemon in `anvay/daemon.py`. |
+| Ingest | `anvay/ingest/` | Source diff, chunking, optional enrichment, embeddings, sparse vectors, graph extraction, community summaries, derived-index writes, stale cleanup. |
+| Retrieval | `anvay/retrieval/` | Dense + BM25 search, RRF, configured rerank, plus evidence assembly from grep, repo-map symbols, graph-local candidates, community summaries, and approved skills. |
+| Council | `anvay/council/` | Planner, synthesizer, repair, eval, finalizer, LangGraph checkpoints, SSE progress. |
+| Graph | `anvay/graph/` | Tree-sitter extraction, bounded LLM fact layer, FalkorDB store, GraphRAG engine, change-impact and dependency-trace analysis. |
 | Skills | `anvay/skills/` | Agent Skills parsing, storage, provenance, approval write path, Git commit/push, approved-skill indexing. |
-| MCP | `anvay/mcp_server/` | `find_skills`, `get_skill`, `query_code_context`, `grep_corpus`, `hybrid_search_corpus`, `evidence_search_corpus`, `ask_product_graph`. |
+| MCP | `anvay/mcp_server/` | `find_skills`, `get_skill`, `query_code_context`, `grep_corpus`, `hybrid_search_corpus`, `evidence_search_corpus`, `ask_product_graph`, `report_outcome`. |
 | UI | `../anvay-ui/` | Product onboarding, sync logs, council sessions, review/approval UX. |
 
 For a code-level module map and end-to-end traces, use
@@ -226,13 +239,13 @@ sequenceDiagram
   participant UI as Anvay UI
   participant API as FastAPI
   participant Registry as SQLite registry
-  participant Source as Source adapter
+  participant Source as Source connector
   participant Ingest as Ingest pipeline
   participant Qdrant
   participant Graph as FalkorDB Graph
   participant RepoMap as Repo map JSON
   participant Queue as Proposal queue
-  participant Council as Expert council
+  participant Council as LangGraph council
   participant Skills as Skills checkout
   participant MCP as MCP server
   participant Agent as MCP client
@@ -240,20 +253,23 @@ sequenceDiagram
   User->>UI: Create product + add source
   UI->>API: POST /products + POST /products/{product}/sources
   API->>Registry: Store product, membership, encrypted source config
+
   User->>UI: Sync source
   UI->>API: POST /products/{product}/sources/{source}/sync
   API->>Registry: Mark runtime source syncing
   API-->>UI: Return queued=true
-  API->>Source: Clone repo or open filesystem / Jira / Confluence source
+  API->>Source: Clone repo / open local FS / connect Jira / Confluence / remote MCP
   Source->>Ingest: Stream resource refs + contents
   Ingest->>Registry: Load manifest + compute diff
   Ingest->>Qdrant: Upsert changed code/text chunks with product_id
-  Ingest->>Graph: Upsert changed graph nodes/edges
+  Ingest->>Graph: Upsert changed graph nodes/edges + community summaries
   Ingest->>Qdrant: Delete stale chunk IDs after successful upsert
   Ingest->>Graph: Retire removed graph facts
   Ingest->>Registry: Persist manifest + sync run counts
   API->>RepoMap: Save combined symbol outline for product
   API-->>UI: Stream sync log until done
+
+  Note over Source,Ingest: Daemon (daemon.py) watches connectors<br/>and re-runs ingest on live update events
 
   User->>UI: Run council
   UI->>API: POST /products/{product}/council/sessions
@@ -261,8 +277,8 @@ sequenceDiagram
   API->>Council: Start background LangGraph run
   Council->>Qdrant: Dense + BM25 search, RRF, rerank
   Council->>RepoMap: Add lexically ranked symbol outline
-  Council->>Graph: Resolve anchors + traverse local graph when useful
-  Council-->>UI: Stream planner/expert/synth/eval events over SSE
+  Council->>Graph: Resolve anchors + traverse local graph
+  Council-->>UI: Stream planner/synthesizer/repair/eval events over SSE
   Council->>Queue: Enqueue complete proposal + eval results
 
   User->>UI: Review + approve
@@ -274,7 +290,7 @@ sequenceDiagram
 
   Agent->>MCP: find_skills / get_skill
   MCP->>Skills: Load approved product skills
-  Agent->>MCP: query_code_context / hybrid_search_corpus
+  Agent->>MCP: query_code_context / grep_corpus / hybrid_search_corpus
   MCP->>Qdrant: Product-scoped dense + BM25 retrieval
   Agent->>MCP: evidence_search_corpus / ask_product_graph
   MCP->>Graph: Resolve graph anchors + paths
@@ -287,28 +303,25 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-  Topic["Council topic"] --> Planner["Planner builds evidence plan"]
-  Planner --> Architect["Architect report"]
-  Planner --> Domain["Domain expert report"]
-  Planner --> Quality["Quality expert report"]
-  Architect --> Synth["Synthesizer writes product_master Markdown"]
-  Domain --> Synth
-  Quality --> Synth
-  Synth --> Repair["Completeness repair loop, max 3 attempts"]
-  Repair --> Eval["Deterministic checks: identity, structure, name, citations, trigger"]
+  Topic["Council topic"] --> Planner["Planner\nassembles evidence plan + repo map"]
+  Planner --> Synth["Synthesizer\nwrites full product_master Markdown skill"]
+  Synth --> Repair["Completeness repair loop\nmax 3 attempts"]
+  Repair --> Eval["Deterministic checks\nidentity · structure · name · citations · trigger\n+ optional faithfulness gate"]
   Eval --> Complete{"Complete and faithful?"}
-  Complete -- "no" --> Stop["Stop session, no proposal queued"]
+  Complete -- "no" --> Stop["Stop session\nno proposal queued"]
   Complete -- "yes" --> Finalizer["Finalizer emits proposal"]
   Finalizer --> Queue["Queue pending proposal"]
   Queue --> Review["Human review"]
   Review -->|approve| Publish["Write SKILL.md, commit/push, index skill body"]
   Review -->|edit then approve| Publish
-  Review -->|reject| Reject["Record rejection signal, no skill written"]
+  Review -->|reject| Reject["Record rejection signal\nno skill written"]
 ```
 
-The council emits one Markdown product skill, not JSON. Incomplete drafts never enter the
-review queue. See [ENGINEERING.md](./ENGINEERING.md) for the full council
-contract.
+The council emits one Markdown product skill, not JSON. Incomplete drafts never
+enter the review queue. The expert fanout (architect, domain_expert,
+quality_expert) is not part of the current pipeline — the Synthesizer builds
+the full skill in a single LLM call from the Planner's context pack. See
+[ENGINEERING.md](./ENGINEERING.md) for the full council contract.
 
 ## Quick Start
 
@@ -408,11 +421,14 @@ Exposed MCP tools:
 
 | Tool | Purpose |
 |---|---|
-| `find_skills` | Find approved product skills for a task/context. |
-| `get_skill` | Return one approved skill body. |
-| `query_code_context` | Retrieve product-scoped source context for a symbol or question. |
-| `hybrid_search_corpus` | Run direct dense + BM25 + rerank corpus search. |
-| `report_outcome` | Record whether a skill helped. |
+| `find_skills` | Rank curated skills relevant to a query and context. Call first when starting a task. |
+| `get_skill` | Return the full Markdown body and frontmatter for a named skill. |
+| `query_code_context` | Locate code chunks by symbol or identifier. Fast, exact lookup. |
+| `grep_corpus` | Exact indexed chunk grep for symbols, constants, routes, and literals semantic search may miss. |
+| `hybrid_search_corpus` | Dense + BM25 + rerank corpus search when symbol lookup is too narrow. |
+| `evidence_search_corpus` | Full evidence retrieval: hybrid search + grep + repo map + graph-local context + approved skills. Use for product-system questions needing cited context. |
+| `ask_product_graph` | Multi-hop GraphRAG: resolves entities, traverses the product graph, retrieves cited corpus evidence, returns an evidence-backed answer. |
+| `report_outcome` | Record whether a skill helped. Feeds staleness tracking. |
 
 ## Production Deployment
 
