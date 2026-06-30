@@ -32,7 +32,7 @@ cp .env.example .env
 Fill `.env`:
 
 ```bash
-DEEPINFRA_API_KEY=...
+LLM_API_KEY=...
 ANVAY_ENV=production
 ANVAY_TOKEN_KEY=...
 ANVAY_SECRET_KEY=...
@@ -87,7 +87,7 @@ curl -i https://api.example.com/health
 Expected:
 
 ```json
-{"status":"ok"}
+{ "status": "ok" }
 ```
 
 Qdrant should not be reachable from public internet:

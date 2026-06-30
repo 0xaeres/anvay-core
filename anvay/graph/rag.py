@@ -282,6 +282,8 @@ async def _retrieve_answer_evidence(
             mode="auto",
             graph_node_ids=_evidence_graph_node_ids(resolved_nodes, traversal_nodes),
         )
+    config = getattr(ctx, "config", None)
+    budget_ms = getattr(config.retrieval, "interactive_budget_ms", None) if config else None
     return await retrieve_evidence(
         ctx=ctx,
         graph_store=graph_store,
@@ -292,6 +294,7 @@ async def _retrieve_answer_evidence(
         current_file=current_file,
         max_depth=max_depth,
         query_mode=query_mode,
+        budget_ms=budget_ms,
     )
 
 

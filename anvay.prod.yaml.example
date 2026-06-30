@@ -20,25 +20,25 @@ models:
   council:
     provider: deepinfra
     model: deepseek-ai/DeepSeek-V3
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
     temperature: 0.0
   light:
     provider: deepinfra
     model: google/gemma-4-26B-A4B-it
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
   embedding:
     provider: deepinfra
     model: Qwen/Qwen3-Embedding-4B
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
     dim: 2560
     instruction_profile: qwen3
   reranker:
     provider: deepinfra
     model: Qwen/Qwen3-Reranker-4B
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/inference
 
 ingestion:
@@ -61,6 +61,10 @@ ingestion:
     enabled: false
     poll_interval_s: 5.0
     max_attempts: 3
+
+retrieval:
+  # Soft deadline for interactive (MCP) evidence retrieval; null = unbounded.
+  interactive_budget_ms: 8000
 
 server:
   host: 0.0.0.0

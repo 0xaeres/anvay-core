@@ -535,3 +535,40 @@ async def test_delta_sync_retires_graph_facts_for_removed_resources(
     assert graph.retired == [("p", ["fact-1", "fact-2"])]
     assert indexer.deleted == ["gone-chunk-id"]
     assert registry.get_resource_manifest("p", "source", "gone.py") is None
+
+
+@pytest.mark.asyncio
+async def test_progress_events_cover_read_and_index_phases(tmp_path: Path) -> None:
+    """Progress is reported for both the read and index phases, and the index
+    phase advances to the full resource count (so the bar reflects chunking,
+    not just reading)."""
+    registry = Registry(tmp_path / "registry.db")
+    cfg = _config(tmp_path)
+    source = FakeSource({f"doc{i}.txt": "hello world " * 20 for i in range(5)})
+
+    events: list[dict] = []
+
+    async def sink(event: dict) -> None:
+        events.append(event)
+
+    await pipeline.run_ingest(
+        product_id="p",
+        source=source,
+        config=cfg,
+        registry=registry,
+        source_key="source",
+        event_sink=sink,
+        total_resources=5,
+    )
+
+    progress = [e for e in events if e["level"] == "progress"]
+    read = [e for e in progress if e["phase"] == "read"]
+    index = [e for e in progress if e["phase"] == "index"]
+
+    assert read, "expected read-phase progress events"
+    assert index, "expected index-phase progress events"
+    # Both phases account for every resource and report a known denominator.
+    assert all(e["total"] == 5 for e in progress)
+    assert read[-1]["done"] == 5
+    assert index[-1]["done"] == 5
+    assert index[-1]["pct"] == 100

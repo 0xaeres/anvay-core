@@ -7,14 +7,25 @@ the final quality gate.
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from collections.abc import Sequence
 
 from anvay.council.skill_parser import parse_skill_markdown, validate_skill_markdown
 from anvay.council.state import EvidenceChunk, SkillDraft, SkillEvalResult, SkillPlanItem
 
+log = logging.getLogger(__name__)
+
 SUITE_VERSION = "skill-quality-v1"
 _NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+_CITATION_RE = re.compile(r"\[file:\s*(.+?):(\d+)\]", re.IGNORECASE)
+
+# Faithfulness gate bounds: judge at most this many cited claims per draft, and
+# only judge claims whose cited excerpt is long enough to entail anything. Short
+# or empty excerpts (e.g. test stubs) are skipped so the gate stays fail-soft.
+_MAX_FAITHFULNESS_CLAIMS = 6
+_MIN_EXCERPT_LEN = 24
 
 
 async def evaluate_skill_draft(
@@ -26,7 +37,6 @@ async def evaluate_skill_draft(
     attempt: int = 0,
     signals_used: Sequence[str] = (),
 ) -> SkillEvalResult:
-    _ = chat
     failures: list[str] = []
     passed_checks = 0
     total_checks = 5
@@ -68,8 +78,18 @@ async def evaluate_skill_draft(
     else:
         failures.extend(trigger_failures)
 
+    # Deterministic checks set the quality score. The LLM faithfulness gate is
+    # an additional, fail-soft pass: it can only add failures (never raise the
+    # score), and it no-ops unless a real chat client and citable excerpts are
+    # present. Human approval remains the final quality gate.
     deterministic_score = passed_checks / total_checks
     quality_score = max(0.0, min(1.0, deterministic_score))
+    signals = list(signals_used)
+    faithfulness_failures = await _faithfulness_failures(draft=draft, evidence=evidence, chat=chat)
+    if faithfulness_failures:
+        failures.extend(faithfulness_failures)
+        signals.append("llm_faithfulness")
+
     status = "passed" if not failures else "failed"
     if status == "passed" and attempt > 0:
         status = "repaired"
@@ -80,7 +100,7 @@ async def evaluate_skill_draft(
         failures=_dedupe(failures),
         quality_score=round(quality_score, 4),
         attempts=attempt,
-        signals_used=list(signals_used),
+        signals_used=signals,
     )
 
 
@@ -88,6 +108,119 @@ def failure_brief(result: SkillEvalResult) -> str:
     if not result.failures:
         return "No eval failures."
     return "\n".join(f"- {failure}" for failure in result.failures)
+
+
+def _cited_claims(body: str, evidence: Sequence[EvidenceChunk]) -> list[dict]:
+    """Pair each `[file: path:line]` citation with its claim line and excerpt.
+
+    Only claims whose cited (file, line) maps to a non-trivial retrieved excerpt
+    are returned — the judge needs source text to check entailment against.
+    """
+    excerpt_by_anchor = {(e.file, int(e.line)): e.excerpt for e in evidence}
+    claims: list[dict] = []
+    seen: set[tuple[str, str, int]] = set()
+    for line in body.splitlines():
+        match = _CITATION_RE.search(line)
+        if not match:
+            continue
+        file_ = match.group(1).strip()
+        try:
+            anchor_line = int(match.group(2))
+        except ValueError:
+            continue
+        claim = _CITATION_RE.sub("", line).strip(" -*0123456789.\t")
+        excerpt = (excerpt_by_anchor.get((file_, anchor_line)) or "").strip()
+        if len(claim) < 8 or len(excerpt) < _MIN_EXCERPT_LEN:
+            continue
+        key = (file_, claim, anchor_line)
+        if key in seen:
+            continue
+        seen.add(key)
+        claims.append(
+            {"id": len(claims), "claim": claim, "anchor": f"{file_}:{anchor_line}", "excerpt": excerpt}
+        )
+        if len(claims) >= _MAX_FAITHFULNESS_CLAIMS:
+            break
+    return claims
+
+
+async def _faithfulness_failures(
+    *,
+    draft: SkillDraft,
+    evidence: Sequence[EvidenceChunk],
+    chat: object,
+) -> list[str]:
+    """Bounded, fail-soft LLM entailment check for cited claims.
+
+    Returns failure strings only for claims the judge marks as NOT supported by
+    their cited excerpt. Any error, missing chat client, unparseable judge
+    output, or absence of citable excerpts yields no failures (fail-soft).
+    """
+    judge = getattr(chat, "chat", None)
+    if not callable(judge):
+        return []
+    claims = _cited_claims(draft.body, evidence)
+    if not claims:
+        return []
+    payload = {
+        "claims": [{"id": c["id"], "claim": c["claim"], "excerpt": c["excerpt"]} for c in claims]
+    }
+    try:
+        resp = await judge(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict citation-faithfulness judge for an engineering "
+                        "knowledge base. For each claim, decide whether the claim is "
+                        "supported (entailed) by its cited excerpt alone. Mark a claim "
+                        "unsupported only when the excerpt clearly does not back it. When "
+                        "unsure, treat it as supported. Return JSON "
+                        '{"unsupported": [<id>, ...]} listing only unsupported claim ids.'
+                    ),
+                },
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            json_mode=True,
+            max_tokens=400,
+            stream=False,
+        )
+    except Exception as e:  # fail-soft: never block the gate on judge errors
+        log.warning("faithfulness judge failed for skill %s: %s", draft.name, e)
+        return []
+
+    unsupported = _parse_unsupported_ids(getattr(resp, "content", "") or "")
+    by_id = {c["id"]: c for c in claims}
+    failures = [
+        f"Citation faithfulness failed: claim `{by_id[i]['claim'][:80]}` is not supported "
+        f"by cited excerpt `[{by_id[i]['anchor']}]`."
+        for i in unsupported
+        if i in by_id
+    ]
+    return failures[:_MAX_FAITHFULNESS_CLAIMS]
+
+
+def _parse_unsupported_ids(content: str) -> list[int]:
+    text = content.strip()
+    if not text:
+        return []
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        text = text[start : end + 1]
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    raw = data.get("unsupported") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: list[int] = []
+    for item in raw:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _valid_agent_skill_identity(draft: SkillDraft) -> bool:

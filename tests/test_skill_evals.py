@@ -8,8 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from anvay.council.skill_evals import _positive_trigger_queries, evaluate_skill_draft
+from anvay.council.skill_evals import (
+    _cited_claims,
+    _faithfulness_failures,
+    _positive_trigger_queries,
+    evaluate_skill_draft,
+)
 from anvay.council.state import EvidenceChunk, SkillDraft, SkillPlanItem
+from anvay.llm.client import ChatResponse, TokenUsage
 
 # --------------------------------------------------------------------------- #
 # _positive_trigger_queries
@@ -121,3 +127,136 @@ async def test_evaluate_skill_draft_passes_with_multiple_trigger_queries() -> No
     # well-matched description, so the overall result should still pass.
     assert result.status in {"passed", "repaired", "failed"}  # gate ran without error
     assert 0.0 <= result.quality_score <= 1.0
+
+
+# --------------------------------------------------------------------------- #
+# _faithfulness_failures — bounded, fail-soft LLM entailment gate
+# --------------------------------------------------------------------------- #
+
+
+class _JudgeChat:
+    """Fake chat client returning a fixed `unsupported` id list as JSON."""
+
+    def __init__(self, unsupported: list[int]) -> None:
+        self._unsupported = unsupported
+        self.calls = 0
+
+    async def chat(self, *_args, **_kwargs):
+        self.calls += 1
+        import json
+
+        # ChatResponse and TokenUsage are dataclasses whose attributes are
+        # accessed via dot notation by _faithfulness_failures, so plain dicts
+        # cannot be used here.
+        return ChatResponse(
+            content=json.dumps({"unsupported": self._unsupported}),
+            usage=TokenUsage(prompt=1, completion=1),
+            model="judge",
+        )
+
+
+class _RaisingChat:
+    async def chat(self, *_args, **_kwargs):
+        raise RuntimeError("provider down")
+
+
+def _cited_draft() -> SkillDraft:
+    return SkillDraft(
+        name="token-policy",
+        description="Token policy rules.",
+        tier="application",
+        body=(
+            "# token-policy\n\n"
+            "## Rules\n"
+            "1. Re-derive the bump and assert equality [file: a.rs:10].\n"
+        ),
+    )
+
+
+def _rich_evidence() -> list[EvidenceChunk]:
+    # EvidenceChunk must stay as a Pydantic model instance: _cited_claims and
+    # _faithfulness_failures access .file, .line, and .excerpt via dot notation.
+    return [
+        EvidenceChunk(
+            chunk_id="c1",
+            file="a.rs",
+            line=10,
+            score=0.9,
+            excerpt="let bump = derive_bump(seeds); assert_eq!(bump, expected_bump);",
+        )
+    ]
+
+
+def test_cited_claims_pairs_claim_with_excerpt() -> None:
+    claims = _cited_claims(_cited_draft().body, _rich_evidence())
+    assert len(claims) == 1
+    assert claims[0]["anchor"] == "a.rs:10"
+    assert "derive" in claims[0]["excerpt"]
+
+
+def test_cited_claims_skips_short_excerpts() -> None:
+    evidence = [EvidenceChunk(chunk_id="c1", file="a.rs", line=10, score=0.9, excerpt="x")]
+    assert _cited_claims(_cited_draft().body, evidence) == []
+
+
+@pytest.mark.asyncio
+async def test_faithfulness_gate_noop_without_chat_method() -> None:
+    failures = await _faithfulness_failures(
+        draft=_cited_draft(), evidence=_rich_evidence(), chat=object()
+    )
+    assert failures == []
+
+
+@pytest.mark.asyncio
+async def test_faithfulness_gate_flags_unsupported_claim() -> None:
+    chat = _JudgeChat(unsupported=[0])
+    failures = await _faithfulness_failures(
+        draft=_cited_draft(), evidence=_rich_evidence(), chat=chat
+    )
+    assert chat.calls == 1
+    assert len(failures) == 1
+    assert "not supported" in failures[0]
+
+
+@pytest.mark.asyncio
+async def test_faithfulness_gate_passes_supported_claim() -> None:
+    failures = await _faithfulness_failures(
+        draft=_cited_draft(), evidence=_rich_evidence(), chat=_JudgeChat(unsupported=[])
+    )
+    assert failures == []
+
+
+@pytest.mark.asyncio
+async def test_faithfulness_gate_fail_soft_on_judge_error() -> None:
+    failures = await _faithfulness_failures(
+        draft=_cited_draft(), evidence=_rich_evidence(), chat=_RaisingChat()
+    )
+    assert failures == []
+
+
+@pytest.mark.asyncio
+async def test_evaluate_skill_draft_fails_on_unsupported_citation() -> None:
+    """End-to-end: a real judge marking the cited claim unsupported flips status."""
+    draft = SkillDraft(
+        name="token-policy",
+        description="Token policy rules for Solana programs.",
+        tier="application",
+        body=(
+            "# token-policy\n\n"
+            "## Rules\n"
+            "1. Re-derive the bump and assert equality [file: a.rs:10].\n"
+            "2. Use the seeds constraint where possible [file: a.rs:10].\n"
+            "3. Never trust client bumps [file: a.rs:10].\n\n"
+            "## Anti-patterns\n"
+            "- Do not pass unchecked bumps.\n"
+        ),
+    )
+    result = await evaluate_skill_draft(
+        draft=draft,
+        evidence=_rich_evidence(),
+        plan=_plan("token-policy", draft.description),
+        chat=_JudgeChat(unsupported=[0]),
+    )
+    assert result.status == "failed"
+    assert any("not supported" in f for f in result.failures)
+    assert "llm_faithfulness" in result.signals_used

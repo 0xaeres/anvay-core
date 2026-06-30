@@ -2,8 +2,14 @@
 
 Topology:
 
-    START -> Planner -> (Architect, Domain Expert, Quality Expert)
-          -> Synthesizer -> Repair -> Eval -> Finalizer -> END
+    START -> Planner -> Synthesizer -> Repair -> Eval -> Finalizer -> END
+
+Skill generation is one LLM call (synthesis) grounded in deterministic KB
+artifacts the planner assembles — repo map + graph/structural summaries built
+at ingest — instead of a multi-expert fanout that re-derived them. Eval is
+deterministic-only by default (the LLM faithfulness judge is opt-in via
+`config.council.faithfulness_gate`). The graph stays a LangGraph so agentic-RAG
+nodes can be added later.
 
 The graph is bounded: three repair attempts per skill. All outputs remain
 proposals until a human approves them.
@@ -42,9 +48,6 @@ class CouncilHandles:
     chat_planner: ChatClient
     chat_evaluator: ChatClient
     chat_repair: ChatClient
-    chat_architect: ChatClient
-    chat_domain_expert: ChatClient
-    chat_quality_expert: ChatClient
     chat_synthesizer: ChatClient
 
     async def aclose(self) -> None:
@@ -56,9 +59,6 @@ class CouncilHandles:
                 self.chat_planner.aclose,
                 self.chat_evaluator.aclose,
                 self.chat_repair.aclose,
-                self.chat_architect.aclose,
-                self.chat_domain_expert.aclose,
-                self.chat_quality_expert.aclose,
                 self.chat_synthesizer.aclose,
             ]
         )
@@ -102,21 +102,6 @@ async def council_handles(
         ),
         chat_repair=_chat_from_cfg(
             repair_cfg, role="repair", token_sink=token_sink, trace_context=trace_context
-        ),
-        chat_architect=_chat_from_cfg(
-            evaluator_cfg, role="architect", token_sink=token_sink, trace_context=trace_context
-        ),
-        chat_domain_expert=_chat_from_cfg(
-            evaluator_cfg,
-            role="domain_expert",
-            token_sink=token_sink,
-            trace_context=trace_context,
-        ),
-        chat_quality_expert=_chat_from_cfg(
-            evaluator_cfg,
-            role="quality_expert",
-            token_sink=token_sink,
-            trace_context=trace_context,
         ),
         chat_synthesizer=_chat_from_cfg(
             synthesizer_cfg,
@@ -163,45 +148,6 @@ def build_graph(config: AnvayConfig, handles: CouncilHandles):
         except Exception as e:
             raise CouncilAgentError("planner", e) from e
 
-    async def architect_node(state: CouncilState) -> dict:
-        try:
-            return await skill.expert(
-                state,
-                name="architect",
-                config=config,
-                retrieval=handles.retrieval,
-                graph_store=handles.graph_store,
-                chat=handles.chat_architect,
-            )
-        except Exception as e:
-            raise CouncilAgentError("architect", e) from e
-
-    async def domain_expert_node(state: CouncilState) -> dict:
-        try:
-            return await skill.expert(
-                state,
-                name="domain_expert",
-                config=config,
-                retrieval=handles.retrieval,
-                graph_store=handles.graph_store,
-                chat=handles.chat_domain_expert,
-            )
-        except Exception as e:
-            raise CouncilAgentError("domain_expert", e) from e
-
-    async def quality_expert_node(state: CouncilState) -> dict:
-        try:
-            return await skill.expert(
-                state,
-                name="quality_expert",
-                config=config,
-                retrieval=handles.retrieval,
-                graph_store=handles.graph_store,
-                chat=handles.chat_quality_expert,
-            )
-        except Exception as e:
-            raise CouncilAgentError("quality_expert", e) from e
-
     async def synthesizer_node(state: CouncilState) -> dict:
         try:
             return await skill.synthesizer(
@@ -220,7 +166,7 @@ def build_graph(config: AnvayConfig, handles: CouncilHandles):
 
     async def evaluator_node(state: CouncilState) -> dict:
         try:
-            return await skill.evaluator(state, chat=handles.chat_evaluator)
+            return await skill.evaluator(state, config=config, chat=handles.chat_evaluator)
         except Exception as e:
             raise CouncilAgentError("skill_eval", e) from e
 
@@ -232,19 +178,13 @@ def build_graph(config: AnvayConfig, handles: CouncilHandles):
 
     graph: StateGraph = StateGraph(CouncilState)
     graph.add_node("planner", planner_node)
-    graph.add_node("architect", architect_node)
-    graph.add_node("domain_expert", domain_expert_node)
-    graph.add_node("quality_expert", quality_expert_node)
     graph.add_node("synthesizer", synthesizer_node)
     graph.add_node("repair", repair_node)
     graph.add_node("skill_eval", evaluator_node)
     graph.add_node("finalizer", finalizer_node)
 
     graph.add_edge(START, "planner")
-    graph.add_edge("planner", "architect")
-    graph.add_edge("planner", "domain_expert")
-    graph.add_edge("planner", "quality_expert")
-    graph.add_edge(["architect", "domain_expert", "quality_expert"], "synthesizer")
+    graph.add_edge("planner", "synthesizer")
     graph.add_edge("synthesizer", "repair")
     graph.add_edge("repair", "skill_eval")
     graph.add_edge("skill_eval", "finalizer")

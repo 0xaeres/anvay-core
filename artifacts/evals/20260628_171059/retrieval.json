@@ -1,0 +1,141 @@
+{
+  "suite": "retrieval",
+  "product_id": "zod",
+  "query_mode": "auto",
+  "metrics": {
+    "recall_at_k": 0.6666666666666666,
+    "mrr": 0.3595679012345679,
+    "ndcg_at_k": 0.8087516026603478
+  },
+  "thresholds": {
+    "min_recall_at_10": 0.5,
+    "min_mrr": 0.3,
+    "min_ndcg_at_10": 0.0
+  },
+  "misses": [
+    "parse",
+    "ZodObject",
+    "Trap"
+  ],
+  "items": [
+    {
+      "query": "ZodType",
+      "first_match_rank": 2,
+      "tags": [
+        "product_language",
+        "generated"
+      ],
+      "top_files": [
+        "github:colinhacks/zod/packages/zod/src/v4/core/schemas.ts",
+        "github:colinhacks/zod/packages/zod/src/v4/classic/schemas.ts",
+        "github:colinhacks/zod/packages/zod/src/v4/core/api.ts"
+      ]
+    },
+    {
+      "query": "ZodMini",
+      "first_match_rank": 9,
+      "tags": [
+        "product_language",
+        "generated"
+      ],
+      "top_files": [
+        "github:colinhacks/zod/packages/zod/src/v4/mini/schemas.ts",
+        "colinhacks/zod/packages/zod/src/v4/mini/schemas.ts",
+        "colinhacks/zod/packages/zod/src/v4/mini/iso.ts"
+      ]
+    },
+    {
+      "query": "$ZodBase64Internals",
+      "first_match_rank": 2,
+      "tags": [
+        "product_language",
+        "generated"
+      ],
+      "top_files": [
+        "github:colinhacks/zod/packages/zod/src/v4/classic/schemas.ts",
+        "github:colinhacks/zod/packages/zod/src/v4/core/schemas.ts",
+        "github:colinhacks/zod/packages/zod/src/v4/mini/schemas.ts",
+        "colinhacks/zod/packages/zod/src/v4/core/schemas.ts"
+      ]
+    },
+    {
+      "query": "ZodFailure",
+      "first_match_rank": 1,
+      "tags": [
+        "product_language",
+        "generated"
+      ],
+      "top_files": [
+        "github:colinhacks/zod/packages/bench/instanceof.ts",
+        "colinhacks/zod/packages/bench/instanceof.ts",
+        "github:colinhacks/zod/packages/docs-v3/ERROR_HANDLING.md"
+      ]
+    },
+    {
+      "query": "parse",
+      "first_match_rank": null,
+      "tags": [
+        "product_language",
+        "generated"
+      ],
+      "top_files": [
+        "github:colinhacks/zod/packages/docs/content/packages/core.mdx",
+        "github:colinhacks/zod/packages/zod/src/v4/classic/tests/function.test.ts",
+        "github:colinhacks/zod/packages/zod/src/v4/core/schemas.ts"
+      ]
+    },
+    {
+      "query": "zod/v4/core",
+      "first_match_rank": 1,
+      "tags": [
+        "system_map",
+        "generated"
+      ],
+      "top_files": [
+        "github:colinhacks/zod/packages/docs/content/v4/index.mdx",
+        "github:colinhacks/zod/packages/zod/src/v4/mini/tests/prototypes.test.ts",
+        "github:colinhacks/zod/packages/zod/src/v4/classic/tests/firstparty.test.ts",
+        "github:colinhacks/zod/packages/zod/src/v4/classic/tests/to-json-schema.test.ts"
+      ]
+    },
+    {
+      "query": "zod/v4/mini",
+      "first_match_rank": 8,
+      "tags": [
+        "system_map",
+        "generated"
+      ],
+      "top_files": [
+        "github:colinhacks/zod/packages/docs/content/library-authors.mdx",
+        "github:colinhacks/zod/packages/zod/src/v4/mini/checks.ts",
+        "github:colinhacks/zod/packages/resolution/src/index.ts"
+      ]
+    },
+    {
+      "query": "ZodObject",
+      "first_match_rank": null,
+      "tags": [
+        "data_model",
+        "generated"
+      ],
+      "top_files": [
+        "github:colinhacks/zod/packages/zod/src/v3/types.ts",
+        "github:colinhacks/zod/packages/zod/src/v4/core/schemas.ts",
+        "github:colinhacks/zod/packages/zod/src/v4/classic/schemas.ts"
+      ]
+    },
+    {
+      "query": "Trap",
+      "first_match_rank": null,
+      "tags": [
+        "known_traps",
+        "generated"
+      ],
+      "top_files": [
+        "github:colinhacks/zod/packages/bench/property-access.ts",
+        "github:colinhacks/zod/packages/zod/src/v4/classic/tests/recursive-types.test.ts",
+        "colinhacks/zod/packages/zod/src/v4/classic/tests/recursive-types.test.ts"
+      ]
+    }
+  ]
+}

@@ -1,112 +1,124 @@
 # Anvay Eval Harness
 
-Anvay evals are split by product behavior, but run through one command:
+One unified, production-grade eval for the thing that actually matters: **the
+quality of the context Anvay delivers**. It scores the *shipping* retrieval path
+— `anvay/retrieval/evidence.py::retrieve_evidence` (hybrid + grep + repo-map +
+**graph-local** + summaries) — not a low-level approximation of it.
 
 ```bash
-uv run anvay eval run --suite all
+# install the opt-in eval deps once
+uv sync --extra evals
+
+# run everything (clones+ingests zod/guava if their index is empty)
+uv run anvay eval run --products all
 ```
 
-Each run writes:
+## Cost — keep a routine run in cents
 
-- `artifacts/evals/<run_id>/summary.json`
-- `artifacts/evals/<run_id>/summary.md`
-- one suite JSON file, such as `retrieval.json`, `rag.json`, or `code.json`
+The eval is engineered to be cheap to iterate on:
 
-## Suites
+- **HQE is off** (`enrich=False`): the `ContextualEnricher` (3 hypothetical
+  questions per code chunk + doc blurbs over ~16k chunks) was the ~$2/cycle
+  driver on paid deepinfra **and** a 3-product eval showed it *degrades* quality
+  here (ctx_precision down on every product, ctx_recall flat-to-down). So it
+  stays off on both counts. The deterministic FalkorDB graph still builds.
+- **Judge results are cached to disk** (`artifacts/eval-cache/`, keyed by
+  `model+metric+inputs`). The judge runs at temp 0, so re-runs on unchanged data
+  are ~free. Delete the dir to force re-scoring.
+- **RAGAS scores the top 8 delivered contexts** (`context_precision` scores each
+  separately — the call-heaviest metric; 8 keeps measurement faithful to the
+  pipeline's top_k without scoring all 10).
+- **Use `--limit`** (e.g. 10/product) for routine/CI runs; a full sweep (no
+  limit) only before a release.
+- **Ingest is cached** — never re-ingests a populated product without
+  `--force-ingest`.
 
-| Suite | Dataset | Default fixture | Product | Metrics |
-|---|---|---|---|---|
-| `retrieval` | `tests/eval/queries.json` | repo root (`.`) | `anvay` | `recall_at_k`, `mrr`, `ndcg_at_k` |
-| `rag` | `evals/golden.jsonl` | `evals/fixtures/skills/seed` | `forge` | `faithfulness`, `answer_correctness`, `context_recall` |
-| `code` | `evals/golden.jsonl` | `evals/fixtures/skills/seed` | `forge` | `ndcg_at_10`, `recall_at_10`, pairwise preference |
+With HQE off + `--limit` + judge cache, a routine run is a few cents (judge only)
+and a full DeepSeek sweep is sub-$0.50. Verify on the deepinfra dashboard.
 
-Suite defaults can be overridden:
+Every run writes one directory under `artifacts/evals/<run_id>/`:
+
+- `summary.json` — the full `EvalRunArtifact` (per product, per mode).
+- `summary.md` — human-readable table + the **mode ablation delta**.
+- `<product>.json` — per-item detail (answer, scores, retrieved files, latency).
+
+## What it measures
+
+Per golden item, per evidence `query_mode`:
+
+| Group | Metric | How |
+|---|---|---|
+| Retrieval | `recall_at_k`, `mrr`, `ndcg_at_k` | deterministic, from `expected_files` (free) |
+| Answer | `faithfulness` | RAGAS — answer claims grounded in retrieved contexts |
+| Answer | `answer_correctness` | RAGAS `AnswerAccuracy` vs the reference answer |
+| Answer | `context_precision` | RAGAS — are retrieved contexts relevant (reference-aware) |
+| Answer | `context_recall` | RAGAS — is the reference covered by the contexts |
+| Diagnostics | `graph_hit_rate`, `avg_candidates`, `avg_latency_ms`, `misses` | per-mode, for pipeline debugging |
+
+RAGAS metrics come from `ragas.metrics.collections` (RAGAS 0.4) and run through
+`evals/ragas_adapter.py`, which wraps our OpenAI-compatible deepinfra endpoints.
+
+### Judge model — read this before trusting scores
+
+RAGAS uses structured (instructor) output, so the judge **must be a capable,
+non-reasoning instruct model**. Two lessons learned the hard way:
+
+- A weak judge (e.g. `gemma-4-31B`) scored obviously-correct answers at 0.0.
+- A *thinking* model (e.g. `Qwen3` reasoning) spends its whole token budget on
+  hidden reasoning and returns **empty** structured output → metric failure.
+
+The judge defaults to `models.chat_agent` (the strongest configured instruct
+model). Override per run with `--judge-model <model>`. We also dropped RAGAS
+`FactualCorrectness` (strict per-claim NLI scored correct answers at 0 even with
+a strong judge) in favour of `AnswerAccuracy`.
+
+## Query-rewrite ablation — removed
+
+The harness used to score `--modes auto,rewrite` for a per-metric delta. The
+verdict was conclusive (rewrite did not earn its extra LLM call), so the mode is
+gone — only `auto` is evaluated. See `evals/SUGGESTIONS.md` for the data.
+
+## Corpus
+
+Products live in `evals/corpus.py`. Each has one golden file
+`evals/products/<id>/golden.jsonl` of **realistic, natural-language dev
+questions** grounded in verified source files (not single-symbol lexical
+queries):
+
+| Product | Source | Ingest |
+|---|---|---|
+| `anvay` | this repo's `anvay/` package | local |
+| `zod` | `colinhacks/zod` → `packages/zod/src/v3` | shallow clone |
+| `guava` | `google/guava` → `…/common/collect` | shallow clone |
+
+Ingest runs with `enrich=False` (HQE off — see **Cost** above) and builds the
+deterministic **FalkorDB graph**. Re-ingest is skipped when a product already has
+points (`--force-ingest` to override).
+
+## Golden schema
+
+```json
+{"id": "...", "query": "natural-language question",
+ "expected_files": ["path/that/answers/it"],
+ "expected_answer": "reference answer, grounded in those files",
+ "category": "architecture|how-to|debugging|conceptual|api",
+ "complexity": "simple|medium|hard"}
+```
+
+`expected_files` → retrieval metrics; `expected_answer` → RAGAS reference.
+Keep references **content-grounded** (what the code does), not file-location
+trivia — a reference the corpus can't actually answer tanks `context_recall`.
+
+## CLI
 
 ```bash
 uv run anvay eval run \
-  --suite retrieval \
-  --product my-product \
-  --fixture /path/to/source \
-  --out-dir artifacts/evals
+  --products anvay,zod \      # or "all"
+  --top-k 10 \
+  --limit 10 \                # routine/smoke runs; drop for a full sweep
+  --judge-model deepseek-ai/DeepSeek-V4-Pro \
+  --no-ingest                 # query the live index as-is
 ```
 
-Use `--no-ingest-fixture` only when the target product index is already loaded.
-
-### Synthetic Multi-Language Suite
-
-To evaluate retrieval, RAG, and code search capabilities across all 10 supported programming languages (Python, TS, TSX, JS, Rust, Go, Java, C++, Kotlin, Solidity) in a unified run, use the synthetic dataset:
-
-```bash
-uv run anvay eval run \
-  --suite retrieval,rag,code \
-  --product synthetic \
-  --fixture evals/fixtures/synthetic_project \
-  --golden evals/synthetic_queries.jsonl \
-  --limit 10 \
-  --out-dir artifacts/evals-synthetic
-```
-
-The unified harness automatically compiles the mock multi-language source files inside `evals/fixtures/synthetic_project/` from the template before running ingestion and evaluation.
-
-## LLM Judge Design
-
-### RAG suite (`run_ragas.py`)
-
-The RAG suite uses an LLM judge for two of its three metrics:
-
-- **Faithfulness** and **answer correctness** are LLM-judged. The judge is the
-  `models.evaluator` model when configured, otherwise falls back to
-  `models.council`. Using a separate evaluator model avoids self-preference
-  bias (the judge should not grade its own generated answers).
-- **Context recall** is a heuristic: fraction of `expected_files` covered by at
-  least one retrieved hit, matched by URI suffix.
-
-Judge prompts require a structured rationale before assigning a score. The JSON schema is `{"reasoning": "...", "score": 0.0–1.0, "verdict": "..."}`.
-`temperature=0` is enforced for deterministic, reproducible scores.
-
-### Code suite (`run_code_eval.py`)
-
-Pairwise preference accuracy (PPA) is computed for golden items that supply an
-`anti_answer`. The judge runs **twice per item** — once with the expected answer
-in position A, once in position B — and only counts a preference as confirmed
-when the expected answer wins regardless of position. This eliminates the
-systematic first-position bias that would otherwise inflate PPA scores.
-
-The judge prompt also returns rationale JSON: `{"reasoning": "...", "choice": "A"|"B", "rationale": "..."}`.
-
-### Inner-loop skill eval (`anvay/council/skill_evals.py`)
-
-The council pipeline runs **5 deterministic checks** (identity, structure, name
-match, citation faithfulness, trigger routing) — deliberately *not* an LLM
-judge, to avoid self-grading noise. The trigger check generates **3 varied
-phrasings** per skill (imperative, how-to, explain-form) to exercise routing
-beyond a single lexical overlap.
-
-## CI Contract
-
-Pull requests run the deterministic retrieval suite when `DEEPINFRA_API_KEY` is
-available. Pushes to `main`, scheduled runs, and manual workflow runs also run
-the LLM-judged `rag` and `code` suites with `--limit 10` for cost control.
-
-The harness uploads JSON/Markdown artifacts so regressions can be inspected
-without rerunning the job. If `evals/baseline_faithfulness.txt` exists, CI fails
-when RAG faithfulness drops by more than `0.05`.
-
-## Adding Eval Cases
-
-Add retrieval-only cases to `tests/eval/queries.json`. Use exact expected files
-and line ranges where possible; broad whole-file matches are acceptable for
-architecture questions.
-
-Add answer-quality cases to `evals/golden.jsonl`. Prefer examples from human
-review rejects, approved corrections, and `report_outcome` failures. Include
-`anti_answer` when a plausible wrong answer exists; the code suite uses it for
-pairwise preference scoring.
-
-## Cost Notes
-
-`retrieval` calls embedding/rerank endpoints during ingest and query.
-`rag` and `code` also use LLM judge calls — `rag` uses the evaluator model (or
-council fallback) for faithfulness/correctness; `code` calls it twice per pairwise
-item due to position-swap mitigation. Use `--limit` for smoke runs and full
-suites before retrieval/council releases.
+Exit code is non-zero if any product fails its thresholds
+(`evals/harness.py::Thresholds`), so it doubles as a CI gate.

@@ -1,8 +1,8 @@
 """Council state — flat dict that flows through every LangGraph node.
 
-The planner, experts, synthesizer, repair, eval, and finalizer pass this
-TypedDict through LangGraph. Reducers on append-only list fields keep
-concurrent expert updates from clobbering each other.
+The planner, synthesizer, repair, eval, and finalizer pass this TypedDict
+through LangGraph. Reducers on append-only list fields keep concurrent node
+updates from clobbering each other.
 """
 
 from __future__ import annotations
@@ -47,14 +47,6 @@ class SkillPlanItem(BaseModel):
     coverage: dict = Field(default_factory=dict)
 
 
-class ExpertReport(BaseModel):
-    expert: str
-    summary: str
-    findings: list[str] = Field(default_factory=list)
-    missing_questions: list[str] = Field(default_factory=list)
-    cite_ids: list[str] = Field(default_factory=list)
-
-
 class SkillDraft(BaseModel):
     name: str
     description: str = ""
@@ -84,11 +76,13 @@ class CouncilState(TypedDict, total=False):
     topic: str
     config_path: str
 
-    # Shared evidence — planner seeds it; expert and repair nodes add bounded context.
+    # Shared evidence — planner seeds it; the repair node adds bounded context.
     evidence: Annotated[list[EvidenceChunk], operator.add]
     skill_signals: list[dict]
     skill_plan: list[SkillPlanItem]
-    expert_reports: Annotated[list[ExpertReport], operator.add]
+    # Deterministic graph/structural summary block the planner assembles for the
+    # synthesizer (replaces the old expert reports).
+    context_pack: str
     skill_drafts: list[SkillDraft]
     eval_results: Annotated[list[SkillEvalResult], operator.add]
     proposals: list[SkillProposal]
@@ -120,7 +114,7 @@ def initial_state(
         "evidence": [],
         "skill_signals": skill_signals or [],
         "skill_plan": [],
-        "expert_reports": [],
+        "context_pack": "",
         "skill_drafts": [],
         "eval_results": [],
         "proposals": [],

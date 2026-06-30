@@ -1,0 +1,58 @@
+{
+  "run_id": "20260630_041115",
+  "generated_at": "2026-06-30T04:12:53.874600+00:00",
+  "config_path": "anvay.yaml",
+  "config_fingerprint": {
+    "embedding_model": "Qwen/Qwen3-Embedding-4B",
+    "reranker_model": "Qwen/Qwen3-Reranker-4B",
+    "council_model": "google/gemma-4-31B-it",
+    "judge_model": "deepseek-ai/DeepSeek-V4-Pro",
+    "qdrant_url": "http://localhost:6333"
+  },
+  "top_k": 10,
+  "limit": null,
+  "modes": [
+    "auto"
+  ],
+  "thresholds": {
+    "recall_at_k": 0.75,
+    "ndcg_at_k": 0.7,
+    "mrr": 0.6
+  },
+  "products": [
+    {
+      "product_id": "guava",
+      "n": 15,
+      "modes": [
+        {
+          "mode": "auto",
+          "n": 15,
+          "recall_at_k": 0.4,
+          "mrr": 0.25,
+          "ndcg_at_k": 0.2882,
+          "faithfulness": 0.8478,
+          "answer_correctness": 0.3167,
+          "context_precision": 0.3644,
+          "context_recall": 0.3389,
+          "avg_latency_ms": 21024.4,
+          "avg_candidates": 10.0,
+          "graph_hit_rate": 1.0,
+          "misses": [
+            "How does Guava's Multiset let me count occurrences of elements?",
+            "How do I create an immutable list in Guava and why prefer it?",
+            "How do I represent a two-key (row/column) map in Guava?",
+            "How can I split a list into fixed-size sublists in Guava?",
+            "How do I compute the intersection or union of two sets in Guava?",
+            "How do I build a map keyed by a function of each element in Guava?",
+            "Are Guava's Iterables.filter and transform eager or lazy?",
+            "Which Multimap implementation should I use if I need ordered duplicate values per key?",
+            "How do I map ranges of keys to values in Guava?"
+          ]
+        }
+      ],
+      "passed": false
+    }
+  ],
+  "output_dir": "artifacts/evals/20260630_041115",
+  "passed": false
+}

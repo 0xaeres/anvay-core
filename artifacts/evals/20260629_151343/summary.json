@@ -1,0 +1,50 @@
+{
+  "run_id": "20260629_151343",
+  "generated_at": "2026-06-29T15:15:00.169391+00:00",
+  "config_path": "anvay.yaml",
+  "config_fingerprint": {
+    "embedding_model": "Qwen/Qwen3-Embedding-4B",
+    "reranker_model": "Qwen/Qwen3-Reranker-4B",
+    "council_model": "google/gemma-4-31B-it",
+    "judge_model": "deepseek-ai/DeepSeek-V4-Pro",
+    "qdrant_url": "http://localhost:6333"
+  },
+  "top_k": 10,
+  "limit": 5,
+  "modes": [
+    "auto"
+  ],
+  "thresholds": {
+    "recall_at_k": 0.7,
+    "ndcg_at_k": 0.55,
+    "faithfulness": 0.8,
+    "answer_correctness": 0.55,
+    "context_recall": 0.7
+  },
+  "products": [
+    {
+      "product_id": "anvay",
+      "n": 5,
+      "modes": [
+        {
+          "mode": "auto",
+          "n": 5,
+          "recall_at_k": 1.0,
+          "mrr": 0.9,
+          "ndcg_at_k": 0.9003,
+          "faithfulness": 0.9111,
+          "answer_correctness": 0.55,
+          "context_precision": 0.9444,
+          "context_recall": 0.9,
+          "avg_latency_ms": 12570.6,
+          "avg_candidates": 10.0,
+          "graph_hit_rate": 1.0,
+          "misses": []
+        }
+      ],
+      "passed": true
+    }
+  ],
+  "output_dir": "artifacts/evals/20260629_151343",
+  "passed": true
+}

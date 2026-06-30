@@ -1,0 +1,119 @@
+{
+  "auto": [
+    {
+      "id": "guava_multimap",
+      "query": "What is a Multimap in Guava and how is it different from Map<K, List<V>>?",
+      "category": "conceptual",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.5,
+      "reciprocal_rank": 0.3333333333333333,
+      "latency_ms": 14333.833166980185,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multimaps.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ListMultimap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multimaps.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multimap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ArrayListMultimap.java"
+      ],
+      "answer": "A Multimap is a structure that can hold duplicate key-value pairs and maintain the insertion ordering of values for a given key. The provided text does not explicitly state how it differs from `Map<K, List<V>>`, but it notes that a `ListMultimap` can be converted to a `Map<K, List<V>>` using the `asMap()` method.",
+      "faithfulness": 0.5,
+      "answer_correctness": 0.5,
+      "context_precision": 0.249999999975,
+      "context_recall": 0.5
+    },
+    {
+      "id": "guava_multiset",
+      "query": "How does Guava's Multiset let me count occurrences of elements?",
+      "category": "how-to",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 14055.506250006147,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multiset.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multisets.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multisets.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multiset.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multiset.java"
+      ],
+      "answer": "Guava's Multiset allows you to count occurrences of an element using the `count` method, which returns the number of occurrences (the count) of the specified element. This value may be zero but is never negative. Additionally, the `add` method can be used to increment the count of an element by one or by a specified number of occurrences.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.7051587301469775,
+      "context_recall": 0.8
+    },
+    {
+      "id": "guava_immutablelist",
+      "query": "How do I create an immutable list in Guava and why prefer it?",
+      "category": "how-to",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.43067655807339306,
+      "reciprocal_rank": 0.25,
+      "latency_ms": 14523.256624990609,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ImmutableCollection.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ImmutableSet.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/IndexedImmutableSet.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ImmutableList.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ImmutableList.java"
+      ],
+      "answer": "You can create an immutable list using methods such as `ImmutableList.of()` for an empty list, `ImmutableList.of(E e1)` for a single element, or `ImmutableList.of(E e1, E e2)` for multiple elements. Additionally, `ImmutableList.toImmutableList()` provides a `Collector` to accumulate elements into a new `ImmutableList`. Using `ImmutableList` is preferable mainly for the consistency and maintainability of your code.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.19999999998,
+      "context_recall": 0.0
+    },
+    {
+      "id": "guava_immutablemap",
+      "query": "How does ImmutableMap differ from a regular HashMap in Guava?",
+      "category": "conceptual",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 13091.333542019129,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ImmutableMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/RegularImmutableMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/RegularImmutableMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/RegularImmutableMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/JdkBackedImmutableMap.java"
+      ],
+      "answer": "Based on the provided text, `ImmutableMap` can be backed by a JDK `HashMap` (via `JdkBackedImmutableMap`) specifically when probable hash flooding is detected. In such cases, the `JdkBackedImmutableMap` implementation may replace entries in the entry array with its own entry objects while maintaining the same key/value contents.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.0,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    {
+      "id": "guava_bimap",
+      "query": "What is a BiMap in Guava and how do I look up a key by its value?",
+      "category": "conceptual",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 9522.216958052013,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/BiMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/BiMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/BiMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/BiMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/BiMap.java"
+      ],
+      "answer": "A BiMap (or \"bidirectional map\") is a map that preserves the uniqueness of its values as well as its keys. To look up a key by its value, you can use the `inverse()` method, which returns an inverse view of the bimap that maps each value to its associated key.",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_precision": 0.9999999999666667,
+      "context_recall": 1.0
+    }
+  ]
+}

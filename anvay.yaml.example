@@ -2,8 +2,8 @@
 # Dev defaults: Qdrant in Docker, DeepInfra embeddings/reranker/council.
 # Local Jina remains available for high-resource/offline machines.
 
-# Optional here; the first-run UI wizard can create/attach this at /setup.
-skills_repo: ""
+# Required. Set ANVAY_SKILLS_REPO in .env or replace with the literal HTTPS URL.
+skills_repo: "${ANVAY_SKILLS_REPO}"
 hierarchy_root: ./skills
 
 # ---------------------------------------------------------------- Connectors
@@ -40,7 +40,7 @@ models:
   council:
     provider: deepinfra
     model: deepseek-ai/DeepSeek-V3
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
     temperature: 0.0
 
@@ -48,45 +48,45 @@ models:
   # planner:
   #   provider: deepinfra
   #   model: deepseek-ai/DeepSeek-V3
-  #   api_key: ${DEEPINFRA_API_KEY}
+  #   api_key: ${LLM_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
   #   temperature: 0.0
   # evaluator:
   #   provider: deepinfra
   #   model: deepseek-ai/DeepSeek-V3
-  #   api_key: ${DEEPINFRA_API_KEY}
+  #   api_key: ${LLM_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
   #   temperature: 0.0
   # repair:
   #   provider: deepinfra
   #   model: deepseek-ai/DeepSeek-V3
-  #   api_key: ${DEEPINFRA_API_KEY}
+  #   api_key: ${LLM_API_KEY}
   #   base_url: https://api.deepinfra.com/v1/openai
   #   temperature: 0.0
   synthesizer:
     provider: deepinfra
     model: deepseek-ai/DeepSeek-V4-Pro
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
     temperature: 0.0
 
   chat_agent:
     provider: deepinfra
     model: deepseek-ai/DeepSeek-V4-Flash
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
     temperature: 0.0
 
   light:
     provider: deepinfra
     model: google/gemma-4-26B-A4B-it
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
 
   embedding:
     provider: deepinfra
     model: Qwen/Qwen3-Embedding-4B
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
     dim: 2560
     instruction_profile: qwen3
@@ -94,7 +94,7 @@ models:
   reranker:
     provider: deepinfra
     model: Qwen/Qwen3-Reranker-4B
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/inference
 
   # Local Jina profile for high-resource/offline machines. Switching embedding
@@ -134,6 +134,13 @@ ingestion:
     enabled: false
     poll_interval_s: 5.0
     max_attempts: 3
+
+# ---------------------------------------------------------------- Retrieval
+retrieval:
+  # Soft deadline for interactive (MCP) evidence retrieval. Core fan-out always
+  # runs; long-tail enrichment (DRIFT-lite, coverage repair) is skipped past it.
+  # null = unbounded (council/eval ignore this and always run unbounded).
+  interactive_budget_ms: 8000
 
 # ---------------------------------------------------------------- Server
 server:

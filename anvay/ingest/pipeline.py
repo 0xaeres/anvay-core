@@ -17,11 +17,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol
+
+from tqdm import tqdm
 
 from anvay.config import AnvayConfig
 from anvay.graph.extractor import (
@@ -180,8 +183,18 @@ async def run_ingest(
     event_sink: IngestEventSink | None = None,
     registry: _Registry | None = None,
     source_key: str | None = None,
+    total_resources: int | None = None,
+    progress_label: str | None = None,
 ) -> IngestStats:
-    """One pass: discover → batch-read → chunk → enrich → embed → index."""
+    """One pass: discover → batch-read → chunk → enrich → embed → index.
+
+    Progress is reported on two phases — ``read`` (per-file) and ``index``
+    (per-resource as batches finish chunk→embed→upsert). Both are emitted as
+    ``level="progress"`` events carrying ``phase``/``done``/``total``/``pct`` and
+    mirrored to a console tqdm bar. ``total_resources`` is the pre-counted file
+    count for the source; when ``None`` the running discovered count is used as
+    the denominator.
+    """
     stats = IngestStats()
 
     file_batch_size = config.ingestion.file_batch_size
@@ -244,6 +257,58 @@ async def run_ingest(
         if event_sink is not None:
             await event_sink(event)
 
+    # Progress tracking: read (per file) + index (per resource indexed).
+    # The console bar spans both phases (total = 2x the file count) so it keeps
+    # advancing through chunk -> embed -> upsert instead of freezing once read.
+    read_done = 0
+    index_done = 0
+    bar = tqdm(
+        total=(total_resources * 2) if total_resources else None,
+        desc=f"ingest {progress_label}" if progress_label else "ingest",
+        unit="file",
+        disable=not sys.stderr.isatty(),
+        leave=False,
+    )
+
+    def _denominator() -> int:
+        # Pre-counted total when known, else the running discovered count.
+        return total_resources or stats.resources_seen or 0
+
+    def _refresh_bar_total() -> None:
+        if total_resources is None and stats.resources_seen:
+            bar.total = stats.resources_seen * 2
+
+    async def emit_progress(phase: str, done: int) -> None:
+        total = _denominator()
+        pct = round(100 * done / total) if total else 0
+        if event_sink is not None:
+            await event_sink(
+                {
+                    "level": "progress",
+                    "phase": phase,
+                    "stage": phase,
+                    "done": done,
+                    "total": total,
+                    "pct": pct,
+                }
+            )
+
+    async def bump_read(n: int = 1) -> None:
+        nonlocal read_done
+        read_done += n
+        _refresh_bar_total()
+        bar.set_postfix(stage="read", indexed=index_done, refresh=False)
+        bar.update(n)
+        await emit_progress("read", read_done)
+
+    async def bump_index(n: int) -> None:
+        nonlocal index_done
+        index_done += n
+        _refresh_bar_total()
+        bar.set_postfix(stage="index", indexed=index_done, refresh=False)
+        bar.update(n)
+        await emit_progress("index", index_done)
+
     try:
         await emit("stage", "prepare", "Ensuring vector collections exist")
         await indexer.ensure_collections()
@@ -299,7 +364,11 @@ async def run_ingest(
 
         async def process_batch(batch_id: int, items: list[_ResourcePayload]) -> None:
             async with batch_sem:
-                await _process_batch(batch_id, items)
+                try:
+                    await _process_batch(batch_id, items)
+                finally:
+                    # Every resource in the batch is now accounted for.
+                    await bump_index(len(items))
 
         async def _process_batch(batch_id: int, items: list[_ResourcePayload]) -> None:
             await emit(
@@ -321,7 +390,8 @@ async def run_ingest(
             for item in items:
                 if delta_enabled:
                     try:
-                        extraction = extract_resource_graph(
+                        extraction = await asyncio.to_thread(
+                            extract_resource_graph,
                             product_id=product_id,
                             source_key=source_key,
                             resource=item.ref,
@@ -373,7 +443,7 @@ async def run_ingest(
                             batch=batch_id,
                             uri=item.ref.uri,
                         )
-                chunks = chunk_resource(product_id, item.ref, item.content)
+                chunks = await asyncio.to_thread(chunk_resource, product_id, item.ref, item.content)
                 summary = (
                     graph_summary_chunk(
                         product_id=product_id,
@@ -741,6 +811,14 @@ async def run_ingest(
         sem = asyncio.Semaphore(read_concurrency)
 
         async def read_and_classify(r: ResourceRef) -> _ResourcePayload | None:
+            payload = await _read_and_classify(r)
+            await bump_read(1)
+            if payload is None:
+                # Filtered/unchanged/skipped — nothing more to index for it.
+                await bump_index(1)
+            return payload
+
+        async def _read_and_classify(r: ResourceRef) -> _ResourcePayload | None:
             async with sem:
                 try:
                     content = await source.read_resource(r)
@@ -919,6 +997,7 @@ async def run_ingest(
         )
         return stats
     finally:
+        bar.close()
         await embedder.aclose()
         if enricher is not None:
             await enricher.aclose()

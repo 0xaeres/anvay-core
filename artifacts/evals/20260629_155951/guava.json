@@ -1,0 +1,119 @@
+{
+  "auto": [
+    {
+      "id": "guava_multimap",
+      "query": "What is a Multimap in Guava and how is it different from Map<K, List<V>>?",
+      "category": "conceptual",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.43067655807339306,
+      "reciprocal_rank": 0.25,
+      "latency_ms": 15180.641042010393,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multimaps.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multimaps.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ListMultimap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/AbstractListMultimap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/AbstractListMultimap.java"
+      ],
+      "answer": "The provided contexts do not explicitly define what a Multimap is or explain how it differs from a `Map<K, List<V>>`. The text only mentions that `ListMultimap.asMap()` returns a map with its type corrected from `Map<K, Collection<V>>` to `Map<K, List<V>>`.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.0,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    {
+      "id": "guava_multiset",
+      "query": "How does Guava's Multiset let me count occurrences of elements?",
+      "category": "how-to",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 24750.64475002,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multiset.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multisets.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multisets.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ImmutableSortedMultiset.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Multiset.java"
+      ],
+      "answer": "Guava's Multiset refers to elements that are equal to one another as occurrences of the same single element. The total number of these occurrences for a specific element is called its count.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.7499999999625,
+      "context_recall": 0.4
+    },
+    {
+      "id": "guava_immutablelist",
+      "query": "How do I create an immutable list in Guava and why prefer it?",
+      "category": "how-to",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.38685280723454163,
+      "reciprocal_rank": 0.2,
+      "latency_ms": 24427.762374980375,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ImmutableCollection.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/IndexedImmutableSet.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ImmutableSet.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/RegularImmutableSet.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ImmutableList.java"
+      ],
+      "answer": "To create an immutable list in Guava, you can use `ImmutableList.of()` or `new RegularImmutableAsList<>(this, elements)`. You should prefer subtypes like `ImmutableList` over `ImmutableCollection` because they have well-defined `equals` semantics, which avoids a common source of errors.",
+      "faithfulness": 0.6,
+      "answer_correctness": 0.25,
+      "context_precision": 0.7499999999625,
+      "context_recall": 0.0
+    },
+    {
+      "id": "guava_immutablemap",
+      "query": "How does ImmutableMap differ from a regular HashMap in Guava?",
+      "category": "conceptual",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.3562071871080222,
+      "reciprocal_rank": 0.16666666666666666,
+      "latency_ms": 15677.616333996411,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/RegularImmutableMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/RegularImmutableMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/JdkBackedImmutableMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/JdkBackedImmutableMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/Maps.java"
+      ],
+      "answer": "The provided contexts do not explain how `ImmutableMap` differs from a regular `HashMap` in Guava. The text focuses on internal implementation details, such as `JdkBackedImmutableMap` being used when probable hash flooding is detected.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.0,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    {
+      "id": "guava_bimap",
+      "query": "What is a BiMap in Guava and how do I look up a key by its value?",
+      "category": "conceptual",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 16336.765915970318,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/BiMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/HashBiMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/BiMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/ImmutableBiMap.java",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/guava/guava/src/com/google/common/collect/BiMap.java"
+      ],
+      "answer": "A BiMap (or \"bidirectional map\") is a map that preserves a bidirectional relationship. The provided contexts do not specify the exact method used to look up a key by its value.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.3333333333,
+      "context_recall": 1.0
+    }
+  ]
+}

@@ -56,6 +56,8 @@ dependencies = [
   # Skills: YAML frontmatter
   "python-frontmatter>=1.1",
   "openai>=2.0",
+  # Console progress bars during ingestion
+  "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
@@ -67,7 +69,7 @@ dev = [
   "ruff>=0.7",
   "mypy>=1.13",
 ]
-evals = ["ragas>=0.2", "datasets>=3.0"]
+evals = ["ragas>=0.2", "datasets>=3.0", "langchain-openai>=0.2"]
 
 [project.scripts]
 anvay = "anvay.cli:app"
@@ -94,9 +96,6 @@ ignore = ["E501"]
 "anvay/cli.py" = ["B008"]
 # FastAPI uses Depends(...) in argument defaults — that's the API.
 "anvay/api/routes/*" = ["B008"]
-# Eval runners build their default thresholds inline; the rule churns the API.
-"evals/run_ragas.py" = ["B008"]
-"evals/run_code_eval.py" = ["B008"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

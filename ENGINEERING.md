@@ -213,12 +213,54 @@ state; failed deletes keep manifest rows so cleanup retries later.
 
 ### Chunker (`anvay/ingest/chunker.py`)
 
-- **Code**: tree-sitter (Python, TS, TSX, JS, Rust, Go). Chunk boundaries
-  are function / class / impl / trait / interface / method nodes. Oversized
-  bodies fall through to a char splitter with overlap.
+- **Code**: tree-sitter (Python, TS, TSX, JS, Rust, Go, Java, C++, Kotlin,
+  Solidity). Chunk boundaries are function / class / impl / trait / interface
+  / method / enum / record nodes, defined per language in `_LangCfg.boundary_nodes`.
+  Oversized bodies fall through to a char splitter with overlap.
 - **Markdown**: heading-aware splitter. Each chunk's `context_path` carries
   its heading hierarchy (e.g. `"Auth / API Keys / Rotating"`).
 - **Plain text**: char splitter with overlap.
+
+#### Leading doc-comment attachment
+
+In languages where the idiomatic documentation convention is a comment
+*preceding* the declaration rather than a docstring *inside* it (Java
+javadoc, JSDoc, rustdoc, Go doc-comments), tree-sitter places the comment
+as a named sibling of the declaration node, **outside** its span. Without
+special handling, the chunker emits these as detached `<module>` chunks with
+no symbol context, causing conceptual queries ("what is X?", "how does X
+differ from Y?") to miss the prose description entirely.
+
+The fix is `_LangCfg.doc_comment_nodes`: a tuple of tree-sitter node types
+that are recognised as doc-comments for a language. In `_chunk_code`, after
+computing the initial span for a boundary node, the chunker walks backwards
+through `node.prev_named_sibling` as long as consecutive adjacent siblings
+match one of those types and are separated by at most one blank line. The
+earliest matching comment's start line replaces `start`, so the final chunk
+includes both the documentation prose and the declaration. The extended
+range is registered in `emitted_ranges`, preventing `_emit_uncovered` from
+re-emitting those lines as an orphaned `<module>` chunk.
+
+If the extended span exceeds `MAX_CHUNK_CHARS`, the normal `_split_oversized`
+path runs. Sub-chunks inherit the declaration's `context_path`, so the
+javadoc lands in the first sub-chunk alongside the class/function head and
+is never re-orphaned by the split.
+
+Configured languages:
+
+| Language | `doc_comment_nodes` | Why |
+|---|---|---|
+| Java | `block_comment`, `line_comment` | `/** … */` and consecutive `//` blocks before class/method/interface declarations |
+| TypeScript, TSX, JavaScript | `comment` | TSDoc / JSDoc `/** … */` and `//` line-blocks |
+| Go | `comment` | Go doc-comments are `//` lines immediately preceding an exported declaration |
+| Rust | `line_comment`, `block_comment` | `///` rustdoc, `//!` inner doc, `/** */` variants |
+| Python | *(empty)* | Docstrings are string literals inside the function/class node — already in the span |
+
+When adding a new language (see CONTRIBUTING.md recipe), set
+`doc_comment_nodes` to the tree-sitter node types your grammar uses for
+documentation comments, verify with `chunk_resource` against a real source
+file, and add a test asserting the comment is **in** the declaration chunk
+and **absent** from any `<module>` chunk.
 
 Sizing (defaults target a MacBook Air M2/8GB running llama.cpp with
 `EMBEDDER_UBATCH=1024`):
@@ -355,7 +397,7 @@ Ingest writes source-backed graph memory chunks when graph facts exist:
   (`context_path="Graph summary"`, line `0:0`).
 - `artifact_type="graph_community_summary"` for compact relationship memories
   over flows, runtime/config/data, docs/tests (`context_path="Graph community
-  summary"`, line `0:1`).
+summary"`, line `0:1`).
 
 Both carry product/source/graph metadata as normal chunks. They help broad
 queries find graph-aware overview evidence, but final answers must still cite
@@ -373,9 +415,10 @@ Skipped: `node_modules`, `.venv`, `.git`, `dist`, `build`, `target`, `vendor`,
 
 At council time the map is loaded, ranked against the session topic (lexical
 overlap on `name + path` plus a small structural weight: classes > functions
+
 > methods), and rendered into a token-bounded block of `file:\n  signature
 [Lline]` lines. The render is injected into planner/synthesizer prompts so the
-council sees the codebase structure alongside retrieved evidence.
+> council sees the codebase structure alongside retrieved evidence.
 
 We deliberately skip aider's personalized-PageRank step in v1. With < 5k
 files, lexical + structural ranking is within striking distance and avoids
@@ -514,8 +557,9 @@ need them.
 
 Background asyncio task. Streams LangGraph node updates onto a per-session
 pub/sub hub (`HUB`) so SSE clients see live deliberation + cost + critique
-+ proposal-preview events. On completion the proposal is enqueued and the
-session row is recorded.
+
+- proposal-preview events. On completion the proposal is enqueued and the
+  session row is recorded.
 
 ### Queue (`anvay/council/queue.py`)
 
@@ -540,7 +584,7 @@ Flow:
 1. Look up the queue row by `proposal_id`.
 2. Build a `Skill` from the row's fields (no `kind` / `scope` — Skill is
    flat) with `Provenance(council_session, validated_by, validated_at,
-   evidence_chunks, adversary_critique, revision_count)`.
+evidence_chunks, adversary_critique, revision_count)`.
 3. `SkillStore.save(skill)` writes `SKILL.md` under
    `<hierarchy_root>/<product>/<name>/SKILL.md`.
 4. `commit_and_push()` commits + pushes (skill repo is a Git repo).
@@ -558,13 +602,13 @@ uv run anvay-mcp-server --product <your-product-id>
 
 ### Tools
 
-| Name | Purpose |
-|---|---|
+| Name                                                   | Purpose                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `find_skills(query, context?, current_file?, top_k=5)` | Rank curated skills relevant to a query. Filters by `applies_to.files` (glob match against `current_file`) and `applies_to.contexts` (exact tag, `"general"` disables the filter). Write file globs as recursive repo-relative patterns such as `**/*.py`, `**/*.ts`, and `**/*.tsx` so Python 3.13 `PurePath.full_match()` and the older fallback keep the same intent. |
-| `get_skill(name)` | Return the full body + frontmatter for a named skill. |
-| `report_outcome(skill_name, succeeded, notes?)` | In-memory outcome log; surfaces in `state._outcomes`. |
-| `query_code_context(symbol, file_glob?)` | Retrieval pipeline in `mode="code"`. |
-| `hybrid_search_corpus(query, product_id?, top_k=5)` | Retrieval pipeline in `mode="auto"`. |
+| `get_skill(name)`                                      | Return the full body + frontmatter for a named skill.                                                                                                                                                                                                                                                                                                                    |
+| `report_outcome(skill_name, succeeded, notes?)`        | In-memory outcome log; surfaces in `state._outcomes`.                                                                                                                                                                                                                                                                                                                    |
+| `query_code_context(symbol, file_glob?)`               | Retrieval pipeline in `mode="code"`.                                                                                                                                                                                                                                                                                                                                     |
+| `hybrid_search_corpus(query, product_id?, top_k=5)`    | Retrieval pipeline in `mode="auto"`.                                                                                                                                                                                                                                                                                                                                     |
 
 ### Resources
 
@@ -580,13 +624,13 @@ with their backing logic.
 
 ### `/products`, `/me`
 
-| Method + path | Purpose | Returns |
-|---|---|---|
-| `GET /me` | Static dev user + permission flags. | `{user, permissions}` |
-| `GET /products` | List products with `lastCouncil`, skill counts. | `{products: Product[]}` |
-| `GET /products/{id}` | Single product. | `Product` |
-| `GET /products/{id}/status` | Drives dashboard card state. | `{hasEmbeddings, hasSkill, councilInProgress, currentSessionId, currentStage}` |
-| `POST /products` | Create product. | `Product` |
+| Method + path               | Purpose                                         | Returns                                                                        |
+| --------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------ |
+| `GET /me`                   | Static dev user + permission flags.             | `{user, permissions}`                                                          |
+| `GET /products`             | List products with `lastCouncil`, skill counts. | `{products: Product[]}`                                                        |
+| `GET /products/{id}`        | Single product.                                 | `Product`                                                                      |
+| `GET /products/{id}/status` | Drives dashboard card state.                    | `{hasEmbeddings, hasSkill, councilInProgress, currentSessionId, currentStage}` |
+| `POST /products`            | Create product.                                 | `Product`                                                                      |
 
 Product onboarding in the UI creates product metadata plus a required GitHub
 runtime source. The GitHub credential is a product service-account PAT stored
@@ -600,14 +644,14 @@ ingesting > none`. `councilInProgress` is independent so the UI can render
 
 ### `/products/{id}/sources`
 
-| Method + path | Purpose |
-|---|---|
-| `GET ""` | List config-defined + registry-defined sources. |
-| `GET /{source_id}` | One source. |
-| `POST ""` | Add a runtime source to the registry. |
-| `DELETE /{source_id}` | Remove from registry. |
-| `POST /{source_id}/sync` | Kick off ingest as a background task. Returns `{queued: true}` or `{already_running: true}`. |
-| `GET /{source_id}/log` | SSE stream of JSON ingest events. Each event has `level`, `stage`, `msg`, `ts`, plus counters/URI/batch fields when relevant. |
+| Method + path            | Purpose                                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `GET ""`                 | List config-defined + registry-defined sources.                                                                               |
+| `GET /{source_id}`       | One source.                                                                                                                   |
+| `POST ""`                | Add a runtime source to the registry.                                                                                         |
+| `DELETE /{source_id}`    | Remove from registry.                                                                                                         |
+| `POST /{source_id}/sync` | Kick off ingest as a background task. Returns `{queued: true}` or `{already_running: true}`.                                  |
+| `GET /{source_id}/log`   | SSE stream of JSON ingest events. Each event has `level`, `stage`, `msg`, `ts`, plus counters/URI/batch fields when relevant. |
 
 GitHub sync validates all repo URLs before cloning, shallow-clones every repo
 listed in `config.repos`, and ingests each clone under the same product. GitHub
@@ -631,39 +675,39 @@ credentials plus product-scope project keys.
 
 ### `/products/{id}/council/sessions` + `/council/sessions`
 
-| Method + path | Purpose |
-|---|---|
-| `GET /products/{id}/council/sessions` | List sessions for a product. |
+| Method + path                          | Purpose                                                                                                 |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `GET /products/{id}/council/sessions`  | List sessions for a product.                                                                            |
 | `POST /products/{id}/council/sessions` | Body: `{topic: str}`. Schedules the product-skill council as a background task. Returns `{session_id}`. |
-| `GET /council/sessions/{sid}` | Persisted session row. |
-| `GET /council/sessions/{sid}/stream` | SSE: live deliberation if running; deterministic replay if completed. |
+| `GET /council/sessions/{sid}`          | Persisted session row.                                                                                  |
+| `GET /council/sessions/{sid}/stream`   | SSE: live deliberation if running; deterministic replay if completed.                                   |
 
 ### `/proposals`
 
-| Method + path | Purpose |
-|---|---|
-| `GET ""` | List pending (or filtered) proposals. |
-| `GET /{id}` | One proposal. |
-| `POST /{id}/approve` | Calls `approve_proposal()`. |
-| `POST /{id}/reject` | Body: `{reason, category}`. Persists rejection. |
-| `POST /{id}/edit` | Body: `{body, actor}`. Persists edit (counts as a correction). |
+| Method + path        | Purpose                                                        |
+| -------------------- | -------------------------------------------------------------- |
+| `GET ""`             | List pending (or filtered) proposals.                          |
+| `GET /{id}`          | One proposal.                                                  |
+| `POST /{id}/approve` | Calls `approve_proposal()`.                                    |
+| `POST /{id}/reject`  | Body: `{reason, category}`. Persists rejection.                |
+| `POST /{id}/edit`    | Body: `{body, actor}`. Persists edit (counts as a correction). |
 
 ### `/skills`
 
-| Method + path | Purpose |
-|---|---|
-| `GET /products/{id}/skills` | Flat list of approved skills for a product. |
-| `GET /skills/{skill_id}` | Full skill body + frontmatter. |
-| `GET /skills/{skill_id}/corrections` | Critic notes from approved proposals + the built-in `provenance.adversary_critique`. |
-| `GET /skills/{skill_id}/rejections` | Rejected proposals for this skill's product. |
-| `GET /skills/{skill_id}/council-history` | Sessions for this skill's product. |
+| Method + path                            | Purpose                                                                              |
+| ---------------------------------------- | ------------------------------------------------------------------------------------ |
+| `GET /products/{id}/skills`              | Flat list of approved skills for a product.                                          |
+| `GET /skills/{skill_id}`                 | Full skill body + frontmatter.                                                       |
+| `GET /skills/{skill_id}/corrections`     | Critic notes from approved proposals + the built-in `provenance.adversary_critique`. |
+| `GET /skills/{skill_id}/rejections`      | Rejected proposals for this skill's product.                                         |
+| `GET /skills/{skill_id}/council-history` | Sessions for this skill's product.                                                   |
 
 ### `/setup`
 
-| Method + path | Purpose |
-|---|---|
-| `GET /setup/status` | `{configured, skills_repo_url, source}`. |
-| `POST /setup/skills-repo` | Body: `{mode: "create"|"existing", github_org?, repo_name?, existing_repo_url?}`. Mints or attaches the org-wide skills repo. |
+| Method + path             | Purpose                                  |
+| ------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET /setup/status`       | `{configured, skills_repo_url, source}`. |
+| `POST /setup/skills-repo` | Body: `{mode: "create"                   | "existing", github_org?, repo_name?, existing_repo_url?}`. Mints or attaches the org-wide skills repo. |
 
 ### `/products/{id}/dashboard`
 
@@ -691,62 +735,62 @@ vector_store:
     text: anvay_text
   quantization:
     enabled: true
-    type: turboquant              # Qdrant v1.18+ native TurboQuant
-    bits: bits4                   # bits4 best recall; lower bits compress more
+    type: turboquant # Qdrant v1.18+ native TurboQuant
+    bits: bits4 # bits4 best recall; lower bits compress more
     always_ram: true
 
 models:
-  council:                     # default for drafter + critic + reviser
+  council: # default for drafter + critic + reviser
     provider: deepinfra
     model: google/gemma-4-26B-A4B-it
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
   # Optional role-specific overrides. Omit any role to use models.council.
   drafter:
     provider: deepinfra
     model: google/gemma-4-26B-A4B-it
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
   critic:
     provider: deepinfra
     model: google/gemma-4-26B-A4B-it
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
   reviser:
     provider: deepinfra
     model: google/gemma-4-26B-A4B-it
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
-  light:                       # optional enricher (HQE + Anthropic CR)
+  light: # optional enricher (HQE + Anthropic CR)
     provider: deepinfra
     model: google/gemma-4-26B-A4B-it
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
   embedding:
     provider: deepinfra
     model: Qwen/Qwen3-Embedding-4B
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
     dim: 2560
     instruction_profile: qwen3
   reranker:
     provider: deepinfra
     model: Qwen/Qwen3-Reranker-4B
-    api_key: ${DEEPINFRA_API_KEY}
+    api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/inference
 
 ingestion:
   enrich_chunks:
-    docs: false                # optional Anthropic Contextual Retrieval
-    code: false                # optional HQE
+    docs: false # optional Anthropic Contextual Retrieval
+    code: false # optional HQE
   graph:
-    mode: bounded_llm          # deterministic graph + validated LLM facts when light model is reachable
+    mode: bounded_llm # deterministic graph + validated LLM facts when light model is reachable
     max_resources_per_batch: 12
     max_facts_per_resource: 24
     concurrency: 2
     confidence_floor: 0.65
   embed_batch_size: 32
-  quality_gate_threshold: 0.0  # reranker score gate; calibrate per provider via eval
+  quality_gate_threshold: 0.0 # reranker score gate; calibrate per provider via eval
   file_batch_size: 50
   read_concurrency: 10
   batch_concurrency: 2
@@ -780,25 +824,68 @@ background enrichment when enabled.
 
 ## 10. Eval Strategy
 
-Anvay has four eval surfaces:
-
-| Surface | Runner | Scope | CI status |
-|---|---|---|---|
-| Unified eval harness | `anvay eval run --suite all` / `python -m evals.harness` | Runs suite defaults, optionally ingests fixtures, writes JSON + Markdown artifacts | CI uses retrieval on PRs; RAG/code on main/scheduled/manual when credentials exist |
-| Retrieval quality | `pytest -m eval` / `python -m tests.eval.harness` | Production retrieval over `tests/eval/queries.json`; includes local, global, relational, and negative questions | Opt-in; skips when Qdrant/embedder/reranker are absent |
-| RAGAS-style golden eval | `python -m evals.run_ragas` | Golden skill queries over `evals/golden.jsonl`; LLM-judged faithfulness and answer quality | CI via unified harness on main/scheduled/manual when `DEEPINFRA_API_KEY` is configured |
-| Code retrieval eval | `python -m evals.run_code_eval` | Golden-set nDCG/recall and pairwise answer preference | CI via unified harness on main/scheduled/manual when `DEEPINFRA_API_KEY` is configured |
-
-The preferred entrypoint is:
+The unified eval harness (`anvay eval run`) is the definitive quality gate.
+It evaluates the full production retrieval path
+(`anvay/retrieval/evidence.py::retrieve_evidence`) — hybrid + grep + repo-map
++ graph-local traversal + summaries + skills — not the low-level primitive.
 
 ```bash
-uv run anvay eval run --suite retrieval
-uv run anvay eval run --suite rag,code --limit 10
+uv run anvay eval run --products guava,zod,anvay          # all products, full golden set
+uv run anvay eval run --products guava --force-ingest     # clean re-ingest then evaluate
+uv run anvay eval run --products guava --limit 5          # smoke run (noisy LLM scores at n=5)
 ```
 
-Each run writes `artifacts/evals/<run_id>/summary.{json,md}` plus per-suite
-JSON. Suite defaults ingest the Anvay repo for retrieval and the Forge seed
-skills fixture for RAG/code unless `--no-ingest-fixture` is passed.
+Each run writes `artifacts/evals/<run_id>/summary.{json,md}` plus per-product
+JSON detail. Pass `--config /path/to/anvay.yaml` when the embedding model in
+your working config differs from the one used to build the index; a mismatch
+silently degrades all retrieval metrics.
+
+### Gates (`evals/harness.py::Thresholds`)
+
+Two classes of metric gate:
+
+**Deterministic (always gated).** Pure file-match math; 100% reproducible at any n.
+
+| Metric | Floor |
+|---|---|
+| recall@k | 0.75 |
+| ndcg@k | 0.70 |
+| mrr | 0.60 |
+
+**LLM-judged (gated at n ≥ ~15).** Measured at n=15 against the guava golden
+set after the doc-comment attachment fix (run 20260630, HQE off). At n=5 these
+swing ±0.2 between identical runs; they become stable — and gateable — once n
+is large enough. Faithfulness and context_precision remain diagnostic only:
+faithfulness is typically near-ceiling (≥ 0.95) and adds little signal;
+context_precision is noisy even at larger n.
+
+| Metric | Floor | Calibration |
+|---|---|---|
+| answer_correctness | 0.50 | guava n=15 post-fix: 0.65; margin 0.15 |
+| context_recall | 0.45 | guava n=15 post-fix: 0.57; margin 0.12 |
+
+When either LLM metric is `None` (judge unavailable or skipped), its gate is
+bypassed rather than failed. Ratchet the floors upward as the corpus improves
+and more products are measured at larger n.
+
+### What drives the LLM gates
+
+`answer_correctness` captures whether the synthesized answer matches the
+reference. Low scores on conceptual queries ("what is X?") indicate that
+retrieved chunks contain no prose description of the concept — only
+implementation detail. The leading doc-comment attachment (`_LangCfg.
+doc_comment_nodes`) is the primary mechanism that keeps this above its floor:
+it ensures the class javadoc / JSDoc / rustdoc lands in the same chunk as
+the declaration rather than as a detached `<module>` chunk.
+
+`context_recall` measures how much of the reference answer's key facts appear
+in the retrieved contexts. Low context_recall typically means the retriever is
+finding semantically-adjacent but incomplete chunks. Both the doc-comment
+attachment and the three-stage retrieval pipeline (dense + BM25 → RRF →
+reranker) work together to keep this metric above its floor.
+
+Do not lower either floor to pass a weak product. Fix the retrieval gap
+instead.
 
 ### Retrieval Eval (`tests/eval/`)
 
@@ -810,7 +897,7 @@ questions, and negative capability questions. Each entry:
 ```json
 {
   "query": "Anthropic contextual retrieval prompt for doc chunks",
-  "expected": [{"file": "anvay/ingest/enricher.py"}],
+  "expected": [{ "file": "anvay/ingest/enricher.py" }],
   "tags": ["ingest", "enricher"]
 }
 ```
@@ -824,6 +911,7 @@ Two metrics, both reported by `EvalReport.render()`:
 - **MRR** — mean reciprocal rank of the first match per query.
 
 Floors live in `queries.json._meta`:
+
 ```
 "min_recall_at_10": 0.6,
 "min_mrr":          0.35
@@ -865,7 +953,7 @@ context_recall    >= 0.75
 
 The runner is RAGAS-style, but does not import `ragas`; the in-house prompts
 avoid dependency and prompt-template churn. In CI, `.github/workflows/ci.yml`
-runs this as `ragas-regression` only when `DEEPINFRA_API_KEY` is configured:
+runs this as `ragas-regression` only when `LLM_API_KEY` is configured:
 Qdrant starts as a service, the seed Forge skills are ingested, the runner uses
 `--limit 10`, and `evals/ci_ragas.json` is uploaded as an artifact. If
 `evals/baseline_faithfulness.txt` exists, CI also fails when faithfulness drops

@@ -1,0 +1,119 @@
+{
+  "auto": [
+    {
+      "id": "anvay_hybrid_fusion",
+      "query": "How does Anvay combine dense vector search with keyword search when retrieving?",
+      "category": "architecture",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 9812.336625007447,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/pipeline.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/hybrid.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/ingest/indexer.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/mcp_server/tools.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/ingest/pipeline.py"
+      ],
+      "answer": "Anvay combines dense vector search and keyword search (BM25) through a hybrid retrieval pipeline. It performs a dense ANN search and a sparse BM25 search against the same chunk corpus, then merges the results into a single ranked seed set using Reciprocal Rank Fusion (RRF). This rank-based fusion is used to remain robust against score-scale differences between dense and sparse results.",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_precision": 0.9999999999666667,
+      "context_recall": 1.0
+    },
+    {
+      "id": "anvay_bm25_location",
+      "query": "How does Anvay produce the sparse keyword vectors used in hybrid search?",
+      "category": "api",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 7122.618458000943,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/sparse.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/pipeline.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/sparse.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/sparse.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/ingest/indexer.py"
+      ],
+      "answer": "Anvay produces TF-weighted sparse vectors using a BM25 sparse encoder that wraps fastembed's Qdrant/bm25 tokenizer. Qdrant then applies IDF server-side through the `Modifier.IDF` setting on the collection's sparse vector params.",
+      "faithfulness": 0.6666666666666666,
+      "answer_correctness": 0.5,
+      "context_precision": 0.8055555555287036,
+      "context_recall": 1.0
+    },
+    {
+      "id": "anvay_evidence_vs_retrieve",
+      "query": "What is the difference between the low-level retrieve pipeline and evidence retrieval?",
+      "category": "architecture",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.9197207891481876,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 6724.916417035274,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/evidence.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/evidence.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/pipeline.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py"
+      ],
+      "answer": "The low-level `retrieve()` function is a primitive pipeline consisting of dense and BM25 search followed by a rerank. In contrast, evidence retrieval assembles a broader evidence set for product understanding tasks, incorporating hybrid, exact, repo-map, graph, and skills retrieval to provide exact symbols, docs, graph-connected chunks, and approved skills.",
+      "faithfulness": 0.9230769230769231,
+      "answer_correctness": 0.5,
+      "context_precision": 0.8333333333055556,
+      "context_recall": 1.0
+    },
+    {
+      "id": "anvay_graph_role",
+      "query": "Is the knowledge graph used to answer questions directly or just to guide retrieval?",
+      "category": "conceptual",
+      "recall_at_k": 0.5,
+      "ndcg_at_k": 0.38685280723454163,
+      "reciprocal_rank": 0.5,
+      "latency_ms": 7392.069833003916,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/anvay/council/kb_guide.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py"
+      ],
+      "answer": "The knowledge graph is used to answer product-system questions using supplied graph facts and evidence excerpts. The `answer_graph_rag` function specifically answers arbitrary product questions via graph expansion and cited retrieval.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.9249999999815,
+      "context_recall": 1.0
+    },
+    {
+      "id": "anvay_graph_local",
+      "query": "How does graph-local traversal seed candidates during evidence retrieval?",
+      "category": "how-to",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 6959.179124969523,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/evidence.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/impact.py",
+        "0xaeres/anvay-core/anvay/retrieval/evidence.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/evidence.py"
+      ],
+      "answer": "When the mode is \"local\", the seed strategy is determined as either \"explicit_anchor_graph_traversal\" (if anchors exist) or \"hybrid_hit_graph_seed\". Seed candidates are then resolved via `_resolve_seeds` and used to perform a graph traversal using the stable IDs of up to the first eight seed nodes.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.25,
+      "context_precision": 0.9166666666361111,
+      "context_recall": 1.0
+    }
+  ]
+}

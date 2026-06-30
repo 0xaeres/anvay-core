@@ -45,6 +45,15 @@ class _LangCfg:
     boundary_nodes: tuple[str, ...]
     # Node types whose `name` child should be used as the context path component.
     name_field_nodes: tuple[str, ...] = ()
+    # Node types that are doc-comments (block/line) living as prev-siblings of a
+    # declaration.  When set, the chunker extends the chunk span back to include the
+    # leading comment so it is NOT emitted as an orphaned <module> chunk.
+    doc_comment_nodes: tuple[str, ...] = ()
+    # Optional text-prefix filter for doc_comment_nodes. When non-empty, a comment
+    # node is only attached if its text starts with one of these prefixes. Use this
+    # for languages (e.g. Rust) where the same tree-sitter node type covers both
+    # outer-doc comments (``///``, ``/**``) and plain comments (``//``, ``/*``).
+    doc_comment_prefix: tuple[str, ...] = ()
 
 
 def _language(raw) -> Language:
@@ -82,6 +91,7 @@ _LANGS: dict[str, _LangCfg] = {
             "type_alias_declaration",
             "variable_declarator",
         ),
+        doc_comment_nodes=("comment",),
     ),
     "tsx": _LangCfg(
         language=_language(tree_sitter_typescript.language_tsx()),
@@ -102,6 +112,7 @@ _LANGS: dict[str, _LangCfg] = {
             "type_alias_declaration",
             "variable_declarator",
         ),
+        doc_comment_nodes=("comment",),
     ),
     "javascript": _LangCfg(
         language=_language(tree_sitter_javascript.language()),
@@ -118,16 +129,24 @@ _LANGS: dict[str, _LangCfg] = {
             "method_definition",
             "variable_declarator",
         ),
+        doc_comment_nodes=("comment",),
     ),
     "rust": _LangCfg(
         language=_language(tree_sitter_rust.language()),
         boundary_nodes=("function_item", "impl_item", "struct_item", "trait_item", "enum_item"),
         name_field_nodes=("function_item", "impl_item", "struct_item", "trait_item", "enum_item"),
+        # tree-sitter-rust uses `line_comment` for both `///` outer-doc and plain `//`,
+        # and `block_comment` for both `/** */` outer-doc and plain `/* */`. Restrict
+        # attachment to outer-doc markers only so `//` and `//!` inner-module docs
+        # don't get pulled into unrelated declaration chunks.
+        doc_comment_nodes=("line_comment", "block_comment"),
+        doc_comment_prefix=("///", "/**"),
     ),
     "go": _LangCfg(
         language=_language(tree_sitter_go.language()),
         boundary_nodes=("function_declaration", "method_declaration", "type_declaration"),
         name_field_nodes=("function_declaration", "method_declaration"),
+        doc_comment_nodes=("comment",),
     ),
     "java": _LangCfg(
         language=_language(tree_sitter_java.language()),
@@ -147,6 +166,7 @@ _LANGS: dict[str, _LangCfg] = {
             "constructor_declaration",
             "method_declaration",
         ),
+        doc_comment_nodes=("block_comment", "line_comment"),
     ),
     "cpp": _LangCfg(
         language=_language(tree_sitter_cpp.language()),
@@ -276,6 +296,31 @@ def _chunk_code(
     for node, ctx_path in _walk_boundaries(root, cfg, parent_ctx=""):
         start = node.start_point[0] + 1
         end = node.end_point[0] + 1
+
+        # Attach immediately-preceding doc-comment(s) (e.g. Java javadoc, JSDoc, rustdoc)
+        # so they land in the same chunk as the declaration rather than as orphaned
+        # <module> chunks with no useful context_path.  Walk backwards through a run of
+        # consecutive adjacent comment siblings (handles both /** block */ and // lines).
+        if cfg.doc_comment_nodes:
+            earliest_comment_start: int | None = None
+            probe = node.prev_named_sibling
+            ref_line = node.start_point[0]  # 0-indexed
+            while probe is not None and probe.type in cfg.doc_comment_nodes:
+                if cfg.doc_comment_prefix:
+                    text = (probe.text or b"").decode("utf-8", errors="replace")
+                    if not any(text.startswith(p) for p in cfg.doc_comment_prefix):
+                        break
+                gap = ref_line - probe.end_point[0]
+                # Allow up to one blank line between comment and declaration.
+                # gap==1 means adjacent (no blank line); gap==2 means one blank line.
+                if gap > 2:
+                    break
+                earliest_comment_start = probe.start_point[0] + 1
+                ref_line = probe.start_point[0]
+                probe = probe.prev_named_sibling
+            if earliest_comment_start is not None:
+                start = earliest_comment_start
+
         span = "\n".join(lines[start - 1 : end])
         if len(span) < MIN_CHUNK_CHARS:
             continue

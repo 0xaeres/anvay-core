@@ -23,6 +23,7 @@ from anvay.api.routes import (
     auth,
     council,
     dashboard,
+    evals,
     metrics,
     products,
     proposals,
@@ -278,6 +279,7 @@ app.include_router(dashboard.router)
 app.include_router(metrics.router)
 app.include_router(sources.router)
 app.include_router(council.router)
+app.include_router(evals.router)
 app.include_router(skills.router)
 app.include_router(proposals.router)
 app.include_router(setup.router)

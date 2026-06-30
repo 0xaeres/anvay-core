@@ -30,6 +30,11 @@ _ROUTE_RE = re.compile(
     re.I,
 )
 _PY_IMPORT_RE = re.compile(r"^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import|import\s+([A-Za-z_][\w.]*))", re.M)
+_PY_FROM_IMPORT_RE = re.compile(r"^\s*from\s+([A-Za-z_][\w.]*)\s+import\s+(.+)$", re.M)
+_JS_NAMED_IMPORT_RE = re.compile(
+    r"^\s*import\s+(?:([A-Za-z_$][\w$]*)\s*,?\s*)?(?:\{([^}]*)\})?[^'\"]*from\s+['\"]([^'\"]+)['\"]",
+    re.M,
+)
 _JS_IMPORT_RE = re.compile(
     r"^\s*import(?:\s+type)?(?:[^'\"]*\s+from\s+)?['\"]([^'\"]+)['\"]|"
     r"require\(\s*['\"]([^'\"]+)['\"]\s*\)",
@@ -288,6 +293,7 @@ def _add_call_edges(product_id, resource, content, tree, symbols, add_edge) -> N
         for symbol in symbols
         if symbol.properties.get("name")
     }
+    imported = _imported_symbol_modules(product_id, resource, content)
     calls: list[tuple[int, str]] = []
     stack: list[Node] = [tree.root_node]
     while stack:
@@ -308,15 +314,68 @@ def _add_call_edges(product_id, resource, content, tree, symbols, add_edge) -> N
         and isinstance(symbol.properties.get("end_line"), int)
     )
     for line, callee_name in calls:
-        callee = by_name.get(callee_name)
-        if callee is None:
-            continue
         caller_id = next(
             (stable_id for start, end, stable_id in symbols_by_span if start <= line <= end),
             None,
         )
-        if caller_id and caller_id != callee.stable_id:
-            add_edge("CALLS", caller_id, callee.stable_id, properties={"callee": callee_name, "line": line})
+        if not caller_id:
+            continue
+        callee = by_name.get(callee_name)
+        if callee is not None:
+            if caller_id != callee.stable_id:
+                add_edge("CALLS", caller_id, callee.stable_id, properties={"callee": callee_name, "line": line})
+            continue
+        # Cross-module: the callee is imported from another module. Link the
+        # caller to the already-created imported Module node (no orphan symbol),
+        # so traversal/impact can follow the dependency. Real cross-file symbol
+        # unification stays a product-level concern; here we record the edge.
+        module_id = imported.get(callee_name)
+        if module_id is not None:
+            add_edge(
+                "CALLS",
+                caller_id,
+                module_id,
+                properties={"callee": callee_name, "line": line, "cross_module": True},
+            )
+
+
+def _imported_symbol_modules(product_id: str, resource, content: str) -> dict[str, str]:
+    """Map imported leaf names to the Module node id they were imported from.
+
+    Mirrors the module ids minted by `_add_import_edges` so a CALLS edge can
+    target the same node. Handles Python `from M import a, b as c` and JS/TS
+    `import D, {a, b as c} from 'M'`.
+    """
+    out: dict[str, str] = {}
+    if resource.uri.endswith(".py"):
+        for match in _PY_FROM_IMPORT_RE.finditer(content):
+            module, names = match.group(1), match.group(2)
+            module_id = _sid("module", product_id, module)
+            for local_name in _parse_import_clause(names):
+                out[local_name] = module_id
+    else:
+        for match in _JS_NAMED_IMPORT_RE.finditer(content):
+            default_name, named, module = match.group(1), match.group(2), match.group(3)
+            module_id = _sid("module", product_id, module)
+            if default_name:
+                out[default_name.strip()] = module_id
+            for local_name in _parse_import_clause(named or ""):
+                out[local_name] = module_id
+    return out
+
+
+def _parse_import_clause(clause: str) -> list[str]:
+    """Extract bound local names from an import clause (`a, b as c, *`)."""
+    names: list[str] = []
+    for part in clause.replace("{", "").replace("}", "").split(","):
+        token = part.strip().strip("()").strip()
+        if not token or token == "*":
+            continue
+        # `original as alias` binds `alias`; bare `name` binds `name`.
+        local = re.split(r"\s+as\s+", token)[-1].strip()
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", local):
+            names.append(local)
+    return names
 
 
 def _add_route_edges(product_id, resource, content, file_id, symbols, add_node, add_edge) -> None:

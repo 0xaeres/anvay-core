@@ -89,6 +89,7 @@ def test_status_stage_none_when_no_sources(client) -> None:
     body = c.get("/products/demo/status").json()
     assert body == {
         "hasEmbeddings": False,
+        "isSyncing": False,
         "hasSkill": False,
         "councilInProgress": False,
         "currentSessionId": None,

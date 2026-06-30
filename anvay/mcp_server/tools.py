@@ -401,6 +401,7 @@ async def evidence_search_corpus(
         current_file=current_file,
         query_mode=mode,  # type: ignore[arg-type]
         skills=[s for s in state.store.iter_skills() if s.product == state.product],
+        budget_ms=state.config.retrieval.interactive_budget_ms,
     )
     return _render_evidence_set(result)
 

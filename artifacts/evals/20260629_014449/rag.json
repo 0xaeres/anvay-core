@@ -1,0 +1,151 @@
+{
+  "items": [
+    {
+      "id": "guava_preconditions",
+      "faithfulness": 0.7,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "To fail fast on invalid arguments, use `Preconditions.checkArgument(boolean expression)`, which throws an `IllegalArgumentException` if the expression is false. To ensure an object reference is not null, use `Preconditions.checkNotNull`, which throws a `NullPointerException` if the reference is null.",
+      "notes": "The answer makes two main claims: 1) `Preconditions.checkArgument(boolean expression)` throws `IllegalArgumentException` if the expression is false, which is explicitly stated in the provided code and Javadoc. 2) `Preconditions.checkNotNull` throws `NullPointerException` if the reference is null. While the context mentions `Preconditions.checkNotNull(Object)` in the 'Comparison to alternatives' section of the `Verify` class documentation, the actual implementation or Javadoc for `checkNotNull` (specifying that it throws `NullPointerException`) is missing from the provided snippets. However, the context does explicitly link `Preconditions` to checking if a caller has violated a contract by passing an invalid argument. | The answer correctly identifies the two primary methods requested by the question: `Preconditions.checkArgument` for invalid arguments and `Preconditions.checkNotNull` for null checks. While it does not list the additional utility methods mentioned in the expected answer (like `checkState` or `checkElementIndex`), it fully and accurately answers the specific question asked."
+    },
+    {
+      "id": "guava_cache_no_instant_eviction",
+      "faithfulness": 0.5,
+      "answer_correctness": 0.0,
+      "context_recall": 0.0,
+      "answer": "The provided contexts do not contain information explaining why Guava cache entries are not evicted immediately upon expiration. The contexts only define expiration causes, such as `expireAfterWrite` and `expireAfterAccess`, and mention that notifications can occur when entries are removed due to timed expiration.",
+      "notes": "The answer correctly states that the provided context does not explain why entries are not evicted immediately. It claims the context defines 'expireAfterWrite' and 'expireAfterAccess' and mentions notifications for timed expiration; however, the provided context is a truncated Java file that ends abruptly ('least-recently-used evicti') and does not actually contain the definitions of those methods or the mention of notifications. Therefore, the second sentence of the answer is a hallucination based on external knowledge of the Guava library rather than the provided text. | The answer explicitly states that it does not have the information to answer the question, whereas the expected answer provides the technical explanation (lazy eviction/lack of background thread)."
+    },
+    {
+      "id": "guava_cacheloader_vs_callable",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "You should consider using `build(CacheLoader)` if it is feasible to implement a `CacheLoader`. Using a `loader` ensures that for any given key, the same value is computed, whereas using different loaders with `get()` may result in a call returning a value computed by a differently behaving loader.",
+      "notes": "The answer makes two main claims. 1) That one should consider using `build(CacheLoader)` if feasible: this is directly supported by the text 'Consider build(CacheLoader) instead, if it is feasible to implement a CacheLoader.' 2) That using a loader ensures the same value is computed for a key, whereas using different loaders with get() may result in values computed by differently behaving loaders: this is directly supported by the Warning section which states 'For any given key, every loader used with it should compute the same value. Otherwise, a call that passes one loader may return the result of another call with a differently behaving loader.' | The answer correctly identifies that `CacheLoader` should be used when feasible. While it doesn't explicitly mention the 'per-call/ad-hoc' nature of the Callable or the additional features like `refreshAfterWrite`, it captures the core architectural decision: use a loader for uniform loading logic. The reasoning provided about consistency is a valid justification for using a `CacheLoader` over multiple `Callable` instances."
+    },
+    {
+      "id": "guava_multimap",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "You can use a `Multimap` to map one key to multiple values. You can store key-value pairs using the `put(K key, V value)` method, or use an `ImmutableListMultimap.Builder` to build an immutable version.",
+      "notes": "The answer makes three claims: 1) You can use a `Multimap` to map one key to multiple values (supported by the context showing `Multimap` and its `asMap()` returning `Map<K, Collection<V>>`). 2) You can store key-value pairs using the `put(K key, V value)` method (supported by multiple code snippets showing the `put` method signature). 3) You can use an `ImmutableListMultimap.Builder` to build an immutable version (supported by the first code snippet showing `ImmutableListMultimap.builder()` and the `builder.put(...)` pattern). | The answer correctly identifies the 'Multimap' as the solution and mentions the `put` method and the builder for immutable versions. While it doesn't list specific implementations like `ArrayListMultimap` or `HashMultimap` as the expected answer does, it accurately answers the core question of how to avoid managing a `Map<K, List<V>>` manually."
+    },
+    {
+      "id": "guava_immutable_collections",
+      "faithfulness": 0.7,
+      "answer_correctness": 0.5,
+      "context_recall": 1.0,
+      "answer": "You can create immutable lists and maps using the `of()` methods (e.g., `ImmutableList.of()` or `ImmutableMap.of(K k1, V v1)`) or by using `ImmutableList.copyOf(contents)`. They are preferred over `Collections` equivalents mainly for the consistency and maintainability of your code.",
+      "notes": "The answer makes three main claims: 1) Immutable lists/maps can be created using `of()` methods (supported by contexts for both `ImmutableList` and `ImmutableMap`). 2) They can be created using `ImmutableList.copyOf(contents)` (this method is not present in the provided contexts). 3) They are preferred over `Collections` equivalents for consistency and maintainability (supported by the Javadoc for `ImmutableList.of()` and `ImmutableMap.of()`). While the `copyOf` claim is a hallucination relative to the provided text, the other major points are grounded. | The answer correctly identifies the methods for creating immutable lists and maps (`of()` and `copyOf()`). However, it fails to explain the critical technical reason why they are preferred over `Collections.unmodifiable...`. The expected answer highlights the difference between a 'truly immutable' collection and a 'read-only view' (which can still be changed if the backing list is modified). The provided answer vaguely attributes the preference to 'consistency and maintainability', missing the core architectural distinction."
+    },
+    {
+      "id": "guava_splitter",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "To split a string on a delimiter while trimming whitespace and dropping empty tokens, use `Splitter.on(delimiter).trimResults().omitEmptyStrings().split(string)`. The `trimResults()` method removes leading and trailing whitespace, and `omitEmptyStrings()` ensures empty strings are excluded from the results. When both are used, the splitter trims results before checking for emptiness.",
+      "notes": "The answer correctly identifies the method chain `Splitter.on(delimiter).trimResults().omitEmptyStrings().split(string)` based on the provided documentation. It accurately describes `trimResults()` as removing leading and trailing whitespace and `omitEmptyStrings()` as excluding empty strings. It also correctly notes that when both are used, trimming occurs before the emptiness check, which is explicitly stated in the context: 'that splitter always trims results first before checking for emptiness.' | The answer correctly identifies the Guava Splitter methods required to achieve the goal: `on(delimiter)`, `trimResults()`, and `omitEmptyStrings()`. It explains the functionality of each method accurately and matches the logic provided in the expected answer."
+    },
+    {
+      "id": "guava_joiner",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "To handle nulls when joining a collection into a string, you can use `useForNull(String nullText)` to automatically substitute null elements with a specified string. Alternatively, you can use `skipNulls()` to omit null elements from the resulting string.",
+      "notes": "The answer makes two claims: 1) `useForNull(String nullText)` substitutes null elements with a specified string, and 2) `skipNulls()` omits null elements. Both are directly supported by the provided documentation and method descriptions in the context. | The answer correctly identifies the two primary methods for handling nulls when joining a collection (using `useForNull` to substitute and `skipNulls` to omit), which aligns perfectly with the core technical information in the expected answer."
+    },
+    {
+      "id": "guava_listenablefuture",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.5,
+      "answer": "To run a callback when a Future completes, you can use `Futures.addCallback(ListenableFuture future, FutureCallback callback, Executor executor)`. Alternatively, you can call the `addCallback(FutureCallback callback, Executor executor)` method directly on the future. These methods register success and failure callbacks to be run on the specified executor once the computation is complete.",
+      "notes": "The answer makes three main claims: 1) You can use `Futures.addCallback(ListenableFuture future, FutureCallback callback, Executor executor)`, which is directly supported by the first context. 2) You can call `addCallback(FutureCallback callback, Executor executor)` directly on the future, which is supported by the second context. 3) These methods register success and failure callbacks to be run on the specified executor once the computation is complete, which is supported by the documentation in the third and fourth contexts (mentioning 'separate success and failure callbacks' and 'run on executor'). | The answer correctly identifies the primary method for running a callback in Guava (`Futures.addCallback`) and correctly specifies the required parameters (future, callback, and executor). While it doesn't mention `transform` or `addListener` specifically, it provides the most direct and common way to achieve the goal described in the question."
+    },
+    {
+      "id": "guava_ratelimiter",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "You can use the `RateLimiter` class to limit operations to a specified number of permits per second (QPS). Create a `RateLimiter` with the desired `permitsPerSecond` and call the `acquire()` method to block until a permit is granted.",
+      "notes": "The answer claims that the `RateLimiter` class can be used to limit operations to a specified number of permits per second (QPS), which is directly supported by the Javadoc. It mentions creating a `RateLimiter` with `permitsPerSecond` and calling `acquire()` to block until a permit is granted, both of which are explicitly described in the class documentation and the provided code examples. | The answer correctly identifies the `RateLimiter` class, the `permitsPerSecond` configuration, and the `acquire()` method to achieve the goal of limiting operations per second. While it doesn't mention `tryAcquire()` or the warmup period, it provides a complete and correct answer to the specific question asked."
+    },
+    {
+      "id": "guava_optional",
+      "faithfulness": 0.5,
+      "answer_correctness": 0.2,
+      "context_recall": 1.0,
+      "answer": "Based on the provided text, Guava's `Optional` has several equivalents to `java.util.Optional`: `absent()` is equivalent to `Optional.empty()`, and `fromNullable()` is equivalent to `Optional.ofNullable()`. Additionally, the provided contexts state there are \"no differences\" regarding the `isPresent()`, `of()`, and `equals()` methods.",
+      "notes": "The answer makes several claims: 1) `absent()` is equivalent to `Optional.empty()`. While the context mentions `Optional.absent()`, it never explicitly states it is equivalent to `java.util.Optional.empty()`. 2) `fromNullable()` is equivalent to `Optional.ofNullable()`. This is directly supported. 3) There are 'no differences' regarding `isPresent()`, `of()`, and `equals()`. The context explicitly states 'no differences' for `isPresent()` and `of()`, but there is no mention of the `equals()` method in the provided text. | The answer focuses on method equivalencies (which are similarities) rather than the actual differences requested by the question. It fails to mention key differences such as Serializability, specific method naming (or/asSet/transform), or the general recommendation to use java.util.Optional for Java 8+ code, all of which are present in the expected answer."
+    },
+    {
+      "id": "guava_eventbus",
+      "faithfulness": 0.1,
+      "answer_correctness": 0.5,
+      "context_recall": 1.0,
+      "answer": "To publish events to registered subscribers in Guava, use the `post(Object event)` method. This method posts the event to all registered subscribers and returns successfully regardless of any exceptions thrown by those subscribers. If no subscribers exist for the event's class and it is not already a `DeadEvent`, the event will be wrapped in a `DeadEvent` and reposted.",
+      "notes": "The answer makes several specific claims about the `post(Object event)` method, its behavior regarding exceptions, and the handling of `DeadEvent`. However, the provided context is only the Javadoc header for the `EventBus` class. While the context mentions that `EventBus` is for in-process event distribution and that it 'doesn't propagate exceptions', it does not mention the `post` method, the specific return behavior, or the `DeadEvent` mechanism. These details are external knowledge not present in the provided text. | The answer correctly identifies the `post()` method as the mechanism for publishing events. However, it omits the critical setup steps required for the system to work: creating an `EventBus` and registering listeners with the `@Subscribe` annotation. While the answer describes the behavior of `post()` and `DeadEvent`, it fails to explain *how* to actually implement the decoupled subscriber pattern requested in the question."
+    },
+    {
+      "id": "guava_bloomfilter",
+      "faithfulness": 0.9,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "You can create a Bloom filter using the `create` method by providing a `Funnel`, the number of `expectedInsertions`, and the desired false positive probability (`fpp`). The false-positive rate is controlled by the `fpp` parameter, which must be a value between 0.0 and 1.0. Note that overflowing the filter with significantly more elements than specified will cause saturation and a sharp deterioration of the false positive probability.",
+      "notes": "The answer claims that the `fpp` parameter must be a value between 0.0 and 1.0. The context explicitly states 'fpp > 0.0' and 'fpp < 1.0' (and 'must be 0 < p < 1'), meaning it must be strictly between 0 and 1, not inclusive of 0.0 and 1.0. All other claims regarding the `create` method parameters and the effect of overflowing the filter are directly supported by the text. | The answer accurately describes the method of creating a Bloom filter (using the `create` method with Funnel, expectedInsertions, and fpp) and explains how the false-positive rate is controlled via the `fpp` parameter. It provides the same core technical information as the expected answer, with additional context regarding saturation."
+    },
+    {
+      "id": "guava_multiset_counting",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.5,
+      "answer": "To count occurrences of elements in Guava, you can use a `Multiset` and call its `count(Object element)` method, which returns the nonnegative number of occurrences of that element. To create a multiset from a stream, you can use the `toImmutableMultiset()` collector.",
+      "notes": "The answer makes two main claims: 1) that a `Multiset` can be used with a `count(Object element)` method to return the nonnegative number of occurrences, and 2) that `toImmutableMultiset()` can be used as a collector to create a multiset from a stream. Both claims are directly supported by the provided contexts: the `count` method documentation explicitly states it 'Returns the number of occurrences of element in this multiset' and returns the 'nonnegative number of occurrences', and the `toImmutableMultiset()` method is explicitly defined as returning a `Collector` for an `ImmutableMultiset`. | The answer correctly identifies the use of `Multiset` and the `count()` method to retrieve occurrences, which is the core of the question. While it doesn't mention `HashMultiset.create()` or the `Multisets` utility class specifically, it provides a correct and functional way to achieve the goal using Guava's API."
+    },
+    {
+      "id": "guava_caseformat",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "To convert an identifier, you can use the `CaseFormat` enum. Specifically, you can use `UPPER_UNDERSCORE` (the Java constant naming convention) and `LOWER_CAMEL` (the Java variable naming convention) as the source and target formats. Alternatively, a `StringConverter` can be initialized with these two `CaseFormat` values to perform the conversion.",
+      "notes": "The answer makes several claims: 1) Use CaseFormat enum for conversion (Supported by the presence of CaseFormat and its .to() method in StringConverter). 2) UPPER_UNDERSCORE is the Java constant naming convention (Supported by the comment 'Java and C++ constant naming convention'). 3) LOWER_CAMEL is the Java variable naming convention (Supported by the comment 'Java variable naming convention'). 4) A StringConverter can be initialized with these two CaseFormat values to perform conversion (Supported by the StringConverter constructor taking sourceFormat and targetFormat). | The answer correctly identifies the necessary components (`CaseFormat` enum, `UPPER_UNDERSCORE`, and `LOWER_CAMEL`) to perform the conversion described in the question. While it does not provide the exact code snippet found in the expected answer, it accurately describes the mechanism and the specific formats required to achieve the result."
+    },
+    {
+      "id": "guava_stopwatch",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "To measure elapsed time in Guava, it is recommended to use the `Stopwatch` class. For the most accurate and strongly-typed representation, use the `elapsed()` method, which returns a `Duration` instance rather than an ambiguous unitless `long`. Note that specifying `TimeUnit#NANOSECONDS` precision is generally not useful because measurement overhead can exceed one microsecond.",
+      "notes": "The answer makes four claims: 1) Use the `Stopwatch` class to measure elapsed time (Supported: 'An object that accurately measures elapsed time...'). 2) Use the `elapsed()` method for a strongly-typed `Duration` instead of a unitless `long` (Supported: 'we recommend using #elapsed() instead, which returns a strongly-typed Duration instance' and 'not a good idea to use an ambiguous, unitless long'). 3) `elapsed()` returns a `Duration` instance (Supported: 'returns a strongly-typed Duration instance'). 4) Specifying `TimeUnit#NANOSECONDS` precision is generally not useful because measurement overhead can exceed one microsecond (Supported: 'the overhead of measurement can be more than a microsecond, so it is generally not useful to specify TimeUnit#NANOSECONDS precision here'). | The answer correctly identifies the `Stopwatch` class as the tool for measuring elapsed time in Guava. While it mentions the `elapsed()` method returning a `Duration` (which is a feature of newer Guava versions) and the expected answer mentions `elapsed(TimeUnit)`, both describe the same core functionality of the `Stopwatch` class. The answer captures the essence of the tool and its usage."
+    },
+    {
+      "id": "guava_throwables",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "To propagate an exception, you can use the deprecated `propagate(Throwable throwable)` method, which throws a `RuntimeException`. To inspect the causal chain, use `getCausalChain(Throwable throwable)` to get an unmodifiable list of the cause hierarchy or `getRootCause(Throwable throwable)` to retrieve the innermost cause.",
+      "notes": "The answer makes four claims: 1) propagate(Throwable) is deprecated (Supported), 2) propagate(Throwable) throws a RuntimeException (Supported), 3) getCausalChain(Throwable) returns an unmodifiable list of the cause hierarchy (Supported), and 4) getRootCause(Throwable) retrieves the innermost cause (Supported). | The answer correctly identifies the methods for inspecting the causal chain (`getCausalChain` and `getRootCause`) and mentions the `propagate` method for propagation. While it doesn't explicitly mention the replacement methods `throwIfInstanceOf` or `throwIfUnchecked` as the expected answer does, it accurately describes the functionality of the tools requested in the question."
+    },
+    {
+      "id": "guava_bimap",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "You can use a `BiMap`, which preserves the uniqueness of both keys and values. To look up by value, you can use the `inverse()` method to get a view that maps values to keys, or use `getInverse(Object value)`. You can build one using `ImmutableBiMap.Builder` by calling `put(K key, V value)`.",
+      "notes": "The answer makes four claims: 1) BiMap preserves uniqueness of keys and values (Supported). 2) Use inverse() to get a view mapping values to keys (Supported). 3) Use getInverse(Object value) to look up by value (Supported). 4) Use ImmutableBiMap.Builder and put(K key, V value) to build one (Supported). | The answer correctly identifies the core functionality of a BiMap (uniqueness of keys and values), the method to look up by value (`inverse()`), and a way to build one (`ImmutableBiMap.Builder`). While it mentions `getInverse` (which is not a standard Guava BiMap method, though `inverse().get()` is), the overall explanation aligns with the expected answer's technical requirements."
+    }
+  ],
+  "aggregates": {
+    "n": 17,
+    "faithfulness": 0.8471,
+    "answer_correctness": 0.8353,
+    "context_recall": 0.8824
+  },
+  "thresholds": {
+    "faithfulness": 0.85,
+    "answer_correctness": 0.8,
+    "context_recall": 0.75
+  }
+}

@@ -33,6 +33,27 @@ def test_understand_query_classifies_global_chunking_strategy() -> None:
     assert "implementation" in u.facets
 
 
+def test_understand_query_extracts_real_symbols_not_stopwords() -> None:
+    # Plan 1b: sentence-initial capitals ("How"/"What") must not become anchors
+    # (that stranded the graph-local channel). Real code signals must survive.
+    u = understand_query("How does retrieve_evidence() build the candidate set?")
+    assert "retrieve_evidence" in u.symbols
+    assert all(s.lower() not in {"how", "does", "the"} for s in u.symbols)
+
+
+def test_understand_query_keeps_camel_and_snake_anchors() -> None:
+    u = understand_query("Where is QueryPlan defined and how is rerank_mixed used?")
+    assert "QueryPlan" in u.symbols
+    assert "rerank_mixed" in u.symbols
+
+
+def test_understand_query_drops_bare_capitalized_words() -> None:
+    # A capitalized English word with no internal code signal is not an anchor.
+    u = understand_query("What handles errors here?")
+    assert "What" not in u.symbols
+    assert u.symbols == []
+
+
 def test_merge_candidates_preserves_exact_and_doc_hits() -> None:
     items = [
         EvidenceCandidate(
@@ -257,6 +278,89 @@ async def test_retrieve_evidence_drift_lite_adds_query_plan_and_followups(monkey
     assert "drift_lite" in result.query_plan.channels_run
     assert any(t.channel == "drift_lite" for t in result.trace)
     assert len(calls) >= 3
+
+
+@pytest.mark.asyncio
+async def test_retrieve_evidence_latency_budget_skips_drift_lite(monkeypatch) -> None:
+    calls: list[str] = []
+
+    async def fake_retrieve(**kwargs):
+        calls.append(kwargs["query"])
+        return RetrievalResult(
+            hits=[
+                Hit(
+                    id=f"summary-{len(calls)}",
+                    score=0.8,
+                    source="rerank",
+                    payload={
+                        "resource_uri": "ENGINEERING.md",
+                        "start_line": 345,
+                        "content": "Graph summary for retrieval architecture.",
+                        "artifact_type": "summary",
+                        "kind": "doc",
+                    },
+                )
+            ],
+            reranked=True,
+            seed_count=1,
+        )
+
+    monkeypatch.setattr(evidence, "retrieve", fake_retrieve)
+    result = await retrieve_evidence(
+        ctx=object(),
+        product_id="p",
+        query="explain retrieval architecture",
+        top_k=6,
+        query_mode="drift_lite",
+        budget_ms=0.0,  # exhausted immediately -> skip optional stages
+    )
+
+    assert result.query_plan is not None
+    assert result.query_plan.budget_exceeded is True
+    assert "latency_budget_skipped_drift_lite" in result.query_plan.fallbacks
+    assert "drift_lite" not in result.query_plan.channels_run
+    assert not any(t.channel == "drift_lite" for t in result.trace)
+
+
+@pytest.mark.asyncio
+async def test_retrieve_evidence_latency_budget_skips_coverage_repair(monkeypatch) -> None:
+    """Budget exhausted before coverage repair: fallback recorded, repair not run."""
+
+    async def fake_retrieve(**kwargs):
+        # Return a single low-role hit so coverage is likely insufficient for a
+        # global query (missing 'overview' and 'implementation' facets).
+        return RetrievalResult(
+            hits=[
+                Hit(
+                    id="code-1",
+                    score=0.6,
+                    source="rerank",
+                    payload={
+                        "resource_uri": "src/main.py",
+                        "start_line": 1,
+                        "content": "def main(): pass",
+                        "kind": "code",
+                    },
+                )
+            ],
+            reranked=True,
+            seed_count=1,
+        )
+
+    monkeypatch.setattr(evidence, "retrieve", fake_retrieve)
+    result = await retrieve_evidence(
+        ctx=object(),
+        product_id="p",
+        query="explain our overall architecture and design",
+        top_k=6,
+        query_mode="global",  # forces global shape; no drift_lite stage
+        budget_ms=0.0,  # exhausted immediately -> skip optional stages
+    )
+
+    assert result.query_plan is not None
+    assert result.query_plan.budget_exceeded is True
+    assert "latency_budget_skipped_coverage_repair" in result.query_plan.fallbacks
+    assert "coverage_repair" not in result.query_plan.fallbacks
 
 
 @pytest.mark.asyncio

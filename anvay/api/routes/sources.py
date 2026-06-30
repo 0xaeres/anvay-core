@@ -275,18 +275,9 @@ class _CanonicalProgressSource:
             yield canonical
 
     async def read_resource(self, ref: ResourceRef) -> str:
+        # Per-file read progress is emitted by the pipeline (run_ingest), which
+        # drives the reads; this adapter only rewrites URIs to canonical form.
         self.processed += 1
-        pct = round(100 * self.processed / self.total) if self.total else 0
-        short = ref.uri.rsplit("/", 1)[-1] or ref.uri
-        self.put(
-            "progress",
-            f"Reading {self.processed} of {self.total} — {short[:80]}",
-            done=self.processed,
-            total=self.total,
-            pct=pct,
-            stage="read",
-            uri=ref.uri,
-        )
         real = self._real_by_uri.get(ref.uri, ref)
         return await self.inner.read_resource(real)
 
@@ -376,7 +367,8 @@ async def _sync_source_contents(
         repo_map_file_count = 0
 
         source_name = source.get("name") or "source"
-        for root_label, local_root, _cleanup in roots:
+        repo_count = len(roots)
+        for repo_index, (root_label, local_root, _cleanup) in enumerate(roots, start=1):
             source_key = f"{source_name}:{_repo_label_for_path(root_label)}"
             stats, rm = await _ingest_root(
                 product_id=product_id,
@@ -388,6 +380,8 @@ async def _sync_source_contents(
                 registry=registry,
                 config=config,
                 q=q,
+                repo_index=repo_index,
+                repo_count=repo_count,
             )
             total_stats.resources_seen += stats.resources_seen
             total_stats.resources_indexed += stats.resources_indexed
@@ -464,8 +458,11 @@ async def _ingest_root(
     registry: Registry,
     config: AnvayConfig,
     q: asyncio.Queue,
+    repo_index: int = 1,
+    repo_count: int = 1,
 ):
-    await _emit(q, "info", f"Walking {root_label} at {local_root}…")
+    repo_tag = f"[{repo_index}/{repo_count}] " if repo_count > 1 else ""
+    await _emit(q, "info", f"{repo_tag}Walking {root_label} at {local_root}…")
 
     def _put(level: str, msg: str, **extra) -> None:
         log.info("source_sync.%s repo=%s %s extra=%s", level, root_label, msg, extra)
@@ -476,16 +473,18 @@ async def _ingest_root(
 
     fs_source = LocalFsSource(LocalFsConfig(root=local_root))
 
-    await _emit(q, "info", f"Counting files for {root_label}…")
+    await _emit(q, "info", f"{repo_tag}Counting files for {root_label}…")
     total = 0
     async for _ in fs_source.list_resources():
         total += 1
     await _emit(
         q,
         "started",
-        f"Starting ingestion for {root_label} — {total} files found",
+        f"{repo_tag}Starting ingestion for {root_label} — {total} files found",
         total=total,
         repo=root_label,
+        repo_index=repo_index,
+        repo_count=repo_count,
     )
 
     repo_label = _repo_label_for_path(root_label)
@@ -504,7 +503,15 @@ async def _ingest_root(
         payload = dict(event)
         level = str(payload.pop("level", "stage"))
         msg = str(payload.pop("msg", ""))
-        await _emit(q, level, msg, repo=root_label, **payload)
+        await _emit(
+            q,
+            level,
+            msg,
+            repo=root_label,
+            repo_index=repo_index,
+            repo_count=repo_count,
+            **payload,
+        )
 
     await _emit(
         q,
@@ -522,6 +529,8 @@ async def _ingest_root(
             event_sink=_pipeline_event,
             registry=registry,
             source_key=source_key,
+            total_resources=total,
+            progress_label=root_label,
         )
     except Exception:
         registry.finish_sync_run(

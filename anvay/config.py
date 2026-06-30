@@ -152,6 +152,30 @@ class IngestionCfg(BaseModel):
     enrichment_worker: EnrichmentWorkerCfg = Field(default_factory=EnrichmentWorkerCfg)
 
 
+class RetrievalCfg(BaseModel):
+    """Evidence-retrieval knobs for interactive (MCP) callers.
+
+    ``interactive_budget_ms`` is a soft deadline applied only to interactive
+    evidence retrieval: the core fan-out always runs, but the optional long-tail
+    enrichment (DRIFT-lite follow-ups, coverage repair) is skipped once spent, so
+    the MCP path returns best-effort evidence instead of blocking. Council/eval
+    callers leave it unset (unbounded). ``None`` disables the deadline.
+    """
+
+    interactive_budget_ms: float | None = 8000.0
+
+
+class CouncilCfg(BaseModel):
+    """Skill-generation council knobs.
+
+    `faithfulness_gate` re-enables the bounded LLM entailment judge in the eval
+    node. Off by default: the council runs deterministic-only eval (no judge,
+    no LLM eval-repair), keeping skill generation to a single synthesis call.
+    """
+
+    faithfulness_gate: bool = False
+
+
 class ServerCfg(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
@@ -180,6 +204,8 @@ class AnvayConfig(BaseSettings):
     graph_store: GraphStoreCfg = Field(default_factory=GraphStoreCfg)
     models: ModelsCfg
     ingestion: IngestionCfg = Field(default_factory=IngestionCfg)
+    retrieval: RetrievalCfg = Field(default_factory=RetrievalCfg)
+    council: CouncilCfg = Field(default_factory=CouncilCfg)
     server: ServerCfg = Field(default_factory=ServerCfg)
     storage: StorageCfg = Field(default_factory=StorageCfg)
 
