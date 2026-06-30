@@ -39,6 +39,33 @@ client. The sibling repo `../anvay-ui/` is the Next.js web UI.
   reranked, coverage-assessed, with deterministic DRIFT-lite follow-ups (no
   HyDE). The graph is an active **navigation** layer here — it seeds and biases
   retrieval; it is never an answer source on its own. See ENGINEERING.md §3–4.
+- **Leading doc-comments are attached to their declaration chunk.**
+  When the chunker emits a boundary node (class, function, interface, etc.),
+  it walks backwards through consecutive adjacent comment siblings
+  (`prev_named_sibling` chain, ≤ 1 blank-line gap). If it finds one or more
+  comment nodes whose type is listed in `_LangCfg.doc_comment_nodes`, the
+  chunk's `start_line` is extended back to include them; the extended range
+  is recorded in `emitted_ranges` so `_emit_uncovered` never re-emits those
+  lines as an orphaned `<module>` chunk. Languages covered:
+
+  | Language | `doc_comment_nodes` |
+  |---|---|
+  | Java | `block_comment`, `line_comment` |
+  | TypeScript / TSX / JavaScript | `comment` |
+  | Go | `comment` |
+  | Rust | `line_comment`, `block_comment` |
+  | Python | *(none — docstrings are already inside the node span)* |
+
+  Without this, a Java class javadoc (`/** … */`) is a sibling of the
+  `class_declaration` node and falls outside the boundary span, landing
+  in a detached `<module>` chunk with no useful context_path. The effect
+  on retrieval: conceptual queries ("what is X", "how does X differ from Y")
+  find a chunk that actually answers the question instead of retrieving
+  only the implementation with no prose description. This is the primary
+  mechanism maintaining `answer_correctness` and `context_recall` above
+  their gated thresholds. Do **not** reset `doc_comment_nodes` to empty
+  tuples or remove this walk without an eval-set measurement proving
+  neutrality across all three eval products.
 - **Chunks carry their context.** Code chunks get HQE (3 hypothetical
   questions) at ingest; doc chunks get Anthropic's Contextual Retrieval
   blurb. Both prepend at embed time via `text_for_embedding()`.
@@ -78,15 +105,26 @@ client. The sibling repo `../anvay-ui/` is the Next.js web UI.
 
 ```bash
 uv run ruff check anvay tests        # lint — must be clean
-uv run pytest -q                     # tests — must be green (146 at last count)
+uv run pytest -q                     # tests — must be green (331 at last count)
 ```
 
 The retrieval eval (`pytest -m eval`) is opt-in — it skips when
 Qdrant/embedder/reranker aren't reachable. Run it after any retrieval-stack
 change against a live product index.
 
+The unified eval harness (`uv run anvay eval run --products <pid>`) is the
+definitive quality gate. It gates on both deterministic retrieval metrics
+(recall@k, ndcg@k, mrr) and LLM-judged answer quality (answer_correctness,
+context_recall). See `evals/harness.py::Thresholds` for current floors and
+calibration notes.
+
 - Add a test for every new public leaf function and every new API route.
 - One logical change per commit; imperative subject.
+- **Any change spanning more than one file must be verified with a live
+  end-to-end run before it is called resolved.** Lint + unit tests passing is
+  not sufficient — exercise the real code path (the running server, CLI, or a
+  direct call against the live config/queue/services) and confirm it succeeds.
+  Only declare the issue fixed once that live run passes.
 
 ## Don't
 

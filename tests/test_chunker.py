@@ -194,6 +194,62 @@ def test_javascript_arrow_function_gets_symbol_context() -> None:
     assert any(c.kind is ChunkKind.CODE and c.context_path == "Widget" for c in chunks)
 
 
+def test_java_javadoc_attached_to_class_chunk() -> None:
+    """Javadoc block_comment must land in the class chunk, not as a stray <module> chunk."""
+    code = (
+        "package com.example;\n"
+        "\n"
+        "/**\n"
+        " * Immutable ordered collection of elements.\n"
+        " * Use this when you need fast indexed access.\n"
+        " */\n"
+        "public class ImmutableList<E> {\n"
+        "    private final Object[] elements;\n"
+        "    public ImmutableList(Object[] elems) {\n"
+        "        this.elements = elems.clone();\n"
+        "    }\n"
+        "    public E get(int index) {\n"
+        "        return (E) elements[index];\n"
+        "    }\n"
+        "}\n"
+    )
+    chunks = chunk_resource("p", _res("ImmutableList.java", "text/x-java"), code)
+    class_chunks = [c for c in chunks if c.context_path == "ImmutableList"]
+    module_chunks = [c for c in chunks if c.context_path == "<module>"]
+    assert class_chunks, "ImmutableList chunk must exist"
+    # Javadoc text is in the class chunk, not in a <module> chunk
+    assert any("Immutable ordered collection" in c.content for c in class_chunks), (
+        "javadoc must be attached to the ImmutableList class chunk"
+    )
+    assert not any("Immutable ordered collection" in c.content for c in module_chunks), (
+        "javadoc must NOT appear as an orphaned <module> chunk"
+    )
+
+
+def test_java_line_comment_attached_to_method_chunk() -> None:
+    """Leading line_comment must attach to the following method chunk."""
+    code = (
+        "class Util {\n"
+        "    // Returns the sum of two integers.\n"
+        "    // This is a simple utility method.\n"
+        "    public int add(int a, int b) {\n"
+        "        return a + b;\n"
+        "    }\n"
+        "}\n"
+    )
+    chunks = chunk_resource("p", _res("Util.java", "text/x-java"), code)
+    method_chunks = [c for c in chunks if c.context_path and "add" in c.context_path]
+    assert method_chunks, "add method chunk must exist"
+    assert any("Returns the sum" in c.content for c in method_chunks), (
+        "line comment must be attached to the add method chunk"
+    )
+    assert not any(
+        "Returns the sum" in c.content
+        for c in chunks
+        if c.context_path == "<module>"
+    ), "comment must NOT be an orphaned <module> chunk"
+
+
 def test_unknown_code_extension_uses_code_fallback_not_doc_chunks() -> None:
     code = (
         "class Greeter\n"

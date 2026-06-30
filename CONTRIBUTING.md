@@ -50,7 +50,7 @@ served via MCP to any AI client connected to the product.
 1. **Product = root entity.** Every chunk, proposal, session, and skill
    carries `product_id`. There is no cross-product read path. Business units
    are metadata only in v1 (`owner.team`), not a tenancy boundary.
-2. **Humans approve, agents draft.** The council produces *proposals*, not
+2. **Humans approve, agents draft.** The council produces _proposals_, not
    skill files. Only `approve_proposal()` writes to the skills repo.
 
 Code that breaks either invariant is a bug, regardless of how clever it is.
@@ -71,7 +71,8 @@ api/
     setup.py        /setup/status, /setup/skills-repo
 
 ingest/
-  chunker.py        tree-sitter (Py/TS/TSX/JS/Rust/Go) + heading-aware markdown
+  chunker.py        tree-sitter (Py/TS/TSX/JS/Rust/Go/Java/C++/Kotlin/Solidity) + heading-aware markdown
+                    — includes doc-comment attachment (_LangCfg.doc_comment_nodes)
   enricher.py       optional HQE for code | Anthropic Contextual Retrieval for docs
   embedder.py       OpenAI-compatible embedder client (cloud or local llama.cpp)
   indexer.py        Qdrant upsert + delete-by-id (dense + BM25)
@@ -212,7 +213,7 @@ Qdrant is a derived index, not the source of truth. The source of truth for
 sync state is SQLite:
 
 - `source_resources(product_id, source_key, resource_uri, content_hash, ...,
-  chunk_ids_js, embedding_version, enrichment_version, enrichment_status)`
+chunk_ids_js, embedding_version, enrichment_version, enrichment_status)`
   stores the last successfully indexed version of each resource plus optional
   enrichment state.
 - `source_sync_runs(...)` stores one row per sync attempt and its final diff
@@ -312,7 +313,7 @@ This ordering prevents knowledge-base poisoning:
 ```bash
 uv sync
 cp anvay.yaml.example anvay.yaml
-cp .env.example .env       # fill DEEPINFRA_API_KEY at minimum
+cp .env.example .env       # fill LLM_API_KEY at minimum
 make services-up           # Qdrant + optional local llama.cpp embedder/reranker
 uv run uvicorn anvay.api.app:app --port 8000 --reload
 ```
@@ -410,7 +411,9 @@ Five tinkering exercises to grow your intuition. Do them in order.
 
 **1. Reduce a chunker constant and watch the test fail.** Edit
 `anvay/ingest/chunker.py` and set `MAX_CHUNK_CHARS = 200`. Run
-`uv run pytest tests/test_chunker.py -q`. Read the failure. Revert.
+`uv run pytest tests/test_chunker.py -q`. You'll see failures from size
+guards and the doc-comment attachment tests (the attached javadoc pushes some
+chunks past the reduced limit). Read the failures. Revert.
 
 **2. Add a query to the eval set + watch the floor break.** Edit
 `tests/eval/queries.json` and add a query pointing at a file you know
@@ -462,11 +465,32 @@ left alone and a background enrichment job is queued.
 ### Add a new chunker language
 
 1. Add the tree-sitter package to `pyproject.toml`.
-2. Extend `anvay/ingest/chunker.py::_LANGS` with the new `_LangCfg`.
-3. Extend `_lang_for()` to map the extension.
+2. Extend `anvay/ingest/chunker.py::_LANGS` with the new `_LangCfg`:
+   - `boundary_nodes` — tree-sitter node types that mark chunk boundaries
+     (classes, functions, interfaces, methods, etc.).
+   - `name_field_nodes` — subset whose `name` child gives the symbol name
+     for `context_path` construction.
+   - `doc_comment_nodes` — tree-sitter node types used for documentation
+     comments that appear *before* a declaration (javadoc, JSDoc, rustdoc,
+     Go doc-comments). The chunker walks backwards through consecutive
+     adjacent comment siblings and extends the chunk span to include them,
+     so the prose description is co-located with the symbol in the index.
+     Set to `()` only when docstrings already live *inside* the node span
+     (Python) or the language has no standard doc-comment convention. For
+     most languages this should be set — omitting it means conceptual
+     queries retrieve bare declarations with no description.
+3. Extend `_lang_for()` to map the file extension.
 4. Mirror the new node types in `anvay/retrieval/repomap.py::_KIND_BY_NODE`
    so the repo map captures them too.
-5. Add a test in `tests/test_chunker.py` with a small sample file.
+5. Add tests in `tests/test_chunker.py`:
+   - A basic test asserting the language produces `CODE` chunks with correct
+     `context_path` values (follow the existing pattern in
+     `test_required_code_languages_produce_code_chunks_with_context_paths`).
+   - A doc-comment attachment test: construct a sample with a doc-comment
+     immediately preceding a declaration, call `chunk_resource`, and assert
+     (a) the comment text is **in** the declaration chunk and (b) no
+     `<module>` chunk contains that text. See
+     `test_java_javadoc_attached_to_class_chunk` as the reference pattern.
 
 ### Tune the council prompts
 
@@ -491,12 +515,15 @@ a populated Qdrant index + reachable embedder + reranker. The pytest
 wrapper probes infra and `pytest.skip`s cleanly when anything's down so
 the marker is safe to leave in CI behind a conditional.
 
-**RAGAS-style golden eval** (`evals/run_ragas.py`) — runs retrieval over
-`evals/golden.jsonl`, synthesizes short answers from retrieved contexts, and
-uses the configured council model as a judge. Gates are faithfulness `>= 0.85`,
-answer relevancy `>= 0.80`, and context recall `>= 0.75`. CI runs this in the
-`ragas-regression` job when `DEEPINFRA_API_KEY` is configured, with `--limit 10`
-against the seed Forge skills, and uploads `evals/ci_ragas.json`.
+**Unified eval harness** (`uv run anvay eval run`) — the definitive quality
+gate. Evaluates the full production retrieval path over per-product golden
+datasets (`evals/products/<pid>/golden.jsonl`), synthesizes answers, and runs
+both deterministic retrieval gates (recall@k, ndcg@k, mrr) and LLM-judged
+gates (answer_correctness, context_recall). See `evals/harness.py::Thresholds`
+for current floors and calibration. Run this after any change to the chunker,
+retrieval pipeline, or evidence assembly. The `--force-ingest` flag wipes and
+rebuilds the product index before evaluating — use it after chunker changes to
+ensure the index reflects the new chunk boundaries.
 
 **Code retrieval eval** (`evals/run_code_eval.py`) — manual golden-set runner
 for nDCG@10 `>= 0.75`, Recall@10 `>= 0.80`, and pairwise preference accuracy
@@ -531,22 +558,22 @@ for nDCG@10 `>= 0.75`, Recall@10 `>= 0.80`, and pairwise preference accuracy
 
 ## 11. Glossary
 
-| Term | Meaning |
-|---|---|
-| **product** | Root entity; everything below it (sources, chunks, sessions, skills) is scoped to one product. |
-| **business unit** | Optional display metadata on a product (`owner.team`) in v1; not a route, table, or isolation boundary. |
-| **skill** | A curated, human-approved Agent Skills `SKILL.md` playbook with file:line citations. Lives in the org's skills repo. |
-| **proposal** | The council's draft of a skill. Lives in SQLite until a human approves / rejects / edits. |
-| **session** | One council run; produces one proposal. |
-| **chunk** | A slice of an ingested resource (function, class, paragraph). Has `kind` ∈ {CODE, DOC}, `context_path`, `context_summary`. |
-| **manifest** | SQLite sync state for a source resource: canonical URI, content hash, chunk IDs, embedding version, optional enrichment version/status. Prevents full re-embed and stale-vector poisoning. |
-| **source_key** | Stable per-product/per-source/per-root key used to group manifest rows. GitHub multi-repo sources get one key per repo. |
-| **canonical URI** | Stable `resource_uri` stored in Qdrant and the manifest. Filesystem uses absolute paths; GitHub uses `github:owner/repo/path`. |
-| **HQE** | Optional Hypothetical Question Embeddings — 3 questions a developer would type to find a code chunk, prepended at embed time. Disabled by default. |
-| **Contextual Retrieval (CR)** | Optional Anthropic-style "situate this chunk within the document" prefix; the doc analogue of HQE. Disabled by default. |
-| **repo map** | tree-sitter symbol outline of a product's source tree, injected into council system prompts. |
-| **RRF** | Reciprocal Rank Fusion — how dense and sparse retrieval hits are combined. |
-| **Planner / Experts / Synthesizer / Repair / Eval / Finalizer** | The bounded product-skill council nodes. |
+| Term                                                            | Meaning                                                                                                                                                                                    |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **product**                                                     | Root entity; everything below it (sources, chunks, sessions, skills) is scoped to one product.                                                                                             |
+| **business unit**                                               | Optional display metadata on a product (`owner.team`) in v1; not a route, table, or isolation boundary.                                                                                    |
+| **skill**                                                       | A curated, human-approved Agent Skills `SKILL.md` playbook with file:line citations. Lives in the org's skills repo.                                                                       |
+| **proposal**                                                    | The council's draft of a skill. Lives in SQLite until a human approves / rejects / edits.                                                                                                  |
+| **session**                                                     | One council run; produces one proposal.                                                                                                                                                    |
+| **chunk**                                                       | A slice of an ingested resource (function, class, paragraph). Has `kind` ∈ {CODE, DOC}, `context_path`, `context_summary`.                                                                 |
+| **manifest**                                                    | SQLite sync state for a source resource: canonical URI, content hash, chunk IDs, embedding version, optional enrichment version/status. Prevents full re-embed and stale-vector poisoning. |
+| **source_key**                                                  | Stable per-product/per-source/per-root key used to group manifest rows. GitHub multi-repo sources get one key per repo.                                                                    |
+| **canonical URI**                                               | Stable `resource_uri` stored in Qdrant and the manifest. Filesystem uses absolute paths; GitHub uses `github:owner/repo/path`.                                                             |
+| **HQE**                                                         | Optional Hypothetical Question Embeddings — 3 questions a developer would type to find a code chunk, prepended at embed time. Disabled by default.                                         |
+| **Contextual Retrieval (CR)**                                   | Optional Anthropic-style "situate this chunk within the document" prefix; the doc analogue of HQE. Disabled by default.                                                                    |
+| **repo map**                                                    | tree-sitter symbol outline of a product's source tree, injected into council system prompts.                                                                                               |
+| **RRF**                                                         | Reciprocal Rank Fusion — how dense and sparse retrieval hits are combined.                                                                                                                 |
+| **Planner / Experts / Synthesizer / Repair / Eval / Finalizer** | The bounded product-skill council nodes.                                                                                                                                                   |
 
 ## 12. Further reading
 
