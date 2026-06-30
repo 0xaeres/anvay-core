@@ -1,0 +1,119 @@
+{
+  "auto": [
+    {
+      "id": "zod_parse_vs_safeparse",
+      "query": "What is the difference between parse and safeParse in zod?",
+      "category": "how-to",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.6309297535714575,
+      "reciprocal_rank": 0.5,
+      "latency_ms": 32983.04741701577,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "colinhacks/zod/packages/bench/safeparse.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/types.ts",
+        "colinhacks/zod/packages/bench/safeparse.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/tests/safeparse.test.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/types.ts"
+      ],
+      "answer": "Based on the provided contexts, `parse` returns the parsed data directly, while `safeParse` returns a `SafeParseReturnType` which is either a `SafeParseSuccess` or a `SafeParseError`. This allows the user to check a `success` property on the result of `safeParse` before accessing the data.",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_precision": 0.48214285713080357,
+      "context_recall": 0.5
+    },
+    {
+      "id": "zod_zoderror_shape",
+      "query": "How are validation errors represented in zod and how do I read them?",
+      "category": "conceptual",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 32805.83475000458,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/ZodError.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/types.ts",
+        "colinhacks/zod/packages/zod/src/v4/classic/tests/error.test.ts",
+        "colinhacks/zod/packages/zod/src/v4/classic/tests/error.test.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/standard-schema.ts"
+      ],
+      "answer": "Validation errors are represented by the `ZodError` class, which contains an `issues` array of `Issue` objects consisting of a `message` and an optional `path`. You can read these errors by accessing the `issues` property (or the `errors` getter) of a `ZodError` instance, or by using the `.flatten()` and `.format()` methods.",
+      "faithfulness": 0.7777777777777778,
+      "answer_correctness": 0.75,
+      "context_precision": 0.4999999999875,
+      "context_recall": 0.5
+    },
+    {
+      "id": "zod_custom_refinement",
+      "query": "How do I add a custom validation rule to a zod schema?",
+      "category": "how-to",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.3562071871080222,
+      "reciprocal_rank": 0.16666666666666666,
+      "latency_ms": 40960.265999950934,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/tests/preprocess.test.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/tests/string.test.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/tests/error.test.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/tests/transformer.test.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/tests/preprocess.test.ts"
+      ],
+      "answer": "Based on the provided contexts, you can add custom validation rules using `z.preprocess` by calling `ctx.addIssue`. Additionally, the contexts mention the use of `.refine()` for validation and the ability to provide custom error messages by passing a string or an object with a `message` property to validation methods.",
+      "faithfulness": 0.8,
+      "answer_correctness": 0.5,
+      "context_precision": 0.36666666664833336,
+      "context_recall": 1.0
+    },
+    {
+      "id": "zod_transform",
+      "query": "How can I transform a value after it passes validation in zod?",
+      "category": "how-to",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 36742.70683398936,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/types.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/types.ts",
+        "colinhacks/zod/packages/zod/src/v4/core/schemas.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/tests/pipeline.test.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/tests/refine.test.ts"
+      ],
+      "answer": "To transform a value after validation in zod, you can use the `.transform()` method. For example, you can chain `.transform((val) => Number(val))` after a `.string().regex(/^\\d+$/)` or a `.refine()` call to convert the validated value.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.75,
+      "context_precision": 0.826020408151465,
+      "context_recall": 0.6666666666666666
+    },
+    {
+      "id": "zod_coerce",
+      "query": "How does zod coerce inputs like strings to numbers?",
+      "category": "how-to",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 36528.269417001866,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/types.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/types.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/types.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/types.ts",
+        "/Users/aeres/Desktop/projects/anvay/artifacts/eval-corpus/zod/packages/zod/src/v3/types.ts"
+      ],
+      "answer": "In the `ZodNumber` class, if `this._def.coerce` is true, zod coerces the input by setting `input.data = Number(input.data)`. After this coercion, it verifies if the resulting `parsedType` is `ZodParsedType.number`.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.555555555537037,
+      "context_recall": 1.0
+    }
+  ]
+}

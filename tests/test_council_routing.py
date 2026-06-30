@@ -55,19 +55,19 @@ def test_build_graph_has_skill_nodes() -> None:
     handles.chat_planner = None  # type: ignore[assignment]
     handles.chat_evaluator = None  # type: ignore[assignment]
     handles.chat_repair = None  # type: ignore[assignment]
-    handles.chat_architect = None  # type: ignore[assignment]
-    handles.chat_domain_expert = None  # type: ignore[assignment]
-    handles.chat_quality_expert = None  # type: ignore[assignment]
+    handles.chat_synthesizer = None  # type: ignore[assignment]
 
     graph = build_graph(_make_cfg(), handles)
     assert "planner" in graph.nodes
-    assert "architect" in graph.nodes
-    assert "domain_expert" in graph.nodes
-    assert "quality_expert" in graph.nodes
     assert "synthesizer" in graph.nodes
     assert "repair" in graph.nodes
     assert "skill_eval" in graph.nodes
     assert "finalizer" in graph.nodes
+    # Expert fanout removed: skill generation is one synthesis call grounded in
+    # deterministic KB artifacts.
+    assert "architect" not in graph.nodes
+    assert "domain_expert" not in graph.nodes
+    assert "quality_expert" not in graph.nodes
     assert "experts" not in graph.nodes
     assert "judge" not in graph.nodes
     assert "targeted_callback" not in graph.nodes

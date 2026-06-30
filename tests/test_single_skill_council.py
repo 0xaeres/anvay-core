@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from anvay.config import AnvayConfig
@@ -113,10 +115,9 @@ async def test_product_skill_creates_one_proposal_with_fake_retrieval(tmp_path, 
     )
 
     state.update(await skill.planner(state, config=cfg, retrieval=retrieval, chat=chat))
-    state.update(await skill.experts(state, retrieval=retrieval, chat=chat))
     state.update(await skill.synthesizer(state, config=cfg, chat=chat))
     state.update(await skill.repair_loop(state, chat=chat))
-    state.update(await skill.evaluator(state, chat=chat))
+    state.update(await skill.evaluator(state, config=cfg, chat=chat))
     state.update(await skill.finalizer(state))
 
     proposals = state["proposals"]
@@ -126,57 +127,58 @@ async def test_product_skill_creates_one_proposal_with_fake_retrieval(tmp_path, 
     assert all(p.citations for p in proposals)
     assert all(p.eval_status == "passed" for p in proposals)
     assert all(p.quality_score > 0 for p in proposals)
+    # The KB-routing section is spliced in deterministically, not LLM-authored.
+    assert "## How To Use The Knowledge Base" in proposals[0].body
+    assert "evidence_search_corpus" in proposals[0].body
+    assert "ask_product_graph" in proposals[0].body
+
+
+def test_summaries_block_renders_only_summary_channel_candidates() -> None:
+    def _cand(channel, anchor, excerpt):
+        return SimpleNamespace(
+            channel=channel, anchor=anchor, excerpt=excerpt, chunk_id=anchor
+        )
+
+    result = SimpleNamespace(
+        candidates=[
+            _cand("summary", "a.py:0", "Graph nodes: Function=3, APIEndpoint=2."),
+            _cand("hybrid", "b.py:5", "def handler(): ..."),
+            _cand("summary", "c.py:1", "Flows: planner -CALLS-> synthesizer."),
+        ]
+    )
+
+    block = skill._summaries_block(result)
+    assert "Graph nodes: Function=3" in block
+    assert "Flows: planner -CALLS-> synthesizer" in block
+    assert "def handler" not in block  # hybrid channel excluded
+
+
+def test_summaries_block_no_candidates_is_none() -> None:
+    assert skill._summaries_block(object()) == "(none)"
 
 
 @pytest.mark.asyncio
-async def test_single_expert_streams_json_and_reports_own_cost(tmp_path, monkeypatch) -> None:
-    async def fake_retrieve(**_kwargs):
-        return RetrievalResult(
-            hits=[
-                Hit(
-                    id="c1",
-                    score=0.9,
-                    payload={
-                        "resource_uri": "a.py",
-                        "start_line": 1,
-                        "content": "architecture API domain pytest config security",
-                    },
-                    source="dense",
-                )
-            ],
-            seed_count=1,
-        )
+async def test_synthesizer_splices_static_kb_section(tmp_path, monkeypatch) -> None:
+    cfg = _config(tmp_path)
+    state: CouncilState = {
+        "product_id": "demo",
+        "topic": "overview",
+        "context_pack": "Graph nodes: Function=3.",
+        "evidence": [
+            EvidenceChunk(chunk_id="c1", file="a.py", line=1, score=0.9, excerpt="x")
+        ],
+        "skill_plan": catalog_plan("demo", "overview"),
+    }
 
-    class ExpertChat(_Chat):
-        model = "expert-model"
+    result = await skill.synthesizer(state, config=cfg, chat=_Chat())
 
-        def __init__(self):
-            self.stream_values: list[bool] = []
-
-        async def chat_json(self, *_args, **kwargs):
-            self.stream_values.append(bool(kwargs.get("stream")))
-            return await super().chat_json(*_args, **kwargs)
-
-    monkeypatch.setattr(skill, "retrieve_evidence", fake_retrieve)
-    chat = ExpertChat()
-    state: CouncilState = initial_state(
-        session_id="cs_1",
-        product_id="demo",
-        topic="overview",
-        config_path="anvay.yaml",
-    )
-
-    result = await skill.expert(
-        state,
-        name="architect",
-        retrieval=object(),
-        chat=chat,
-    )
-
-    assert chat.stream_values == [True]
-    assert result["expert_reports"][0].expert == "architect"
-    assert result["deliberation"][0].agent == "architect"
-    assert result["costs"][0].agent == "architect"
+    body = result["skill_drafts"][0].body
+    assert "## How To Use The Knowledge Base" in body
+    # Canonical routing content present, regardless of what the model wrote.
+    assert "evidence_search_corpus" in body
+    assert "ask_product_graph" in body
+    # Exactly one KB section after the splice.
+    assert body.count("## How To Use The Knowledge Base") == 1
 
 
 @pytest.mark.asyncio
@@ -205,7 +207,7 @@ async def test_product_skill_eval_is_deterministic_without_model_call() -> None:
         ],
     }
 
-    result = await skill.evaluator(state, chat=_NoEvalChat())
+    result = await skill.evaluator(state, config=None, chat=_NoEvalChat())
 
     assert result["eval_results"][0].status == "passed"
     assert result["costs"] == []
@@ -248,7 +250,7 @@ async def test_eval_uses_repair_supplemental_evidence_beyond_initial_cap() -> No
         ],
     }
 
-    result = await skill.evaluator(state, chat=_NoEvalChat())
+    result = await skill.evaluator(state, config=None, chat=_NoEvalChat())
 
     assert result["eval_results"][0].status == "passed"
     assert [draft.name for draft in result["skill_drafts"]] == ["demo-skill"]
@@ -312,7 +314,7 @@ async def test_eval_failure_keeps_passing_skill_and_reports_failed_skill() -> No
         ],
     }
 
-    result = await skill.evaluator(state, chat=RepairStillBadChat())
+    result = await skill.evaluator(state, config=None, chat=RepairStillBadChat())
 
     assert [draft.name for draft in result["skill_drafts"]] == ["demo-skill"]
     statuses = {item.skill_name: item.status for item in result["eval_results"]}

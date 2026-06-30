@@ -154,6 +154,118 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz", hash = "sha256:f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b", size = 117034, upload-time = "2021-11-06T17:52:23.524Z" }
 
 [[package]]
+name = "anvay"
+version = "0.0.1"
+source = { editable = "." }
+dependencies = [
+    { name = "argon2-cffi" },
+    { name = "falkordb" },
+    { name = "fastapi" },
+    { name = "fastembed" },
+    { name = "gitpython" },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "langfuse" },
+    { name = "langgraph" },
+    { name = "langgraph-checkpoint-sqlite" },
+    { name = "mcp" },
+    { name = "neo4j" },
+    { name = "numpy" },
+    { name = "openai" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-dotenv" },
+    { name = "python-frontmatter" },
+    { name = "pyyaml" },
+    { name = "qdrant-client" },
+    { name = "redis" },
+    { name = "sse-starlette" },
+    { name = "tqdm" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-cpp" },
+    { name = "tree-sitter-go" },
+    { name = "tree-sitter-java" },
+    { name = "tree-sitter-javascript" },
+    { name = "tree-sitter-kotlin" },
+    { name = "tree-sitter-python" },
+    { name = "tree-sitter-rust" },
+    { name = "tree-sitter-solidity" },
+    { name = "tree-sitter-typescript" },
+    { name = "typer" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+docling = [
+    { name = "docling" },
+]
+evals = [
+    { name = "datasets" },
+    { name = "langchain-openai" },
+    { name = "ragas" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "argon2-cffi", specifier = ">=23.1" },
+    { name = "datasets", marker = "extra == 'evals'", specifier = ">=3.0" },
+    { name = "docling", marker = "extra == 'docling'", specifier = ">=2.0" },
+    { name = "falkordb", specifier = ">=1.6,<2" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "fastembed", specifier = ">=0.7" },
+    { name = "gitpython", specifier = ">=3.1" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "jinja2", specifier = ">=3.1" },
+    { name = "langchain-openai", marker = "extra == 'evals'", specifier = ">=0.2" },
+    { name = "langfuse", specifier = ">=2.50" },
+    { name = "langgraph", specifier = ">=0.2" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0" },
+    { name = "mcp", specifier = ">=1.0" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
+    { name = "neo4j", specifier = ">=5.25" },
+    { name = "numpy", specifier = ">=2.0" },
+    { name = "openai", specifier = ">=2.0" },
+    { name = "opentelemetry-api", specifier = ">=1.27" },
+    { name = "opentelemetry-sdk", specifier = ">=1.27" },
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "pydantic-settings", specifier = ">=2.6" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "python-frontmatter", specifier = ">=1.1" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "qdrant-client", specifier = ">=1.18,<1.19" },
+    { name = "ragas", marker = "extra == 'evals'", specifier = ">=0.2" },
+    { name = "redis", specifier = ">=7.1,<8" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7" },
+    { name = "sse-starlette", specifier = ">=2.1" },
+    { name = "tqdm", specifier = ">=4.66" },
+    { name = "tree-sitter", specifier = ">=0.23" },
+    { name = "tree-sitter-cpp", specifier = ">=0.23" },
+    { name = "tree-sitter-go", specifier = ">=0.23" },
+    { name = "tree-sitter-java", specifier = ">=0.23" },
+    { name = "tree-sitter-javascript", specifier = ">=0.23" },
+    { name = "tree-sitter-kotlin", specifier = ">=1.1" },
+    { name = "tree-sitter-python", specifier = ">=0.23" },
+    { name = "tree-sitter-rust", specifier = ">=0.23" },
+    { name = "tree-sitter-solidity", specifier = ">=1.2" },
+    { name = "tree-sitter-typescript", specifier = ">=0.23" },
+    { name = "typer", specifier = ">=0.13" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+]
+provides-extras = ["docling", "dev", "evals"]
+
+[[package]]
 name = "anyio"
 version = "4.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2204,114 +2316,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/6a/51/63fe664f3908c97be
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/c9/b2622292ea83fbb4ec318f5b9ab867d0a28ab43c5717bb85b0a5f6b3b0a4/networkx-3.6.1-py3-none-any.whl", hash = "sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762", size = 2068504, upload-time = "2025-12-08T17:02:38.159Z" },
 ]
-
-[[package]]
-name = "anvay"
-version = "0.0.1"
-source = { editable = "." }
-dependencies = [
-    { name = "argon2-cffi" },
-    { name = "falkordb" },
-    { name = "fastapi" },
-    { name = "fastembed" },
-    { name = "gitpython" },
-    { name = "httpx" },
-    { name = "jinja2" },
-    { name = "langfuse" },
-    { name = "langgraph" },
-    { name = "langgraph-checkpoint-sqlite" },
-    { name = "mcp" },
-    { name = "neo4j" },
-    { name = "numpy" },
-    { name = "openai" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-sdk" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "python-dotenv" },
-    { name = "python-frontmatter" },
-    { name = "pyyaml" },
-    { name = "qdrant-client" },
-    { name = "redis" },
-    { name = "sse-starlette" },
-    { name = "tree-sitter" },
-    { name = "tree-sitter-cpp" },
-    { name = "tree-sitter-go" },
-    { name = "tree-sitter-java" },
-    { name = "tree-sitter-javascript" },
-    { name = "tree-sitter-kotlin" },
-    { name = "tree-sitter-python" },
-    { name = "tree-sitter-rust" },
-    { name = "tree-sitter-solidity" },
-    { name = "tree-sitter-typescript" },
-    { name = "typer" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-docling = [
-    { name = "docling" },
-]
-evals = [
-    { name = "datasets" },
-    { name = "ragas" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "argon2-cffi", specifier = ">=23.1" },
-    { name = "datasets", marker = "extra == 'evals'", specifier = ">=3.0" },
-    { name = "docling", marker = "extra == 'docling'", specifier = ">=2.0" },
-    { name = "falkordb", specifier = ">=1.6,<2" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "fastembed", specifier = ">=0.7" },
-    { name = "gitpython", specifier = ">=3.1" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "jinja2", specifier = ">=3.1" },
-    { name = "langfuse", specifier = ">=2.50" },
-    { name = "langgraph", specifier = ">=0.2" },
-    { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0" },
-    { name = "mcp", specifier = ">=1.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
-    { name = "neo4j", specifier = ">=5.25" },
-    { name = "numpy", specifier = ">=2.0" },
-    { name = "openai", specifier = ">=2.0" },
-    { name = "opentelemetry-api", specifier = ">=1.27" },
-    { name = "opentelemetry-sdk", specifier = ">=1.27" },
-    { name = "pydantic", specifier = ">=2.9" },
-    { name = "pydantic-settings", specifier = ">=2.6" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
-    { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "python-frontmatter", specifier = ">=1.1" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "qdrant-client", specifier = ">=1.18,<1.19" },
-    { name = "ragas", marker = "extra == 'evals'", specifier = ">=0.2" },
-    { name = "redis", specifier = ">=7.1,<8" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7" },
-    { name = "sse-starlette", specifier = ">=2.1" },
-    { name = "tree-sitter", specifier = ">=0.23" },
-    { name = "tree-sitter-cpp", specifier = ">=0.23" },
-    { name = "tree-sitter-go", specifier = ">=0.23" },
-    { name = "tree-sitter-java", specifier = ">=0.23" },
-    { name = "tree-sitter-javascript", specifier = ">=0.23" },
-    { name = "tree-sitter-kotlin", specifier = ">=1.1" },
-    { name = "tree-sitter-python", specifier = ">=0.23" },
-    { name = "tree-sitter-rust", specifier = ">=0.23" },
-    { name = "tree-sitter-solidity", specifier = ">=1.2" },
-    { name = "tree-sitter-typescript", specifier = ">=0.23" },
-    { name = "typer", specifier = ">=0.13" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
-]
-provides-extras = ["docling", "dev", "evals"]
 
 [[package]]
 name = "numpy"

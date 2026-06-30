@@ -40,6 +40,36 @@ _PATH_RE = re.compile(
 _ROUTE_RE = re.compile(r"/[A-Za-z0-9_./:{}-]+")
 _SYMBOL_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
 _CONFIG_RE = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
+# A bare word is treated as a code symbol only when it carries an internal code
+# signal — snake_case, internal camel/Pascal case, or a call ``foo()`` — so NL
+# stopwords (sentence-initial "How"/"What") never masquerade as anchors and dead
+# the graph-local channel. See plan Phase 1b.
+_CAMEL_RE = re.compile(r"[a-z][A-Z]|[A-Z][a-z].*[A-Z]")
+_CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]{2,})\s*\(")
+# Common interrogatives / sentence starters that capitalize but are not symbols.
+_SYMBOL_STOPWORDS = {
+    "how",
+    "what",
+    "why",
+    "when",
+    "where",
+    "which",
+    "who",
+    "does",
+    "did",
+    "can",
+    "the",
+    "this",
+    "that",
+    "these",
+    "those",
+    "and",
+    "but",
+    "for",
+    "are",
+    "is",
+    "was",
+}
 _LOCAL_WORDS = {
     "where",
     "defined",
@@ -313,7 +343,15 @@ async def retrieve_evidence(
         )
         trace.extend(repair_trace)
         if repaired:
-            merged = merge_candidates([*merged, *repaired], understanding=understanding, top_k=top_k)
+            # Coverage-repair emits raw-scored grep candidates (match counts in the
+            # tens). Rerank the combined pool so every candidate shares the 0-1
+            # reranker scale before merge — otherwise raw grep scores dominate
+            # ``_candidate_rank`` and bury the substantive reranked chunks (P3).
+            combined, repair_reranked = await rerank_mixed_candidates(
+                ctx=ctx, query=query, candidates=[*merged, *repaired]
+            )
+            reranked = reranked or repair_reranked
+            merged = merge_candidates(combined, understanding=understanding, top_k=top_k)
             coverage = assess_coverage(understanding, merged)
     plan.coverage = coverage
     plan.graph_paths = _ordered_unique(
@@ -389,16 +427,31 @@ def _query_plan(understanding: QueryUnderstanding, *, query_mode: EvidenceMode) 
     )
 
 
+def _is_symbol(token: str, called: set[str]) -> bool:
+    """A token is a real code anchor only with an internal code signal: a call
+    ``foo()``, snake_case, or internal camel/Pascal case. Bare interrogatives
+    and capitalized sentence-starters (in ``_SYMBOL_STOPWORDS``) are rejected so
+    NL queries don't emit junk anchors that strand the graph-local channel."""
+    if token.lower() in _SYMBOL_STOPWORDS:
+        return False
+    if token.lower() in called:
+        return True
+    if "_" in token:
+        return True
+    return bool(_CAMEL_RE.search(token))
+
+
 def understand_query(query: str, *, current_file: str | None = None) -> QueryUnderstanding:
     lower = query.lower()
     tokens = set(_SYMBOL_RE.findall(lower))
     paths = _ordered_unique([*( _PATH_RE.findall(query)), *([current_file] if current_file else [])])
     routes = _ordered_unique(_ROUTE_RE.findall(query))
     config_keys = _ordered_unique(_CONFIG_RE.findall(query))
+    called = {m.lower() for m in _CALL_RE.findall(query)}
     symbols = _ordered_unique(
         token
         for token in _SYMBOL_RE.findall(query)
-        if ("_" in token or token[:1].isupper()) and token not in config_keys
+        if _is_symbol(token, called) and token not in config_keys
     )
     if tokens & _RELATIONAL_WORDS:
         shape: QueryShape = "relational"
@@ -727,16 +780,40 @@ def merge_candidates(
         if existing is None or _channel_weight(candidate.channel) + candidate.score > _channel_weight(existing.channel) + existing.score:
             deduped[key] = candidate
 
-    ordered = sorted(deduped.values(), key=_candidate_rank, reverse=True)
-    selected: list[EvidenceCandidate] = []
-    selected.extend(_take_channel(ordered, "grep", 2 if understanding.anchors else 1))
-    selected.extend(_take_channel(ordered, "repo_map", 2 if understanding.shape in {"global", "local"} else 1))
-    selected.extend(_take_channel(ordered, "graph", 3 if understanding.shape == "relational" else 1))
-    selected.extend(_take_channel(ordered, "summary", 2 if understanding.shape == "global" else 1))
-    selected.extend(_take_role(ordered, "overview", 2 if understanding.shape == "global" else 1))
-    selected.extend(_take_channel(ordered, "skill", 1 if understanding.shape in {"procedural", "global"} else 0))
+    # Filename-anchor boost: when a query anchor *exactly* names a file (stem ==
+    # anchor, e.g. "ImmutableMap" -> ImmutableMap.java), float that file's chunks
+    # up. Otherwise the canonical class loses to its many same-prefix impls
+    # (RegularImmutableMap/JdkBackedImmutableMap…) on "what is X / X vs Y" queries.
+    anchors = {a.lower() for a in understanding.anchors}
+    if anchors:
+        for candidate in deduped.values():
+            if _basename_stem(candidate.file) in anchors:
+                candidate.metadata["filename_anchor_match"] = True
 
-    seen = {(c.file, c.chunk_id, c.line) for c in selected}
+    ordered = sorted(deduped.values(), key=_candidate_rank, reverse=True)
+    # Quota picks, deduped by key (overview-role take can overlap a channel take).
+    selected: list[EvidenceCandidate] = []
+    seen: set[tuple[str, str, int]] = set()
+
+    def _add(cands: list[EvidenceCandidate]) -> None:
+        for c in cands:
+            key = (c.file, c.chunk_id, c.line)
+            if key not in seen:
+                seen.add(key)
+                selected.append(c)
+
+    # Hybrid is the primary content channel — reserve it the largest share *first*
+    # so substantive dense chunks are never crowded out by the auxiliary quotas
+    # (grep/repo_map/summary/overview), which previously starved hybrid to ~1 slot
+    # on global queries and tanked context_recall (esp. large Java files).
+    _add(_take_channel(ordered, "hybrid", max(3, top_k // 2)))
+    _add(_take_channel(ordered, "grep", 2 if understanding.anchors else 1))
+    _add(_take_channel(ordered, "repo_map", 2 if understanding.shape in {"global", "local"} else 1))
+    _add(_take_channel(ordered, "graph", 3 if understanding.shape == "relational" else 1))
+    _add(_take_channel(ordered, "summary", 2 if understanding.shape == "global" else 1))
+    _add(_take_role(ordered, "overview", 2 if understanding.shape == "global" else 1))
+    _add(_take_channel(ordered, "skill", 1 if understanding.shape in {"procedural", "global"} else 0))
+
     per_file: dict[str, int] = {}
     for candidate in selected:
         per_file[candidate.file] = per_file.get(candidate.file, 0) + 1
@@ -859,7 +936,10 @@ def _candidate_from_hit(hit: Hit, *, channel: EvidenceChannel) -> EvidenceCandid
         line=int(payload.get("start_line") or 0),
         end_line=int(payload["end_line"]) if payload.get("end_line") is not None else None,
         context_path=str(context_path) if context_path else None,
-        excerpt=_truncate(content, 900),
+        # Return the full chunk body (chunks are capped at MAX_CHUNK_CHARS=1200 at
+        # ingest). The old 900 cap truncated ~25% of every chunk, dropping the
+        # behavioural detail that answers semantic questions (hurt context_recall).
+        excerpt=_truncate(content, 1600),
         graph_node_ids=list(payload.get("graph_node_ids") or []),
         metadata={
             "source": hit.source,
@@ -1035,28 +1115,44 @@ def _take_role(
 
 
 def _candidate_rank(candidate: EvidenceCandidate) -> float:
-    return candidate.score + _channel_weight(candidate.channel) + _role_weight(candidate.role)
+    # Exact filename↔anchor match is a strong relevance signal; a 0.5 bump (vs the
+    # 0-1 reranker score) lifts the canonical class above same-prefix impl chunks
+    # without overriding a clearly-more-relevant result.
+    anchor_bonus = 0.5 if candidate.metadata.get("filename_anchor_match") else 0.0
+    return candidate.score + anchor_bonus + _channel_weight(candidate.channel) + _role_weight(candidate.role)
 
 
+def _basename_stem(uri: str) -> str:
+    """Lowercased filename without directory or extension (``a/b/Foo.java`` -> ``foo``)."""
+    base = (uri or "").split(":", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    return base.rsplit(".", 1)[0].lower() if "." in base else base.lower()
+
+
+# Channel/role weights are **tie-breakers** layered on the reranker's 0-1
+# relevance score in ``_candidate_rank`` — the reranker decides relevance, these
+# only break near-ties and keep a mild exact-match/structural preference. They
+# were once 2-8, which dwarfed the 0-1 score and let thin grep line-snippets bury
+# substantive reranked chunks (P3); scaled into a <0.2 band so score dominates.
+# Channel diversity is guaranteed by the ``_take_channel`` quotas, not by these.
 def _channel_weight(channel: EvidenceChannel) -> float:
     return {
-        "grep": 8.0,
-        "repo_map": 5.0,
-        "graph": 4.0,
-        "summary": 4.0,
-        "hybrid": 3.0,
-        "skill": 2.0,
+        "grep": 0.16,
+        "repo_map": 0.10,
+        "graph": 0.08,
+        "summary": 0.08,
+        "hybrid": 0.06,
+        "skill": 0.04,
     }[channel]
 
 
 def _role_weight(role: EvidenceRole) -> float:
     return {
-        "overview": 2.0,
-        "definition": 2.0,
-        "implementation": 1.8,
-        "relationship": 1.5,
-        "validation": 1.2,
-        "skill_guidance": 1.0,
+        "overview": 0.040,
+        "definition": 0.040,
+        "implementation": 0.036,
+        "relationship": 0.030,
+        "validation": 0.024,
+        "skill_guidance": 0.020,
     }[role]
 
 

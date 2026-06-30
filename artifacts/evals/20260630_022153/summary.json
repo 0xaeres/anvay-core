@@ -1,0 +1,96 @@
+{
+  "run_id": "20260630_022153",
+  "generated_at": "2026-06-30T02:26:02.903879+00:00",
+  "config_path": "/tmp/anvay-eval.yaml",
+  "config_fingerprint": {
+    "embedding_model": "Qwen/Qwen3-Embedding-4B",
+    "reranker_model": "Qwen/Qwen3-Reranker-4B",
+    "council_model": "google/gemma-4-31B-it",
+    "judge_model": "deepseek-ai/DeepSeek-V4-Pro",
+    "qdrant_url": "http://localhost:6333"
+  },
+  "top_k": 10,
+  "limit": 5,
+  "modes": [
+    "auto"
+  ],
+  "thresholds": {
+    "recall_at_k": 0.75,
+    "ndcg_at_k": 0.7,
+    "faithfulness": 0.7,
+    "answer_correctness": 0.4,
+    "context_recall": 0.5
+  },
+  "products": [
+    {
+      "product_id": "anvay",
+      "n": 5,
+      "modes": [
+        {
+          "mode": "auto",
+          "n": 5,
+          "recall_at_k": 0.9,
+          "mrr": 0.9,
+          "ndcg_at_k": 0.8613,
+          "faithfulness": 0.9179,
+          "answer_correctness": 0.55,
+          "context_precision": 0.8961,
+          "context_recall": 1.0,
+          "avg_latency_ms": 7602.2,
+          "avg_candidates": 10.0,
+          "graph_hit_rate": 1.0,
+          "misses": []
+        }
+      ],
+      "passed": true
+    },
+    {
+      "product_id": "zod",
+      "n": 5,
+      "modes": [
+        {
+          "mode": "auto",
+          "n": 5,
+          "recall_at_k": 1.0,
+          "mrr": 0.8333,
+          "ndcg_at_k": 0.8712,
+          "faithfulness": 0.9556,
+          "answer_correctness": 0.7,
+          "context_precision": 0.5728,
+          "context_recall": 0.6333,
+          "avg_latency_ms": 9336.7,
+          "avg_candidates": 10.0,
+          "graph_hit_rate": 1.0,
+          "misses": []
+        }
+      ],
+      "passed": true
+    },
+    {
+      "product_id": "guava",
+      "n": 5,
+      "modes": [
+        {
+          "mode": "auto",
+          "n": 5,
+          "recall_at_k": 0.8,
+          "mrr": 0.5167,
+          "ndcg_at_k": 0.5861,
+          "faithfulness": 0.92,
+          "answer_correctness": 0.5,
+          "context_precision": 0.3644,
+          "context_recall": 0.46,
+          "avg_latency_ms": 22255.3,
+          "avg_candidates": 10.0,
+          "graph_hit_rate": 1.0,
+          "misses": [
+            "How does ImmutableMap differ from a regular HashMap in Guava?"
+          ]
+        }
+      ],
+      "passed": false
+    }
+  ],
+  "output_dir": "artifacts/evals/20260630_022153",
+  "passed": false
+}

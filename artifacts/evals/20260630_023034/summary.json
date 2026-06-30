@@ -1,0 +1,94 @@
+{
+  "run_id": "20260630_023034",
+  "generated_at": "2026-06-30T02:36:02.852565+00:00",
+  "config_path": "/tmp/anvay-eval.yaml",
+  "config_fingerprint": {
+    "embedding_model": "Qwen/Qwen3-Embedding-4B",
+    "reranker_model": "Qwen/Qwen3-Reranker-4B",
+    "council_model": "google/gemma-4-31B-it",
+    "judge_model": "deepseek-ai/DeepSeek-V4-Pro",
+    "qdrant_url": "http://localhost:6333"
+  },
+  "top_k": 10,
+  "limit": 5,
+  "modes": [
+    "auto"
+  ],
+  "thresholds": {
+    "recall_at_k": 0.75,
+    "ndcg_at_k": 0.7,
+    "faithfulness": 0.7,
+    "answer_correctness": 0.4,
+    "context_recall": 0.5
+  },
+  "products": [
+    {
+      "product_id": "anvay",
+      "n": 5,
+      "modes": [
+        {
+          "mode": "auto",
+          "n": 5,
+          "recall_at_k": 0.9,
+          "mrr": 0.9,
+          "ndcg_at_k": 0.8613,
+          "faithfulness": 0.9333,
+          "answer_correctness": 0.65,
+          "context_precision": 0.8961,
+          "context_recall": 1.0,
+          "avg_latency_ms": 28901.7,
+          "avg_candidates": 10.0,
+          "graph_hit_rate": 1.0,
+          "misses": []
+        }
+      ],
+      "passed": true
+    },
+    {
+      "product_id": "zod",
+      "n": 5,
+      "modes": [
+        {
+          "mode": "auto",
+          "n": 5,
+          "recall_at_k": 1.0,
+          "mrr": 0.7333,
+          "ndcg_at_k": 0.7974,
+          "faithfulness": 0.9156,
+          "answer_correctness": 0.75,
+          "context_precision": 0.5825,
+          "context_recall": 0.4333,
+          "avg_latency_ms": 12635.7,
+          "avg_candidates": 10.0,
+          "graph_hit_rate": 1.0,
+          "misses": []
+        }
+      ],
+      "passed": false
+    },
+    {
+      "product_id": "guava",
+      "n": 5,
+      "modes": [
+        {
+          "mode": "auto",
+          "n": 5,
+          "recall_at_k": 1.0,
+          "mrr": 0.7167,
+          "ndcg_at_k": 0.7861,
+          "faithfulness": 0.9667,
+          "answer_correctness": 0.5,
+          "context_precision": 0.431,
+          "context_recall": 0.46,
+          "avg_latency_ms": 6330.2,
+          "avg_candidates": 10.0,
+          "graph_hit_rate": 1.0,
+          "misses": []
+        }
+      ],
+      "passed": false
+    }
+  ],
+  "output_dir": "artifacts/evals/20260630_023034",
+  "passed": false
+}

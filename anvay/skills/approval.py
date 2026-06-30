@@ -24,8 +24,7 @@ from anvay.ingest.embedder import EmbedderClient
 from anvay.ingest.indexer import Indexer
 from anvay.ingest.models import Chunk, ChunkKind, EmbeddedChunk, ResourceRef
 from anvay.retrieval.sparse import aencode_passages
-from anvay.setup import SetupKV
-from anvay.skills.git import commit_and_push, ensure_checkout
+from anvay.skills.git import GitPublishResult, commit_and_push, ensure_checkout
 from anvay.skills.models import AppliesTo, Citation, Provenance, Skill, SkillCoverage
 from anvay.skills.store import SkillStore
 
@@ -60,18 +59,22 @@ async def approve_proposal(
 
     skill = _row_to_skill(row, actor=actor)
     root = _resolve_root(config.hierarchy_root)
-    try:
-        await asyncio.to_thread(
-            ensure_checkout,
-            root,
-            _resolve_skills_repo_url(config),
-            token=_skills_repo_token(),
-        )
-    except GitError as e:
-        raise ApprovalPublishError(
-            "skill file was not written because skills repo checkout is unavailable; "
-            f"proposal remains pending: {e}"
-        ) from e
+    skills_repo_url = _resolve_skills_repo_url(config)
+    git_enabled = bool(skills_repo_url)
+
+    if git_enabled:
+        try:
+            await asyncio.to_thread(
+                ensure_checkout,
+                root,
+                skills_repo_url,
+                token=_skills_repo_token(),
+            )
+        except GitError as e:
+            raise ApprovalPublishError(
+                "skill file was not written because skills repo checkout is unavailable; "
+                f"proposal remains pending: {e}"
+            ) from e
 
     store = SkillStore(root)
     rel = SkillStore.relative_path_for(skill)
@@ -80,24 +83,28 @@ async def approve_proposal(
     path = store.save(skill)
     log.info("approval: wrote %s", path)
 
-    publish = commit_and_push(
-        store.root,
-        message=f"skill: {skill.name} approved by {actor}",
-        push=True,
-    )
-    if not publish.committed or not publish.pushed:
-        if previous is None:
-            path.unlink(missing_ok=True)
-            if path.name == "SKILL.md":
-                with suppress(OSError):
-                    path.parent.rmdir()
-        else:
-            path.write_text(previous, encoding="utf-8")
-        detail = f": {publish.error}" if publish.error else ""
-        raise ApprovalPublishError(
-            "skill file was written, but Git commit/push did not complete; "
-            f"proposal remains pending{detail}"
+    if git_enabled:
+        publish = commit_and_push(
+            store.root,
+            message=f"skill: {skill.name} approved by {actor}",
+            push=True,
         )
+        if not publish.committed or not publish.pushed:
+            if previous is None:
+                path.unlink(missing_ok=True)
+                if path.name == "SKILL.md":
+                    with suppress(OSError):
+                        path.parent.rmdir()
+            else:
+                path.write_text(previous, encoding="utf-8")
+            detail = f": {publish.error}" if publish.error else ""
+            raise ApprovalPublishError(
+                "skill file was written, but Git commit/push did not complete; "
+                f"proposal remains pending{detail}"
+            )
+    else:
+        log.info("approval: skills_repo not configured, skipping git publish (local-only mode)")
+        publish = GitPublishResult(committed=False, pushed=False, error="skills_repo not configured")
 
     chunks_indexed = await _embed_skill_body(
         skill, source_uri=str(path), config=config
@@ -177,8 +184,7 @@ def _row_to_skill(row: dict, *, actor: str) -> Skill:
 
 
 def _resolve_skills_repo_url(config: AnvayConfig) -> str:
-    kv = SetupKV(config.storage.proposal_queue.parent / "registry.db")
-    return kv.get("skills_repo") or config.skills_repo or ""
+    return config.skills_repo or ""
 
 
 def _skills_repo_token() -> str | None:
@@ -267,9 +273,7 @@ async def _embed_skill_body(
     if not skill.body.strip():
         return 0
 
-    embedder = EmbedderClient(
-        base_url=config.models.embedding.url or "http://localhost:8080"
-    )
+    embedder = EmbedderClient.from_cfg(config.models.embedding)
     indexer = Indexer(url=config.vector_store.url)
     try:
         resource = ResourceRef(
@@ -292,6 +296,12 @@ async def _embed_skill_body(
             log.warning("approval: ensure_collections failed: %s", e)
             return 0
 
+        # Cold-start guard: a local embedder loads its model on first request,
+        # which can exceed the per-call retry window and make the first approval
+        # click fail while later clicks (warm server) succeed. Poll /health until
+        # ready before embedding so click #1 waits instead of failing.
+        await _wait_for_embedder(embedder)
+
         try:
             embedded = await embedder.embed_chunks([chunk])
         except Exception as e:
@@ -304,6 +314,27 @@ async def _embed_skill_body(
     finally:
         await embedder.aclose()
         await indexer.aclose()
+
+
+_EMBEDDER_WARMUP_ATTEMPTS = 6
+_EMBEDDER_WARMUP_DELAY_S = 2.0
+
+
+async def _wait_for_embedder(embedder: EmbedderClient) -> None:
+    """Block until a local embedder's /health reports ready, bounded by
+    ``_EMBEDDER_WARMUP_ATTEMPTS``. No-op for remote providers (no /health
+    endpoint) — those are assumed warm and handled by per-call retries."""
+    if embedder.provider == "deepinfra":
+        return
+    for attempt in range(_EMBEDDER_WARMUP_ATTEMPTS):
+        if await embedder.health():
+            return
+        log.info(
+            "approval: waiting for embedder to warm up (%d/%d)",
+            attempt + 1,
+            _EMBEDDER_WARMUP_ATTEMPTS,
+        )
+        await asyncio.sleep(_EMBEDDER_WARMUP_DELAY_S)
 
 
 def _embedded(c: Chunk, vec: list[float]) -> EmbeddedChunk:

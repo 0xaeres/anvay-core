@@ -279,69 +279,77 @@ def council_draft(
 
 @eval_app.command("run")
 def eval_run(
-    suite: str = typer.Option(
+    products: str = typer.Option(
         "all",
-        "--suite",
-        "-s",
-        help="all, retrieval, rag, code, or a comma-separated list.",
+        "--products",
+        "-p",
+        help="all, or a comma-separated list of registered product ids (anvay, zod, guava).",
     ),
     config_path: Path = typer.Option(Path("anvay.yaml"), "--config", "-c"),
     out_dir: Path = typer.Option(Path("artifacts/evals"), "--out-dir"),
-    product: str | None = typer.Option(
-        None,
-        "--product",
-        "-p",
-        help="Override the suite default product id.",
-    ),
-    fixture: Path | None = typer.Option(
-        None,
-        "--fixture",
-        help="Override the suite default fixture directory.",
-    ),
-    ingest_fixture: bool = typer.Option(
-        True,
-        "--ingest-fixture/--no-ingest-fixture",
-        help="Ingest the suite fixture before scoring.",
-    ),
-    golden: Path = typer.Option(Path("evals/golden.jsonl"), "--golden"),
     limit: int | None = typer.Option(
         None,
         "--limit",
-        help="Limit RAG/code judge items for smoke runs.",
+        help="Limit golden items per product for smoke runs.",
     ),
     top_k: int = typer.Option(10, "--top-k", help="Retrieval top-k."),
+    judge_model: str | None = typer.Option(
+        None,
+        "--judge-model",
+        help="Override the RAGAS judge model (must be a strong, non-reasoning instruct model).",
+    ),
+    ingest: bool = typer.Option(
+        True,
+        "--ingest/--no-ingest",
+        help="Ingest each product's corpus first if its index is empty.",
+    ),
+    force_ingest: bool = typer.Option(
+        False, "--force-ingest", help="Re-ingest even if the index is already populated."
+    ),
 ) -> None:
-    """Run production eval suites and write JSON/Markdown artifacts."""
+    """Run the unified context-quality eval and write JSON/Markdown artifacts."""
     from anvay.config import AnvayConfig
-    from evals.harness import parse_suites, render_markdown_summary, run_suites
+    from evals.harness import render_markdown, resolve_products, run_eval
+    from evals.ingest import ensure_ingested
 
     try:
-        suites = parse_suites(suite)
+        product_evals = resolve_products(
+            [p.strip() for p in products.split(",") if p.strip()]
+        )
     except ValueError as e:
         typer.secho(str(e), fg=typer.colors.RED)
         raise typer.Exit(code=1) from e
 
     config = AnvayConfig.load(config_path)
+
     try:
+        if ingest:
+            for pe in product_evals:
+                stats = asyncio.run(
+                    ensure_ingested(pe, config=config, force=force_ingest)
+                )
+                if stats is not None:
+                    typer.echo(
+                        f"ingested {pe.product_id}: "
+                        f"{stats.resources_indexed} resources, {stats.chunks_indexed} chunks"
+                    )
         artifact = asyncio.run(
-            run_suites(
-                suites=suites,
+            run_eval(
                 config=config,
                 config_path=config_path,
-                out_dir=out_dir,
-                product_id=product,
-                fixture_path=fixture,
-                ingest_fixture=ingest_fixture,
-                golden_path=golden,
-                limit=limit,
+                products=product_evals,
                 top_k=top_k,
+                limit=limit,
+                out_dir=out_dir,
+                judge_model=judge_model,
             )
         )
     except Exception as e:
         typer.secho(f"eval failed: {type(e).__name__}: {e}", fg=typer.colors.RED)
         raise typer.Exit(code=1) from e
 
-    typer.echo(render_markdown_summary(artifact))
+    typer.echo(render_markdown(artifact))
+    typer.echo(f"artifacts: {artifact.output_dir}")
     if not artifact.passed:
         raise typer.Exit(code=1)
 
@@ -358,12 +366,11 @@ def daemon(
     ),
 ) -> None:
     """Continuous index daemon: subscribes to all `watch: true` connectors."""
-    import logging as _logging
-
     from anvay.config import AnvayConfig
     from anvay.daemon import run_daemon
+    from anvay.logging_config import setup_logging
 
-    _logging.basicConfig(level=_logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    setup_logging()
     cfg = AnvayConfig.load(config_path)
     typer.echo(f"anvay daemon — product={product} bootstrap={bootstrap}")
     try:

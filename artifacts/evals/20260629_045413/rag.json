@@ -1,0 +1,151 @@
+{
+  "items": [
+    {
+      "id": "zod_optional_nullable_nullish",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.0,
+      "answer": "`.nullable()` returns a version of a schema that allows `null`. `.nullish()` is a convenience method that accepts both `undefined` and `null`, making it equivalent to calling `.nullable().optional()`. The provided contexts do not explicitly define `.optional()` on its own, but indicate it is used in conjunction with `.nullable()` to achieve a nullish result.",
+      "notes": "1. '.nullable() returns a version of a schema that allows null' - Supported by the .nullable section. 2. '.nullish() is a convenience method that accepts both undefined and null' - Supported by the .nullish section. 3. '.nullish() is equivalent to calling .nullable().optional()' - Supported by the code examples in the .nullish section. 4. 'The provided contexts do not explicitly define .optional() on its own' - Supported; while .optional() appears in code and a comment, there is no dedicated definition section for it. | The answer correctly explains `.nullable()` and `.nullish()`, and correctly identifies that `.nullish()` is equivalent to `.nullable().optional()`. While it claims the provided contexts (which the user didn't provide, but the model is referencing) didn't define `.optional()`, it correctly infers its role. The expected answer provides a slightly more technical detail about ZodOptional/ZodNullable, but the core functional difference is accurately described."
+    },
+    {
+      "id": "zod_coerce_optional_gotcha",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.0,
+      "context_recall": 0.5,
+      "answer": "The provided contexts do not state that you *shouldn't* call `.optional()` or `.nullable()` on a `z.coerce` schema. In fact, the text explicitly suggests wrapping a `z.coerce` schema in `.optional()` if you want absence to be allowed.",
+      "notes": "The answer correctly identifies that the contexts do not forbid calling .optional() or .nullable() on a z.coerce schema. Furthermore, it accurately points to the specific section of the context that explicitly suggests wrapping a z.coerce schema in .optional() to allow absence ('Want absence to be allowed on coerce? Wrap in optional: z.object({ a: z.coerce.string().optional() }).parse({})'). | The ANSWER contradicts the EXPECTED_ANSWER. The expected answer explains the technical reason why combining coercion with optional/nullable is discouraged (coercion happens first, making the nullish check unreachable), whereas the ANSWER claims there is no such restriction and suggests doing it."
+    },
+    {
+      "id": "zod_coerce_boolean_false",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.5,
+      "answer": "`z.coerce.boolean()` uses the built-in `Boolean(value)` constructor, which coerces any truthy value to `true` and any falsy value to `false`. Because the string \"false\" is a truthy value, it is coerced to `true`.",
+      "notes": "The answer makes three claims: 1) z.coerce.boolean() uses the built-in Boolean(value) constructor (supported by multiple context sections), 2) it coerces truthy values to true and falsy values to false (supported by multiple context sections), and 3) the string 'false' is a truthy value and thus coerced to true (supported by the code examples showing schema.parse('false') => true and the explanation of truthy/falsy coercion). | The answer correctly identifies that `z.coerce.boolean()` uses the `Boolean()` constructor and explains that the string 'false' is truthy, leading to the result of `true`. While it doesn't provide the alternative solutions mentioned in the expected answer, it fully and accurately answers the 'Why' part of the question."
+    },
+    {
+      "id": "zod_parse_vs_safeparse",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.3333333333333333,
+      "answer": "Use `.parse` to validate input and receive a strongly-typed deep clone if valid. Use `.safeParse` if you want to avoid throwing errors when validation fails, as it returns an object indicating success or failure. You must use `.parseAsync` if your schema utilizes asynchronous transforms or refinements.",
+      "notes": "The answer makes three main claims: 1) .parse is used for validation and returns a strongly-typed deep clone (supported by 'Parsing data' section). 2) .safeParse is used to avoid throwing errors and returns an object indicating success or failure (supported by '.safeParse' section). 3) .parseAsync is required for asynchronous transforms or refinements (supported by '.parseAsync' and 'Parsing data' sections). | The answer correctly identifies the primary difference between .parse (throws error) and .safeParse (returns success/failure object), and correctly states that .parseAsync is required for asynchronous transforms or refinements. It covers all core points of the expected answer."
+    },
+    {
+      "id": "zod_refine_abort",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.6666666666666666,
+      "answer": "To add a custom check, use `.refine()` by providing a validator function that returns a falsy value to signal failure. To stop later checks from running after a failure, set the `abort` parameter to `true` within the refinement's options.",
+      "notes": "The answer makes two claims: 1) .refine() uses a validator function that returns a falsy value to signal failure, which is explicitly stated in the context ('Refinement functions should not throw. Instead they should return a falsy value to signal failure'). 2) To stop later checks, set the 'abort' parameter to true, which is supported by the context ('To mark a particular refinement as non-continuable, use the abort parameter. Validation will terminate if the check fails' and the $ZodCheckDef interface description). | The answer correctly identifies how to use .refine() (providing a validator function that returns a falsy value) and how to stop subsequent checks (setting the abort parameter to true). It aligns perfectly with the expected answer."
+    },
+    {
+      "id": "zod_string_format_regexes",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.2,
+      "context_recall": 0.0,
+      "answer": "The provided contexts do not state where the regexes for uuid and datetime string formats are defined. For email, Zod exports common regexes via `z.regexes`, including `z.regexes.email`, `z.regexes.html5Email`, `z.regexes.rfc5322Email`, and `z.regexes.unicodeEmail`.",
+      "notes": "The answer correctly states that the contexts do not provide the definition location for uuid and datetime regexes. It also accurately identifies that Zod exports common email regexes via `z.regexes` and lists the specific ones mentioned in the text: `z.regexes.email`, `z.regexes.html5Email`, `z.regexes.rfc5322Email`, and `z.regexes.unicodeEmail`. | The answer fails to identify the location where the regexes are defined ('core/regexes.ts'), which is the core requirement of the question and the expected answer. While it mentions how some are exported, it explicitly states it does not know where the uuid and datetime regexes are defined."
+    },
+    {
+      "id": "zod_transform_output_type",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.3333333333333333,
+      "answer": "You can transform validated input into a different output type using the `.transform` method, such as `z.string().transform(val => val.length)`, which changes the output from a string to a number. This can be used alone or in conjunction with pipes to perform initial validation before transforming the data. Additionally, `z.preprocess()` can be used to transform arbitrary input before it is passed to another schema for validation.",
+      "notes": "The answer makes four main claims: 1) `.transform` can be used to change output types (supported by the text and example `z.string().transform(val => val.length)`). 2) The specific example `z.string().transform(val => val.length)` changes output from string to number (explicitly stated in the context). 3) Transforms can be used alone or with pipes for initial validation (supported by the text 'Most commonly, transforms are used in conjunction with Pipes... useful for performing some initial validation'). 4) `z.preprocess()` can transform arbitrary input before passing it to another schema (supported by the text 'z.preprocess() function... the input type of a z.preprocess() schema is unknown, since the preprocessor is expected to handle arbitrary input'). | The answer correctly identifies the `.transform` method as the way to change the output type and provides a clear example. It also mentions `z.preprocess` as a complementary tool. While it doesn't explicitly mention `z.infer` or `parseAsync` (which are in the expected answer), it directly and accurately answers the core question of *how* to transform validated input into a different output type."
+    },
+    {
+      "id": "zod_infer_static_type",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.5,
+      "answer": "You can extract the static TypeScript type of a schema using the `z.infer<typeof mySchema>` utility. For schemas with transforms, `z.infer` returns the output type, which is equivalent to using `z.output`.",
+      "notes": "The answer makes two claims: 1) that `z.infer<typeof mySchema>` is used to extract the static TypeScript type, and 2) that for schemas with transforms, `z.infer` returns the output type, which is equivalent to `z.output`. Both claims are explicitly supported by the provided contexts. | The answer correctly identifies the syntax `z.infer<typeof mySchema>` and accurately explains that it returns the output type (especially for schemas with transforms), which aligns with the core information in the expected answer."
+    },
+    {
+      "id": "zod_to_json_schema",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.5,
+      "answer": "To convert a Zod schema into a JSON Schema document, use the `z.toJSONSchema()` function. You can optionally provide a second argument to customize the conversion logic, such as setting the `unrepresentable` option to `\"any\"` to prevent errors when encountering types that have no JSON Schema equivalent.",
+      "notes": "The answer makes three claims: 1) Use `z.toJSONSchema()` to convert a Zod schema to JSON Schema (supported). 2) A second argument can be used to customize conversion logic (supported). 3) Setting the `unrepresentable` option to `'any'` prevents errors when encountering types with no JSON Schema equivalent (supported). | The answer correctly identifies the function `z.toJSONSchema()` used for the conversion, which aligns with the core information in the expected answer. While it provides additional practical usage details (the `unrepresentable` option) not present in the expected answer, it accurately describes the mechanism for converting a Zod schema to JSON Schema."
+    },
+    {
+      "id": "zod_mini_vs_classic",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.5,
+      "answer": "Zod Mini is a tree-shakable variant of Zod designed for projects with strict bundle size constraints. Unlike classic Zod's method-heavy API, Zod Mini uses a functional API where wrapper functions are used instead of chained methods.",
+      "notes": "The answer makes three main claims: 1) Zod Mini is a tree-shakable variant of Zod (supported), 2) it is designed for projects with strict bundle size constraints (supported), and 3) it uses a functional API with wrapper functions instead of classic Zod's method-heavy chained API (supported). | The answer correctly identifies that Zod Mini is a tree-shakable variant for bundle size constraints and accurately describes the API difference (functional wrapper functions vs. chained methods), which aligns perfectly with the expected answer."
+    },
+    {
+      "id": "zod_custom_error_map",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.5,
+      "answer": "You can customize Zod's error messages globally by providing a custom error map using `z.setErrorMap(customErrorMap)`. Alternatively, you can use `z.config()` to set the `customError` configuration setting. Global error messages have lower precedence than schema-level or per-parse error messages.",
+      "notes": "The answer makes three claims: 1) Global customization is possible via `z.setErrorMap(customErrorMap)`, which is supported by the 'Customizing errors with ZodErrorMap' and 'Global error map' sections. 2) Global customization is possible via `z.config()` setting the `customError` configuration, which is supported by the 'Global error customization' section. 3) Global error messages have lower precedence than schema-level or per-parse messages, which is explicitly stated in the 'Global error customization' section. | The answer correctly identifies the primary method for global customization (`z.setErrorMap`) and mentions the precedence of schema-level messages, which aligns with the expected answer. While it mentions `z.config()` (which is a conceptual way to describe the configuration, though `setErrorMap` is the actual API call), it covers the core information need."
+    },
+    {
+      "id": "zod_discriminated_union",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.5,
+      "answer": "To validate a tagged/discriminated union efficiently, use the `z.discriminatedUnion` method. This approach is more efficient than a regular `z.union` because Zod uses a specific \"discriminator key\" to determine exactly which schema to use for parsing, rather than testing the input against every option. This results in faster evaluation and friendlier error reporting, as only issues related to the selected option are displayed.",
+      "notes": "The answer makes several claims: 1) Use `z.discriminatedUnion` for efficient validation (Supported). 2) It is more efficient than `z.union` because it uses a discriminator key to determine the schema rather than testing every option (Supported). 3) This results in faster evaluation (Supported). 4) It provides friendlier error reporting by only displaying issues related to the selected option (Supported). All claims are directly supported by the provided contexts. | The answer correctly identifies the method (`z.discriminatedUnion`), explains why it is more efficient (using a discriminator key instead of testing every option), and mentions the benefit of better error reporting. This aligns perfectly with the core information in the expected answer."
+    },
+    {
+      "id": "zod_metadata_registry",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.5,
+      "answer": "You can attach metadata or descriptions using the following methods:\n\n*   **`.meta()`**: Used to conveniently add metadata to `z.globalRegistry` (returns a new schema instance).\n*   **`.register()`**: Adds a schema to a specific registry with associated metadata (returns the original schema).\n*   **`.describe()`**: A Zod 3 compatible method equivalent to `.meta({ description: \"...\" })`.\n*   **`registry.add()`**: Adds a schema and its metadata directly via a registry instance.",
+      "notes": "The answer accurately lists four methods for attaching metadata/descriptions. 1. `.meta()` is described as adding to `z.globalRegistry` and returning a new instance (supported). 2. `.register()` is described as adding to a specific registry and returning the original schema (supported). 3. `.describe()` is described as Zod 3 compatible and equivalent to `.meta({ description: '...' })` (supported). 4. `registry.add()` is described as adding a schema and metadata via a registry instance (supported). | The answer provides a detailed list of methods (.meta(), .register(), .describe(), registry.add()) that align with the core functionality described in the expected answer. It correctly identifies that .describe() and .meta() are used for attaching metadata and that registries are used for registration and lookup. While it provides more specific method names than the expected answer, it accurately covers the technical mechanism requested."
+    },
+    {
+      "id": "zod_recursive_lazy",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.3333333333333333,
+      "answer": "You can define a recursive schema in Zod using two primary methods:\n\n1.  **Using a getter**: Define the recursive key as a getter on the object (e.g., `get subcategories() { return z.array(Category) }`), which allows JavaScript to resolve the cyclical schema at runtime and enables proper type inference.\n2.  **Using `z.lazy()`**: Manually define the TypeScript type and provide it as a \"type hint\" to Zod (e.g., `const categorySchema: z.ZodType<Category> = ...`), using `z.lazy()` to wrap the recursive reference.",
+      "notes": "The answer correctly identifies the two primary methods for defining recursive schemas described in the contexts: using a getter and using z.lazy(). \n\nClaim 1: 'Using a getter: Define the recursive key as a getter on the object... allows JavaScript to resolve the cyclical schema at runtime and enables proper type inference.' This is directly supported by the 'Recursive objects' section which states: 'To define a self-referential type, use a getter on the key. This lets JavaScript resolve the cyclical schema at runtime' and shows `type Category = z.infer<typeof Category>;` working.\n\nClaim 2: 'Using z.lazy(): Manually define the TypeScript type and provide it as a \"type hint\" to Zod... using z.lazy() to wrap the recursive reference.' This is directly supported by the 'Recursive types' section which states: 'you'll need to define the type definition manually, and provide it to Zod as a \"type hint\"' and provides an example using `z.ZodType<Category>` and `z.lazy()`. | The answer correctly identifies the two main ways to handle recursion in Zod: using `z.lazy()` and providing explicit type annotations. While it mentions a 'getter' method (which is a less common but valid JS pattern for some circular references), the core of the expected answer\u2014using `z.lazy()` and explicit type annotation\u2014is fully covered in point 2."
+    },
+    {
+      "id": "zod_object_pick_omit_partial",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 1.0,
+      "answer": "To derive a new object schema, use the `.pick` method to keep only specific keys and the `.omit` method to remove specific keys. To make keys partial, use the `.partial()` method.",
+      "notes": "The answer makes three claims: 1) Use .pick to keep specific keys (supported by multiple contexts), 2) Use .omit to remove specific keys (supported by multiple contexts), and 3) Use .partial() to make keys partial (supported by the type definition context showing the partial() method). | The answer correctly identifies the methods for picking, omitting, and making keys partial as requested in the question. While it doesn't list all the methods mentioned in the expected answer (like .required() or .extend()), it fully addresses the specific operations asked for in the question."
+    },
+    {
+      "id": "zod_iso_datetime",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.5,
+      "answer": "To validate an ISO date string in the format `YYYY-MM-DD`, you can use `z.iso.date()` or `z.string().date()`. For ISO 8601 datetime strings, you can use `z.string().datetime()` or `z.iso.datetime()`. By default, these datetime methods do not allow timezone offsets, but you can enable them by setting `{ offset: true }` in `z.string().datetime()`.",
+      "notes": "The answer makes several claims: 1. `z.iso.date()` or `z.string().date()` validates `YYYY-MM-DD` (Supported). 2. `z.string().datetime()` or `z.iso.datetime()` validates ISO 8601 datetime strings (Supported). 3. By default, these do not allow timezone offsets (Supported). 4. Timezone offsets can be enabled via `{ offset: true }` in `z.string().datetime()` (Supported). All claims are directly supported by the provided contexts. | The answer correctly identifies the methods for validating ISO date and datetime strings in Zod. While it mentions `z.string().date()` and `z.string().datetime()` (which are the standard Zod API methods), it also mentions `z.iso.date()` and `z.iso.datetime()`, which align with the expected answer. It also correctly mentions the `offset` option."
+    },
+    {
+      "id": "zod_v3_v4_error",
+      "faithfulness": 1.0,
+      "answer_correctness": 1.0,
+      "context_recall": 0.0,
+      "answer": "In Zod v4, the `.message` property on `ZodError` is now left empty, and the `.issues` array is marked as enumerable. The `.errors` API, which was an alias for `.issues` in v3, has been removed. Additionally, issue formats have been streamlined and renamed (e.g., `z.ZodInvalidTypeIssue` became `z.core.$ZodIssueInvalidType`).",
+      "notes": "The answer accurately reflects the provided contexts: 1) The .message property is left empty and .issues is marked as enumerable. 2) The .errors API (v3 alias for .issues) was removed. 3) Issue formats were streamlined and renamed, specifically z.ZodInvalidTypeIssue became z.core.$ZodIssueInvalidType. | The answer provides specific technical details about API changes (removal of .errors, changes to .message and .issues enumerability, and renaming of issue types) that align with the general 'reworking of the error/issue model' mentioned in the expected answer. While it focuses on the public API surface rather than the internal module structure mentioned in the expected answer, it accurately describes the changes that occurred during the transition to v4."
+    }
+  ],
+  "aggregates": {
+    "n": 17,
+    "faithfulness": 1.0,
+    "answer_correctness": 0.8941,
+    "context_recall": 0.4216
+  },
+  "thresholds": {
+    "faithfulness": 0.85,
+    "answer_correctness": 0.8,
+    "context_recall": 0.75
+  }
+}

@@ -138,8 +138,15 @@ async def get_product_status(
 
     sources = registry.list_sources(product_id)
     has_sources = bool(sources)
+    # A source mid-sync keeps the lastSync / resourceCount from its previous run,
+    # so it must not count as embedded — otherwise the stage flips to "council"
+    # while ingestion is still running and the UI bounces off the ingest page.
+    syncing = any(s.get("status") == "syncing" for s in sources)
     has_embeddings = any(
-        s.get("lastSync") and int(s.get("resourceCount") or 0) > 0 for s in sources
+        s.get("status") != "syncing"
+        and s.get("lastSync")
+        and int(s.get("resourceCount") or 0) > 0
+        for s in sources
     )
 
     has_skill = any(s.product == product_id for s in store.iter_skills())
@@ -166,6 +173,7 @@ async def get_product_status(
 
     return {
         "hasEmbeddings": has_embeddings,
+        "isSyncing": syncing,
         "hasSkill": has_skill,
         "councilInProgress": live is not None,
         "currentSessionId": (live["id"] if live else None),

@@ -21,6 +21,7 @@ from anvay.council.agents._common import (
     hits_to_evidence,
 )
 from anvay.council.errors import CouncilIncompleteSkill, CouncilNoEvidence
+from anvay.council.kb_guide import kb_usage_fill
 from anvay.council.skill_catalog import (
     PRODUCT_SKILL_RETRIEVAL_QUERY,
     SKILL_CATALOG,
@@ -38,7 +39,6 @@ from anvay.council.state import (
     CouncilState,
     DeliberationMessage,
     EvidenceChunk,
-    ExpertReport,
     SkillDraft,
     SkillEvalResult,
     SkillPlanItem,
@@ -55,31 +55,6 @@ log = logging.getLogger(__name__)
 
 REPAIR_ATTEMPT_CAP = 3
 EVIDENCE_CHUNKS_PER_SESSION_CAP = 20
-
-_EXPERTS = [
-    (
-        "architect",
-        (
-            "Map the system, runtime boundaries, data flow, interfaces, contracts, "
-            "repositories, services, APIs, schemas, and integration surfaces."
-        ),
-    ),
-    (
-        "domain_expert",
-        (
-            "Extract purpose, users, vocabulary, capabilities, workflows, entities, "
-            "relationships, product invariants, and operating constraints."
-        ),
-    ),
-    (
-        "quality_expert",
-        (
-            "Identify testing, security/secrets, debugging, review patterns, known "
-            "traps, freshness signals, and common change patterns."
-        ),
-    ),
-]
-_EXPERT_ORDER = {name: idx for idx, (name, _charter) in enumerate(_EXPERTS)}
 
 
 async def planner(
@@ -107,162 +82,26 @@ async def planner(
     if not evidence:
         raise _no_evidence_error(result, config)
 
+    # Deterministic context pack: the structural/graph summaries the ingest
+    # pipeline already distilled (see anvay/ingest/summaries.py). The synthesizer
+    # grounds the system-map / data-model / interfaces sections on these instead
+    # of an LLM expert re-deriving them from raw chunks.
+    context_pack = _summaries_block(result)
+
     plan = catalog_plan(product_id, topic)
     msg = DeliberationMessage(
         agent="planner",
         timestamp=datetime.now(UTC).isoformat(),
-        body="Planned one generic product context skill.",
+        body="Planned one generic product context skill from KB artifacts.",
         cite_ids=[e.chunk_id for e in evidence[:8]],
     )
     return {
         "evidence": evidence,
         "skill_plan": plan,
+        "context_pack": context_pack,
         "deliberation": [msg],
         "costs": [],
     }
-
-
-async def experts(
-    state: CouncilState,
-    *,
-    retrieval: RetrievalContext,
-    chat: ChatClient,
-    graph_store: object | None = None,
-) -> dict:
-    tasks = [
-        _run_expert(
-            state,
-            name=name,
-            charter=charter,
-            retrieval=retrieval,
-            graph_store=graph_store,
-            chat=chat,
-        )
-        for name, charter in _EXPERTS
-    ]
-    results = await asyncio.gather(*tasks)
-
-    reports: list[ExpertReport] = []
-    evidence: list[EvidenceChunk] = []
-    total = TokenUsage()
-    for report, fresh, usage in results:
-        reports.append(report)
-        evidence.extend(fresh)
-        total = _add_usage(total, usage)
-
-    msg = DeliberationMessage(
-        agent="experts",
-        timestamp=datetime.now(UTC).isoformat(),
-        body=f"Collected {len(reports)} expert report(s).",
-        cite_ids=[e.chunk_id for e in evidence[:10]],
-    )
-    room = max(
-        0,
-        EVIDENCE_CHUNKS_PER_SESSION_CAP
-        - len(_select_evidence(state.get("evidence") or [], limit=EVIDENCE_CHUNKS_PER_SESSION_CAP)),
-    )
-    return {
-        "expert_reports": reports,
-        "evidence": _select_evidence(evidence, limit=room),
-        "deliberation": [msg],
-        "costs": [_cost("expert-fanout", total, chat)],
-    }
-
-
-async def expert(
-    state: CouncilState,
-    *,
-    name: str,
-    retrieval: RetrievalContext,
-    chat: ChatClient,
-    config: AnvayConfig | None = None,
-    graph_store: object | None = None,
-) -> dict:
-    charter = _expert_charter(name)
-    report, fresh, usage = await _run_expert(
-        state,
-        name=name,
-        charter=charter,
-        retrieval=retrieval,
-        graph_store=graph_store,
-        skills=(await _approved_skills(config, state["product_id"])) if config else [],
-        chat=chat,
-        stream=True,
-    )
-    msg = DeliberationMessage(
-        agent=name,
-        timestamp=datetime.now(UTC).isoformat(),
-        body=f"{_expert_label(name)} report complete.",
-        cite_ids=[e.chunk_id for e in fresh[:5]],
-    )
-    return {
-        "expert_reports": [report],
-        "evidence": [],
-        "deliberation": [msg],
-        "costs": [_cost(name, usage, chat)],
-    }
-
-
-async def _run_expert(
-    state: CouncilState,
-    *,
-    name: str,
-    charter: str,
-    retrieval: RetrievalContext,
-    chat: ChatClient,
-    graph_store: object | None = None,
-    skills: list[Skill] | None = None,
-    stream: bool = False,
-) -> tuple[ExpertReport, list[EvidenceChunk], TokenUsage]:
-    query = _retrieval_query(state["topic"], suffix=f"{name} {charter}")
-    result = await _retrieve_skill_evidence(
-        retrieval=retrieval,
-        product_id=state["product_id"],
-        query=query,
-        top_k=8,
-        graph_store=graph_store,
-        skills=skills or [],
-    )
-    fresh = _skill_result_to_evidence(result, limit=8)
-    payload, usage = await chat.chat_json(
-        [
-            {
-                "role": "system",
-                "content": (
-                    f"You are the {name} expert in a bounded LLM council. "
-                    "Use only the supplied evidence. Return compact JSON only. "
-                    "Do not draft skills, Markdown sections, headings, or long prose."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Charter: {charter}\nTopic: {state['topic']}\n\n"
-                    f"{evidence_for_prompt(fresh)}\n\n"
-                    "Return JSON exactly shaped as "
-                    "{\"summary\":\"...\",\"findings\":[\"...\"],"
-                    "\"missing_questions\":[\"...\"]}. "
-                    "Constraints: summary <= 25 words; findings <= 4 plain strings, "
-                    "each <= 18 words; missing_questions <= 3 plain strings. "
-                    "No Markdown, no citations outside evidence ids, no skill drafts."
-                ),
-            },
-        ],
-        max_tokens=500,
-        stream=stream,
-    )
-    report = ExpertReport(
-        expert=name,
-        summary=str(payload.get("summary", "")).strip(),
-        findings=[str(x).strip() for x in payload.get("findings", []) if str(x).strip()],
-        missing_questions=[
-            str(x).strip()
-            for x in payload.get("missing_questions", [])
-            if str(x).strip()
-        ],
-        cite_ids=[e.chunk_id for e in fresh[:5]],
-    )
-    return report, fresh, usage
 
 
 async def synthesizer(
@@ -274,7 +113,7 @@ async def synthesizer(
     evidence = _select_evidence(
         state.get("evidence") or [], limit=EVIDENCE_CHUNKS_PER_SESSION_CAP
     )
-    reports = _ordered_expert_reports(state.get("expert_reports") or [])
+    context_pack = state.get("context_pack") or "(none)"
     plan = state.get("skill_plan") or catalog_plan(state["product_id"], state["topic"])
     repo_map = load_repo_map_for_product(config, state["product_id"])
     repo_map_block = repo_map.render(
@@ -286,6 +125,12 @@ async def synthesizer(
     for item in plan[:1]:
         required = required_sections_for_tier(item.tier)
         item_evidence = _evidence_for_plan_item(evidence, item)
+        # Prompt-caching layout: everything static-per-tier (role instructions,
+        # citation rule, mandatory template, format invariants) lives in the
+        # system message so it forms one stable cacheable prefix across the
+        # continuation calls and across re-syncs of the same product. The user
+        # message carries only the per-session variable payload (repo map,
+        # summaries, signals, evidence), largest content last.
         resp = await chat.chat_markdown(
             [
                 {
@@ -299,7 +144,17 @@ async def synthesizer(
                         "required heading names; do not rename, skip, nest, or leave "
                         "any required section empty. Unknown headings are invalid. "
                         "Optional headings are allowed only when evidence supports them. "
-                        "Explicitly explain when and how to query KB/RAG as source-of-truth."
+                        "The `How To Use The Knowledge Base` section is supplied by Anvay "
+                        "and spliced in deterministically — write a one-line placeholder "
+                        "for it; do not author its routing content.\n\n"
+                        "Citation rule: cite factual product claims only. Procedural "
+                        "workflow, debugging, review, and anti-pattern guidance can be "
+                        "uncited unless it names a concrete repo, file, command, API, "
+                        "schema, model, entity, invariant, auth rule, or service.\n\n"
+                        f"# Mandatory template\n{_template_for_tier(item.tier)}\n\n"
+                        "Every required heading from the template must appear exactly "
+                        "once. Use optional `## Testing Strategy` or `## Common Change "
+                        "Patterns` only when you can cite evidence."
                     ),
                 },
                 {
@@ -309,20 +164,14 @@ async def synthesizer(
                         f"Skill name: {item.name}\nTier: {item.tier}\nPurpose: {item.purpose}\n"
                         f"Activation description: {item.description}\n"
                         f"Required sections in order: {', '.join(required)}\n\n"
-                        "Citation rule: cite factual product claims only. Procedural "
-                        "workflow, debugging, review, and anti-pattern guidance can be "
-                        "uncited unless it names a concrete repo, file, command, API, "
-                        "schema, model, entity, invariant, auth rule, or service.\n\n"
-                        f"# Mandatory template\n{_template_for_tier(item.tier)}\n\n"
                         f"# Repo map\n{repo_map_block or '(none)'}\n\n"
-                        f"# Expert reports\n{_reports_for_prompt(reports)}\n\n"
+                        f"# Graph and structural summaries (deterministic, from ingest)\n"
+                        f"{context_pack}\n\n"
                         f"# Internal review and outcome signals\n"
                         f"{_signals_for_prompt(state.get('skill_signals') or [], skill_name=item.name)}\n\n"
                         f"# Evidence\n{evidence_for_prompt(item_evidence)}\n\n"
                         "Output the completed skill directly. The first line must be "
-                        f"`# {item.name}`. Every required heading from the template "
-                        "must appear exactly once. Use optional `## Testing Strategy` "
-                        "or `## Common Change Patterns` only when you can cite evidence."
+                        f"`# {item.name}`."
                     ),
                 },
             ],
@@ -330,6 +179,11 @@ async def synthesizer(
             max_continuations=2,
         )
         usage_total = _add_usage(usage_total, resp.usage)
+        # Splice the canonical KB-usage section in deterministically so the
+        # routing table never drifts and costs no tokens (config.council).
+        body = _merge_section_fill(
+            resp.content.strip(), kb_usage_fill(state["product_id"])
+        )
         drafts.append(
             SkillDraft(
                 name=item.name,
@@ -338,7 +192,7 @@ async def synthesizer(
                 parent=item.parent,
                 related=item.related,
                 coverage=item.coverage,
-                body=resp.content.strip(),
+                body=body.strip(),
             )
         )
 
@@ -467,7 +321,12 @@ async def repair_loop(
                         "content": (
                             "Repair incomplete Anvay skill sections. Output only "
                             "the requested `##` sections. Do not repeat any other "
-                            "section. Use only citations from supplied evidence."
+                            "section. Use only citations from supplied evidence. "
+                            "Use exact heading text.\n\n"
+                            # Static template kept in the system prefix so it caches
+                            # across the up-to-3 repair attempts (the user message —
+                            # draft + evidence — changes each attempt).
+                            f"# Required template\n{_template_for_tier(draft.tier)}"
                         ),
                     },
                     {
@@ -475,12 +334,10 @@ async def repair_loop(
                         "content": (
                             f"Skill tier: {draft.tier}\n"
                             f"Specific repairs:\n{_repair_issue_prompt(issues)}\n\n"
-                            f"# Required template\n{_template_for_tier(draft.tier)}\n\n"
                             f"# Current draft\n{body}\n\n"
                             f"# Evidence\n{evidence_for_prompt(repair_evidence)}\n\n"
                             "Return only these sections, in this order: "
-                            f"{', '.join(issue.output_name for issue in issues)}. "
-                            "Use exact heading text."
+                            f"{', '.join(issue.output_name for issue in issues)}."
                         ),
                     },
                 ],
@@ -519,7 +376,9 @@ async def repair_loop(
     }
 
 
-async def evaluator(state: CouncilState, *, chat: ChatClient) -> dict:
+async def evaluator(
+    state: CouncilState, *, config: AnvayConfig, chat: ChatClient | None = None
+) -> dict:
     evidence = list(state.get("evidence") or [])
     plan = state.get("skill_plan") or catalog_plan(state["product_id"], state["topic"])
     signals = state.get("skill_signals") or []
@@ -528,21 +387,28 @@ async def evaluator(state: CouncilState, *, chat: ChatClient) -> dict:
     messages: list[DeliberationMessage] = []
     total = TokenUsage()
 
+    # Deterministic-only by default: the 5 checks run without an LLM. The bounded
+    # faithfulness judge (and its LLM eval-repair) are opt-in via config so skill
+    # generation stays a single synthesis call. Completeness/citation repair is
+    # already the repair node's job, which runs before eval.
+    gate_on = bool(getattr(getattr(config, "council", None), "faithfulness_gate", False))
+    judge: ChatClient | None = chat if gate_on else None
+
     for draft in state.get("skill_drafts") or []:
         signal_ids = _signal_ids_for_skill(signals, skill_name=draft.name)
         result = await evaluate_skill_draft(
             draft=draft,
             evidence=evidence,
             plan=plan,
-            chat=chat,
+            chat=judge,
             signals_used=signal_ids,
         )
-        if result.status == "failed":
+        if result.status == "failed" and gate_on and judge is not None:
             repaired_body, usage = await _repair_eval_failure(
                 draft=draft,
                 result=result,
                 evidence=evidence,
-                chat=chat,
+                chat=judge,
             )
             total = _add_usage(total, usage)
             repaired = draft.model_copy(
@@ -556,7 +422,7 @@ async def evaluator(state: CouncilState, *, chat: ChatClient) -> dict:
                 draft=repaired,
                 evidence=evidence,
                 plan=plan,
-                chat=chat,
+                chat=judge,
                 attempt=1,
                 signals_used=signal_ids,
             )
@@ -571,8 +437,8 @@ async def evaluator(state: CouncilState, *, chat: ChatClient) -> dict:
                     agent="skill-eval",
                     timestamp=datetime.now(UTC).isoformat(),
                     body=(
-                        f"`{draft.name}` failed skill quality eval after one targeted "
-                        f"repair pass. Fix instructions:\n{failure_brief(result)}"
+                        f"`{draft.name}` failed deterministic skill eval; not queued. "
+                        f"Fix instructions:\n{failure_brief(result)}"
                     ),
                 )
             )
@@ -660,33 +526,30 @@ async def finalizer(state: CouncilState) -> dict:
     }
 
 
-def _reports_for_prompt(reports: list[ExpertReport]) -> str:
-    if not reports:
-        return "(no expert reports)"
-    blocks = []
-    for report in reports:
-        blocks.append(f"## {report.expert}\n{report.summary}")
-        for finding in report.findings[:8]:
-            blocks.append(f"- {finding}")
-        if report.missing_questions:
-            blocks.append("Missing:")
-            blocks.extend(f"- {q}" for q in report.missing_questions[:4])
-    return "\n".join(blocks)
+def _summaries_block(result: object, *, limit: int = 12) -> str:
+    """Render the structural/graph summary candidates from an EvidenceSet.
 
-
-def _expert_charter(name: str) -> str:
-    for expert_name, charter in _EXPERTS:
-        if expert_name == name:
-            return charter
-    raise ValueError(f"unknown expert: {name}")
-
-
-def _expert_label(name: str) -> str:
-    return name.replace("_", " ").title()
-
-
-def _ordered_expert_reports(reports: list[ExpertReport]) -> list[ExpertReport]:
-    return sorted(reports, key=lambda report: _EXPERT_ORDER.get(report.expert, len(_EXPERTS)))
+    These are the deterministic summaries `anvay/ingest/summaries.py` builds at
+    ingest (node labels, entities, flows, runtime/config relations, doc/test
+    links). They ground the synthesizer's structural sections without an LLM
+    expert re-deriving them. Falls back to `(none)` when the summary channel
+    surfaced nothing.
+    """
+    candidates = getattr(result, "candidates", None)
+    if not candidates:
+        return "(none)"
+    lines: list[str] = []
+    for candidate in candidates:
+        if getattr(candidate, "channel", "") != "summary":
+            continue
+        anchor = getattr(candidate, "anchor", "") or getattr(candidate, "chunk_id", "")
+        excerpt = (getattr(candidate, "excerpt", "") or "").strip()
+        if not excerpt:
+            continue
+        lines.append(f"[{anchor}] {excerpt}")
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines) if lines else "(none)"
 
 
 def _drafts_for_prompt(drafts: list[SkillDraft]) -> str:
@@ -709,7 +572,9 @@ async def _repair_eval_failure(
                 "content": (
                     "Repair one Anvay Agent Skill after quality eval failure. "
                     "Output the complete Markdown body only. Keep the exact title, "
-                    "exact required headings, and real `[file: path:line]` citations."
+                    "exact required headings, and real `[file: path:line]` citations.\n\n"
+                    # Static template in the system prefix for cache reuse.
+                    f"# Required template\n{_template_for_tier(draft.tier)}"
                 ),
             },
             {
@@ -718,7 +583,6 @@ async def _repair_eval_failure(
                     f"Skill name: {draft.name}\nTier: {draft.tier}\n"
                     f"Description: {draft.description}\n\n"
                     f"# Eval failures\n{failure_brief(result)}\n\n"
-                    f"# Required template\n{_template_for_tier(draft.tier)}\n\n"
                     f"# Current draft\n{draft.body}\n\n"
                     f"# Evidence\n{evidence_for_prompt(evidence)}\n\n"
                     "Return a complete repaired body. The first line must be "

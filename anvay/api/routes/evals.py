@@ -3,13 +3,13 @@
 Mirrors the council async-job pattern (``anvay/api/routes/council.py`` +
 ``anvay/council/runner.py``): POST kicks off a background ``asyncio`` task,
 progress streams over an in-process hub, and results are read back from the
-filesystem artifacts the harness already writes under ``artifacts/evals/``.
+filesystem artifacts the harness writes under ``artifacts/evals/``.
 
-Unlike council, routes are **multi-product** (not nested under one
-``product_id``) — the whole point is cross-product comparison so a RAG change
-is judged on the cross-product mean, not a single corpus. Each run is still
-internally product-scoped: every requested product is guarded with
-``assert_product_access`` and unknown products are rejected.
+The eval is **unified**: one run scores every requested product through the
+shipping ``retrieve_evidence`` path (``auto`` mode only — the query-rewrite
+ablation was removed), producing a single :class:`EvalRunArtifact`. Each product
+is still guarded with ``assert_product_access`` and unknown products are
+rejected.
 
 Job status lives in-process (ephemeral); the durable record is the per-run
 ``summary.json`` on disk, so history survives restarts.
@@ -26,30 +26,29 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from anvay.api.authz import assert_product_access
 from anvay.api.deps import get_config_dep, get_registry
 from anvay.config import AnvayConfig
 from anvay.registry import Registry
-from evals.corpus import PRODUCTS, SuiteName, has_suite_data
+from evals.corpus import PRODUCTS
 from evals.harness import (
-    ALL_SUITES,
     DEFAULT_OUT_DIR,
     EvalRunArtifact,
-    SuiteArtifact,
-    run_for_product,
+    render_markdown,
+    resolve_products,
+    run_eval,
 )
+from evals.ingest import ensure_ingested
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["evals"])
 
 _CONFIG_PATH = Path("anvay.yaml")
-
-# suite -> dashboard section (retrieval | answer | code)
-_SECTION: dict[str, str] = {"retrieval": "retrieval", "rag": "answer", "code": "code"}
+_DEFAULT_MODES = ("auto",)
 
 
 # ---------------------------------------------------------------- shapes
@@ -64,48 +63,24 @@ class EvalJobStatus(BaseModel):
     job_id: str
     status: str  # running | completed | failed
     products: list[str]
-    suites: list[str]
+    modes: list[str]
     started_at: str
     completed_at: str | None = None
-    run_ids: list[str] = Field(default_factory=list)
-    skipped: list[str] = Field(default_factory=list)  # "product/suite" pairs with no data
+    run_id: str | None = None
     error: str | None = None
-
-
-class SuiteSummary(BaseModel):
-    suite: str
-    section: str  # retrieval | answer | code
-    passed: bool
-    product_id: str
-    metrics: dict[str, float]
-    thresholds: dict[str, float]
-    notes: list[str] = Field(default_factory=list)
-
-
-class EvalRunSummary(BaseModel):
-    run_id: str
-    product_id: str
-    generated_at: str
-    passed: bool
-    suites: list[SuiteSummary]
-
-
-class EvalRunDetail(EvalRunSummary):
-    config_fingerprint: dict = Field(default_factory=dict)
-    per_suite: dict[str, dict] = Field(default_factory=dict)  # suite -> raw output json
 
 
 class ProductEvalInfo(BaseModel):
     product_id: str
     language: str
-    repo_url: str
-    has_retrieval: bool
-    has_rag: bool
+    needs_ingest: bool
 
 
 class StartRunBody(BaseModel):
     products: list[str]
-    suites: list[str] = Field(default_factory=lambda: list(ALL_SUITES))
+    limit: int | None = None
+    top_k: int = 10
+    ingest: bool = True
 
 
 # ---------------------------------------------------------------- job hub
@@ -183,83 +158,59 @@ async def _run_eval_job(
     *,
     job_id: str,
     products: list[str],
-    suites: tuple[SuiteName, ...],
+    modes: tuple[str, ...],
+    limit: int | None,
+    top_k: int,
+    ingest: bool,
     config: AnvayConfig,
 ) -> None:
     status = _JOBS[job_id]
     try:
-        for product_id in products:
-            p = PRODUCTS[product_id]
-            runnable = tuple(s for s in suites if has_suite_data(p, s))
-            skipped = [f"{product_id}/{s}" for s in suites if not has_suite_data(p, s)]
-            status.skipped.extend(skipped)
-            await HUB.publish(
-                job_id,
-                {
-                    "event": "product_start",
-                    "data": {"product_id": product_id, "suites": list(runnable)},
-                },
-            )
-            if not runnable:
+        product_evals = resolve_products(products)
+        if ingest:
+            for pe in product_evals:
                 await HUB.publish(
-                    job_id,
-                    {
-                        "event": "product_done",
-                        "data": {"product_id": product_id, "skipped": True, "run_id": None},
-                    },
+                    job_id, {"event": "ingest_start", "data": {"product_id": pe.product_id}}
                 )
-                continue
-            artifact = await run_for_product(
-                product_id=product_id,
-                suites=runnable,
-                config=config,
-                config_path=_CONFIG_PATH,
-                out_dir=DEFAULT_OUT_DIR,
-            )
-            status.run_ids.append(artifact.run_id)
-            await HUB.publish(
-                job_id,
-                {
-                    "event": "product_done",
-                    "data": {
-                        "product_id": product_id,
-                        "skipped": False,
-                        "run_id": artifact.run_id,
-                        "passed": artifact.passed,
-                    },
-                },
-            )
+                await ensure_ingested(pe, config=config)
+        await HUB.publish(job_id, {"event": "eval_start", "data": {"products": products}})
+        artifact = await run_eval(
+            config=config,
+            config_path=_CONFIG_PATH,
+            products=product_evals,
+            modes=modes,
+            top_k=top_k,
+            limit=limit,
+            out_dir=DEFAULT_OUT_DIR,
+        )
+        status.run_id = artifact.run_id
         status.status = "completed"
         status.completed_at = datetime.now(UTC).isoformat()
-        await HUB.publish(job_id, {"event": "job_done", "data": {"run_ids": status.run_ids}})
+        await HUB.publish(
+            job_id,
+            {"event": "job_done", "data": {"run_id": artifact.run_id, "passed": artifact.passed}},
+        )
     except Exception as e:  # pragma: no cover - defensive
         log.exception("eval job %s crashed", job_id)
         status.status = "failed"
         status.completed_at = datetime.now(UTC).isoformat()
         status.error = f"{type(e).__name__}: {e}"
         await HUB.publish(
-            job_id,
-            {"event": "error", "data": {"message": str(e), "type": type(e).__name__}},
+            job_id, {"event": "error", "data": {"message": str(e), "type": type(e).__name__}}
         )
     finally:
         await HUB.finish(job_id)
 
 
-def _validate_products(request: Request, registry: Registry, products: list[str]) -> None:
-    if not products:
-        raise HTTPException(status_code=400, detail="no products specified")
+def _validate_products(request: Request, registry: Registry, products: list[str]) -> list[str]:
+    if not products or products == ["all"]:
+        products = list(PRODUCTS.keys())
     unknown = [pid for pid in products if pid not in PRODUCTS]
     if unknown:
         raise HTTPException(status_code=404, detail=f"unknown product(s): {', '.join(unknown)}")
     for pid in products:
         assert_product_access(request, registry, pid, action="council")
-
-
-def _parse_suites(suites: list[str]) -> tuple[SuiteName, ...]:
-    invalid = [s for s in suites if s not in ALL_SUITES]
-    if invalid:
-        raise HTTPException(status_code=400, detail=f"unknown suite(s): {', '.join(invalid)}")
-    return tuple(dict.fromkeys(suites)) or ALL_SUITES  # stable de-dupe
+    return products
 
 
 # ---------------------------------------------------------------- endpoints
@@ -272,21 +223,29 @@ async def start_run(
     config: AnvayConfig = Depends(get_config_dep),
     registry: Registry = Depends(get_registry),
 ) -> EvalJobRef:
-    """Kick off an eval run across the requested products/suites."""
-    _validate_products(request, registry, body.products)
-    suites = _parse_suites(body.suites)
+    """Kick off a unified eval run across the requested products."""
+    products = _validate_products(request, registry, body.products)
+    modes = _DEFAULT_MODES
 
     job_id = _make_job_id()
     _JOBS[job_id] = EvalJobStatus(
         job_id=job_id,
         status="running",
-        products=list(body.products),
-        suites=list(suites),
+        products=products,
+        modes=list(modes),
         started_at=datetime.now(UTC).isoformat(),
     )
     await HUB.start(job_id)
     task = asyncio.create_task(
-        _run_eval_job(job_id=job_id, products=list(body.products), suites=suites, config=config),
+        _run_eval_job(
+            job_id=job_id,
+            products=products,
+            modes=modes,
+            limit=body.limit,
+            top_k=body.top_k,
+            ingest=body.ingest,
+            config=config,
+        ),
         name=f"eval-{job_id}",
     )
     _RUNNING.add(task)
@@ -304,7 +263,7 @@ async def get_job(job_id: str) -> EvalJobStatus:
 
 @router.get("/evals/jobs/{job_id}/stream")
 async def job_stream(job_id: str) -> EventSourceResponse:
-    """Live stream while the job runs; replay terminal events if already done."""
+    """Live stream while the job runs; replay terminal event if already done."""
     status = _JOBS.get(job_id)
     if not status:
         raise HTTPException(status_code=404, detail="job not found")
@@ -312,12 +271,10 @@ async def job_stream(job_id: str) -> EventSourceResponse:
         return EventSourceResponse(_stream_events(job_id))
 
     async def replay() -> AsyncIterator[dict]:
-        for run_id in status.run_ids:
-            yield {"event": "product_done", "data": json.dumps({"run_id": run_id})}
         terminal = "error" if status.status == "failed" else "job_done"
         yield {
             "event": terminal,
-            "data": json.dumps({"run_ids": status.run_ids, "error": status.error}),
+            "data": json.dumps({"run_id": status.run_id, "error": status.error}),
         }
 
     return EventSourceResponse(replay())
@@ -325,43 +282,30 @@ async def job_stream(job_id: str) -> EventSourceResponse:
 
 @router.get("/evals/runs")
 async def list_runs() -> dict:
-    """Project every persisted run artifact into a summary (all products)."""
-    summaries = [_summary_from_artifact(a) for a in _load_artifacts()]
-    summaries.sort(key=lambda s: s.generated_at, reverse=True)
-    return {"runs": summaries}
+    """Every persisted run artifact, newest first."""
+    artifacts = [a for a in _load_artifacts() if a is not None]
+    artifacts.sort(key=lambda a: a.generated_at, reverse=True)
+    return {"runs": [a.model_dump(mode="json") for a in artifacts]}
 
 
 @router.get("/evals/runs/{run_id}")
-async def get_run(run_id: str) -> EvalRunDetail:
+async def get_run(run_id: str) -> dict:
     artifact = _load_artifact(run_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="run not found")
-    base = _summary_from_artifact(artifact)
-    per_suite: dict[str, dict] = {}
-    for suite in artifact.suites:
-        raw = Path(suite.output_json)
-        if raw.exists():
-            try:
-                per_suite[suite.suite] = json.loads(raw.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                log.warning("could not read suite output %s", raw)
-    return EvalRunDetail(
-        **base.model_dump(),
-        config_fingerprint=artifact.config_fingerprint,
-        per_suite=per_suite,
-    )
+    payload = artifact.model_dump(mode="json")
+    payload["markdown"] = render_markdown(artifact)
+    return payload
 
 
 @router.get("/evals/corpus")
 async def get_corpus() -> dict:
-    """The product registry + which suites have authored data."""
+    """The product registry."""
     products = [
         ProductEvalInfo(
             product_id=p.product_id,
             language=p.language,
-            repo_url=p.repo_url,
-            has_retrieval=has_suite_data(p, "retrieval"),
-            has_rag=has_suite_data(p, "rag"),
+            needs_ingest=p.source_path is None,
         )
         for p in PRODUCTS.values()
     ]
@@ -387,36 +331,8 @@ async def _stream_events(job_id: str) -> AsyncIterator[dict]:
         await HUB.unsubscribe(job_id, q)
 
 
-def _summary_from_artifact(artifact: EvalRunArtifact) -> EvalRunSummary:
-    product_id = artifact.suites[0].product_id if artifact.suites else "unknown"
-    return EvalRunSummary(
-        run_id=artifact.run_id,
-        product_id=product_id,
-        generated_at=artifact.generated_at,
-        passed=artifact.passed,
-        suites=[_suite_summary(s) for s in artifact.suites],
-    )
-
-
-def _suite_summary(s: SuiteArtifact) -> SuiteSummary:
-    return SuiteSummary(
-        suite=s.suite,
-        section=_SECTION.get(s.suite, s.suite),
-        passed=s.passed,
-        product_id=s.product_id,
-        metrics=s.metrics,
-        thresholds=s.thresholds,
-        notes=s.notes,
-    )
-
-
-def _load_artifacts() -> list[EvalRunArtifact]:
-    out: list[EvalRunArtifact] = []
-    for path in sorted(DEFAULT_OUT_DIR.glob("*/summary.json")):
-        artifact = _read_artifact(path)
-        if artifact is not None:
-            out.append(artifact)
-    return out
+def _load_artifacts() -> list[EvalRunArtifact | None]:
+    return [_read_artifact(path) for path in sorted(DEFAULT_OUT_DIR.glob("*/summary.json"))]
 
 
 def _load_artifact(run_id: str) -> EvalRunArtifact | None:

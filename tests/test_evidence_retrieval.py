@@ -33,6 +33,27 @@ def test_understand_query_classifies_global_chunking_strategy() -> None:
     assert "implementation" in u.facets
 
 
+def test_understand_query_extracts_real_symbols_not_stopwords() -> None:
+    # Plan 1b: sentence-initial capitals ("How"/"What") must not become anchors
+    # (that stranded the graph-local channel). Real code signals must survive.
+    u = understand_query("How does retrieve_evidence() build the candidate set?")
+    assert "retrieve_evidence" in u.symbols
+    assert all(s.lower() not in {"how", "does", "the"} for s in u.symbols)
+
+
+def test_understand_query_keeps_camel_and_snake_anchors() -> None:
+    u = understand_query("Where is QueryPlan defined and how is rerank_mixed used?")
+    assert "QueryPlan" in u.symbols
+    assert "rerank_mixed" in u.symbols
+
+
+def test_understand_query_drops_bare_capitalized_words() -> None:
+    # A capitalized English word with no internal code signal is not an anchor.
+    u = understand_query("What handles errors here?")
+    assert "What" not in u.symbols
+    assert u.symbols == []
+
+
 def test_merge_candidates_preserves_exact_and_doc_hits() -> None:
     items = [
         EvidenceCandidate(

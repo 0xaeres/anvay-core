@@ -1,0 +1,119 @@
+{
+  "auto": [
+    {
+      "id": "anvay_hybrid_fusion",
+      "query": "How does Anvay combine dense vector search with keyword search when retrieving?",
+      "category": "architecture",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 4749.263416975737,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/pipeline.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/hybrid.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/ingest/indexer.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/mcp_server/tools.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/ingest/pipeline.py"
+      ],
+      "answer": "Anvay combines dense vector search and sparse BM25 keyword search using Reciprocal Rank Fusion (RRF). The process involves performing a dense ANN search and a sparse BM25 search against the same chunk corpus, then merging them into a single ranked seed set. This rank-based fusion uses a constant (RRF_K = 60) and avoids the need for score normalization.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.9999999999666667,
+      "context_recall": 0.5
+    },
+    {
+      "id": "anvay_bm25_location",
+      "query": "How does Anvay produce the sparse keyword vectors used in hybrid search?",
+      "category": "api",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 4744.457959022839,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/sparse.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/pipeline.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/sparse.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/sparse.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/hybrid.py"
+      ],
+      "answer": "Anvay produces TF-weighted sparse vectors using a BM25 sparse encoder that wraps fastembed's Qdrant/bm25 tokenizer. Qdrant then applies IDF server-side through the `Modifier.IDF` setting on the collection's sparse vector params.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.8099999999838,
+      "context_recall": 1.0
+    },
+    {
+      "id": "anvay_evidence_vs_retrieve",
+      "query": "What is the difference between the low-level retrieve pipeline and evidence retrieval?",
+      "category": "architecture",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.8503449055347546,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 4814.867750043049,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/evidence.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/council/kb_guide.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/council/agents/skill.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/evidence.py"
+      ],
+      "answer": "The `retrieve()` function is a low-level primitive that performs dense, BM25, and rerank search. In contrast, evidence retrieval assembles a broader evidence set for product understanding tasks, incorporating exact symbols, docs, graph-connected chunks, and approved skills in addition to semantic matches.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.8874999999778125,
+      "context_recall": 1.0
+    },
+    {
+      "id": "anvay_graph_role",
+      "query": "Is the knowledge graph used to answer questions directly or just to guide retrieval?",
+      "category": "conceptual",
+      "recall_at_k": 0.5,
+      "ndcg_at_k": 0.38685280723454163,
+      "reciprocal_rank": 0.5,
+      "latency_ms": 5357.674165978096,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/anvay/council/kb_guide.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/council/kb_guide.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/rag.py"
+      ],
+      "answer": "The knowledge graph is used to answer product-system questions using supplied graph facts and evidence excerpts. It enables answering arbitrary product questions via graph expansion and cited retrieval.",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.8766666666491334,
+      "context_recall": 1.0
+    },
+    {
+      "id": "anvay_graph_local",
+      "query": "How does graph-local traversal seed candidates during evidence retrieval?",
+      "category": "how-to",
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 1.0,
+      "reciprocal_rank": 1.0,
+      "latency_ms": 4526.1675419751555,
+      "n_candidates": 10,
+      "graph_used": true,
+      "top_files": [
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/evidence.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/evidence.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/retrieval/evidence.py",
+        "/Users/aeres/Desktop/projects/anvay/anvay/graph/impact.py",
+        "0xaeres/anvay-core/anvay/retrieval/evidence.py"
+      ],
+      "answer": "In local mode, the seed strategy is determined as either \"explicit_anchor_graph_traversal\" if anchors exist or \"hybrid_hit_graph_seed\". The process involves resolving seed nodes and then performing a traversal using the stable IDs of up to the first eight seed nodes. These seed IDs are subsequently stored in the candidate's metadata as \"graph_seed_ids\".",
+      "faithfulness": 1.0,
+      "answer_correctness": 0.5,
+      "context_precision": 0.9166666666361111,
+      "context_recall": 1.0
+    }
+  ]
+}

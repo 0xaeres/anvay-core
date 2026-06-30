@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
 from collections.abc import Iterable
 
 from anvay.ingest.models import Chunk, ChunkKind
@@ -46,10 +47,12 @@ _DOC_CONTEXT_PROMPT = (
     "with the succinct context and nothing else."
 )
 
-# Cap the whole-doc prefix so a giant runbook doesn't blow the request body.
-# 30k chars ~= 7.5k tokens; plenty for any reasonable doc. Larger docs get
-# truncated symmetrically around the chunk to preserve its surroundings.
-_DOC_TRUNCATE_CHARS = 30_000
+# Cap the whole-doc prefix to stay within the light model's context window.
+# Gemma 4 26B (default light model) has a 40,960-token context. Code-heavy
+# content tokenizes at ~1.3-1.5 tokens/char, so 22k chars + 1.2k chunk +
+# ~300 template ≈ 23.5k chars x 1.5 = 35,250 tokens — safe headroom.
+# 30k was too high: 31.5k chars x 1.37 ≈ 43k tokens -> 40,960-token overflow.
+_DOC_TRUNCATE_CHARS = 22_000
 
 
 class EnricherError(RuntimeError):
@@ -123,21 +126,46 @@ class ContextualEnricher:
 
         docs = doc_contents or {}
 
-        async def _summarize(chunk: Chunk) -> tuple[Chunk, str | None]:
+        async def _summarize(chunk: Chunk) -> None:
             if chunk.kind is ChunkKind.CODE:
                 if not self.enrich_code:
-                    return chunk, None
-                return chunk, await self._hqe_for_code(chunk)
-            # doc
-            if not self.enrich_docs:
-                return chunk, None
-            doc_text = docs.get(chunk.resource.uri)
-            return chunk, await self._context_for_doc(chunk, doc_text)
-
-        results = await asyncio.gather(*[_summarize(c) for c in chunk_list])
-        for chunk, summary in results:
+                    return
+                summary = await self._hqe_for_code(chunk)
+            elif not self.enrich_docs:
+                return
+            else:
+                summary = await self._context_for_doc(chunk, docs.get(chunk.resource.uri))
             if summary:
                 chunk.context_summary = summary
+
+        # Cache-aware scheduling for contextual retrieval. Every chunk of one
+        # doc shares the same `<document>…</document>` prefix; DeepInfra prefix
+        # caching only dedupes it once the first request has populated the
+        # cache. Firing all of a doc's chunks at once (plain gather) races them
+        # and re-bills the full 7.5-30k-token doc per chunk. So warm the prefix
+        # with the doc's first chunk, then fan the rest out against the warm
+        # cache. Code (HQE) chunks have no shared bulk prefix — run straight.
+        doc_groups: dict[str, list[Chunk]] = defaultdict(list)
+        passthrough: list[Chunk] = []
+        for chunk in chunk_list:
+            if (
+                chunk.kind is not ChunkKind.CODE
+                and self.enrich_docs
+                and docs.get(chunk.resource.uri)
+            ):
+                doc_groups[chunk.resource.uri].append(chunk)
+            else:
+                passthrough.append(chunk)
+
+        async def _warm_then_fan(group: list[Chunk]) -> None:
+            await _summarize(group[0])
+            if len(group) > 1:
+                await asyncio.gather(*[_summarize(c) for c in group[1:]])
+
+        await asyncio.gather(
+            *[_summarize(c) for c in passthrough],
+            *[_warm_then_fan(group) for group in doc_groups.values()],
+        )
         return chunk_list
 
     # ------------------------------------------------------------ code (HQE)
