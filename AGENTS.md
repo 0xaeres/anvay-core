@@ -1,7 +1,7 @@
 # Anvay — agent & contributor context
 
 This is the Python backend for **Anvay**, a sovereign, MCP-native **context
-engine**: it ingests an org's code + docs, runs a bounded expert LLM council to
+engine**: it ingests an org's code + docs, runs a bounded LLM council to
 draft one curated **product skill** (human-approved), and serves it via MCP to any AI
 client. The sibling repo `../anvay-ui/` is the Next.js web UI.
 
@@ -69,16 +69,18 @@ client. The sibling repo `../anvay-ui/` is the Next.js web UI.
 - **Chunks carry their context.** Code chunks get HQE (3 hypothetical
   questions) at ingest; doc chunks get Anthropic's Contextual Retrieval
   blurb. Both prepend at embed time via `text_for_embedding()`.
-- **Council is bounded single-skill generation.** Planner → expert fanout
-  (architect, domain_expert, quality_expert) → Synthesizer →
+- **Council is bounded single-skill generation.** Planner → Synthesizer →
   completeness Repair (≤3 attempts per skill) → Eval → Finalizer.
-  Each expert produces a compact JSON report (summary, findings,
-  missing_questions); the Synthesizer builds the full 13-section
-  `product_master` Markdown skill from those reports + evidence + repo map.
+  The Planner assembles a deterministic context pack (repo map + graph/structural
+  summaries built at ingest); the Synthesizer builds the full 13-section
+  `product_master` Markdown skill from that pack + evidence in one LLM call.
+  The expert fanout (architect, domain_expert, quality_expert) was removed —
+  do not reintroduce it without an eval-set win showing quality improvement.
   Incomplete skills are never queued; the Eval node runs 5 deterministic
   checks (identity, structure, name match, citation-anchor faithfulness,
   trigger) plus a bounded, fail-soft LLM entailment gate
-  (`skill_evals.py::_faithfulness_failures`) that rejects cited claims not
+  (`skill_evals.py::_faithfulness_failures`, opt-in via
+  `config.council.faithfulness_gate`) that rejects cited claims not
   supported by their cited excerpt. Human approval remains the final gate.
 - **Synthesizer emits Markdown skills, not JSON.** Citations are regex-parsed
   post-hoc. Long outputs auto-continue on `finish_reason="length"`. Missing

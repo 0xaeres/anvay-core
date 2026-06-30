@@ -52,3 +52,9 @@ logs/
 .idea/
 *.swp
 .DS_Store
+
+# Claude Code local state (machine-specific memory, never project artifacts)
+.claude/
+
+# Eval LLM judge cache (large, regeneratable)
+artifacts/eval-cache/
