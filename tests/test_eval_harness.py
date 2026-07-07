@@ -124,7 +124,7 @@ def test_render_markdown_smoke() -> None:
         config_fingerprint={"judge_model": "m"},
         top_k=10,
         limit=None,
-        modes=["auto", "rewrite"],
+        modes=["auto", "drift_lite"],
         thresholds=Thresholds(),
         products=[
             ProductResult(
@@ -133,7 +133,7 @@ def test_render_markdown_smoke() -> None:
                 passed=True,
                 modes=[
                     ModeMetrics(mode="auto", n=1, recall_at_k=0.8, ndcg_at_k=0.7),
-                    ModeMetrics(mode="rewrite", n=1, recall_at_k=0.9, ndcg_at_k=0.75),
+                    ModeMetrics(mode="drift_lite", n=1, recall_at_k=0.9, ndcg_at_k=0.75),
                 ],
             )
         ],

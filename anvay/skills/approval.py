@@ -308,7 +308,7 @@ async def _embed_skill_body(
             log.warning("approval: embedder unreachable, skipping vector upsert: %s", e)
             return 0
 
-        sparse = await aencode_passages([chunk.content])
+        sparse = await aencode_passages([chunk.sparse_text_for_embedding()])
         sparse_by_id = {chunk.id: sparse[0]} if sparse else {}
         return await indexer.upsert(embedded, sparse_by_id=sparse_by_id)
     finally:

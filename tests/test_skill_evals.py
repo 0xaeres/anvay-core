@@ -260,3 +260,112 @@ async def test_evaluate_skill_draft_fails_on_unsupported_citation() -> None:
     assert result.status == "failed"
     assert any("not supported" in f for f in result.failures)
     assert "llm_faithfulness" in result.signals_used
+
+
+# --------------------------------------------------------------------------- #
+# _anchor_verification_failures — deterministic citation verifier (no LLM)
+# --------------------------------------------------------------------------- #
+
+
+class _AnchorIndexer:
+    def __init__(self, rows_by_file):
+        self.rows_by_file = rows_by_file
+        self.requested = None
+
+    async def chunks_at_anchors(self, *, product_id, resource_uris):
+        self.requested = list(resource_uris)
+        return {f: self.rows_by_file[f] for f in resource_uris if f in self.rows_by_file}
+
+
+@pytest.mark.asyncio
+async def test_anchor_verifier_passes_for_valid_covered_citation() -> None:
+    draft = SkillDraft(
+        name="pda-seed-validation",
+        description="Validates PDA seeds and bump bytes for Solana programs.",
+        tier="application",
+        body=(
+            "# pda-seed-validation\n\n## Rules\n"
+            "1. Re-derive the pda_bump and assert equality [file: a.rs:10].\n"
+            "2. Use Anchor seeds constraint [file: b.rs:20].\n\n"
+            "## Anti-patterns\n- Do not pass unchecked bumps.\n"
+        ),
+    )
+    indexer = _AnchorIndexer(
+        {
+            "a.rs": [{"start_line": 5, "end_line": 15, "content": "fn pda_bump() { assert_eq!(...) }"}],
+            "b.rs": [{"start_line": 18, "end_line": 25, "content": "anchor seeds constraint derive"}],
+        }
+    )
+    result = await evaluate_skill_draft(
+        draft=draft,
+        evidence=_evidence(),
+        plan=_plan("pda-seed-validation", draft.description),
+        chat=object(),
+        indexer=indexer,
+        product_id="demo",
+    )
+    assert not any("anchor invalid" in f.lower() for f in result.failures)
+    assert indexer.requested is not None
+
+
+@pytest.mark.asyncio
+async def test_anchor_verifier_flags_line_out_of_range() -> None:
+    from anvay.council.skill_evals import _anchor_verification_failures
+
+    draft = SkillDraft(
+        name="s",
+        description="d",
+        tier="application",
+        body="# s\n\n## Rules\n1. Something [file: a.rs:999].\n",
+    )
+    indexer = _AnchorIndexer(
+        {"a.rs": [{"start_line": 1, "end_line": 20, "content": "unrelated body"}]}
+    )
+    failures = await _anchor_verification_failures(
+        draft=draft, indexer=indexer, product_id="demo"
+    )
+    assert any("anchor invalid" in f.lower() for f in failures)
+
+
+@pytest.mark.asyncio
+async def test_anchor_verifier_flags_missing_file() -> None:
+    from anvay.council.skill_evals import _anchor_verification_failures
+
+    draft = SkillDraft(
+        name="s", description="d", tier="application",
+        body="# s\n\n## Rules\n1. Claim [file: ghost.rs:1].\n",
+    )
+    indexer = _AnchorIndexer({})
+    failures = await _anchor_verification_failures(
+        draft=draft, indexer=indexer, product_id="demo"
+    )
+    assert any("anchor invalid" in f.lower() for f in failures)
+
+
+@pytest.mark.asyncio
+async def test_anchor_verifier_flags_term_mismatch() -> None:
+    from anvay.council.skill_evals import _anchor_verification_failures
+
+    draft = SkillDraft(
+        name="s", description="d", tier="application",
+        body="# s\n\n## Rules\n1. Configure kubernetes ingress routing rules [file: a.rs:10].\n",
+    )
+    indexer = _AnchorIndexer(
+        {"a.rs": [{"start_line": 5, "end_line": 15, "content": "def add(a, b): return a + b"}]}
+    )
+    failures = await _anchor_verification_failures(
+        draft=draft, indexer=indexer, product_id="demo"
+    )
+    assert any("weak" in f.lower() for f in failures)
+
+
+@pytest.mark.asyncio
+async def test_anchor_verifier_fail_soft_without_indexer() -> None:
+    from anvay.council.skill_evals import _anchor_verification_failures
+
+    draft = SkillDraft(
+        name="s", description="d", tier="application",
+        body="# s\n\n## Rules\n1. Claim [file: a.rs:10].\n",
+    )
+    assert await _anchor_verification_failures(draft=draft, indexer=None, product_id="demo") == []
+    assert await _anchor_verification_failures(draft=draft, indexer=object(), product_id="demo") == []

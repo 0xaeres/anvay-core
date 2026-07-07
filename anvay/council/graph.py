@@ -166,7 +166,12 @@ def build_graph(config: AnvayConfig, handles: CouncilHandles):
 
     async def evaluator_node(state: CouncilState) -> dict:
         try:
-            return await skill.evaluator(state, config=config, chat=handles.chat_evaluator)
+            return await skill.evaluator(
+                state,
+                config=config,
+                chat=handles.chat_evaluator,
+                retrieval=handles.retrieval,
+            )
         except Exception as e:
             raise CouncilAgentError("skill_eval", e) from e
 
@@ -185,12 +190,31 @@ def build_graph(config: AnvayConfig, handles: CouncilHandles):
 
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "synthesizer")
-    graph.add_edge("synthesizer", "repair")
+    graph.add_edge("synthesizer", "skill_eval")
+    graph.add_conditional_edges(
+        "skill_eval", _route_after_eval, ["repair", "finalizer"]
+    )
     graph.add_edge("repair", "skill_eval")
-    graph.add_edge("skill_eval", "finalizer")
     graph.add_edge("finalizer", END)
 
     return graph
+
+
+MAX_EVAL_REPAIR_ATTEMPTS = 2
+
+
+def _route_after_eval(state: CouncilState) -> str:
+    """Eval verdict drives repair: blocking failures route back to the repair
+    node (bounded), clean or exhausted runs proceed to finalization. Uses the
+    LATEST eval result per skill — eval_results is append-only across loops."""
+    latest: dict[str, str] = {}
+    for result in state.get("eval_results") or []:
+        latest[result.skill_name] = result.status
+    any_failed = any(status == "failed" for status in latest.values())
+    attempts = state.get("eval_repair_attempts", 0)
+    if any_failed and attempts < MAX_EVAL_REPAIR_ATTEMPTS:
+        return "repair"
+    return "finalizer"
 
 
 def open_checkpointer(db_path: Path) -> AsyncSqliteSaver:

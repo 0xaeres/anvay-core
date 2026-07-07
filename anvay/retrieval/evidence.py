@@ -359,6 +359,19 @@ async def retrieve_evidence(
         # Reflect actual budget state after the stage ran, not just pre-skip decisions.
         if _over_budget():
             plan.budget_exceeded = True
+    if not _over_budget():
+        siblings, sibling_trace = await sibling_candidates(
+            ctx=ctx,
+            product_id=product_id,
+            candidates=merged,
+            top_k=top_k,
+        )
+        if siblings:
+            trace.extend(sibling_trace)
+            merged = merge_candidates(
+                [*merged, *siblings], understanding=understanding, top_k=top_k
+            )
+            coverage = assess_coverage(understanding, merged)
     plan.coverage = coverage
     plan.graph_paths = _ordered_unique(
         str(candidate.metadata.get("graph_path") or "")
@@ -561,6 +574,37 @@ async def repo_map_candidates(
     return out, [RetrievalTrace(channel="repo_map", query=query, hits=len(out))], False
 
 
+def _neighbor_chunk_ids_from_hits(hits: list[dict]) -> list[str] | None:
+    """Collect depth-1 neighbor chunk ids from seed payloads.
+
+    Returns None when no seed hit carries the `neighbor_chunk_ids` field (old
+    points → caller falls back to FalkorDB traverse). Returns a (possibly
+    empty) deduped list when at least one seed carries it — an empty list is a
+    valid "no neighbors" answer, distinct from the field being absent."""
+    found = False
+    ids: list[str] = []
+    for hit in hits:
+        payload = hit.get("payload") or {}
+        if "neighbor_chunk_ids" in payload:
+            found = True
+            ids.extend(payload.get("neighbor_chunk_ids") or [])
+    if not found:
+        return None
+    return _ordered_unique(ids)
+
+
+def _dedupe_graph_hits(hits: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    out: list[dict] = []
+    for hit in hits:
+        hid = str(hit.get("id"))
+        if hid in seen:
+            continue
+        seen.add(hid)
+        out.append(hit)
+    return out
+
+
 async def graph_local_candidates(
     *,
     ctx: RetrievalContext,
@@ -586,6 +630,53 @@ async def graph_local_candidates(
         return [], [RetrievalTrace(channel="graph", query=" ".join(understanding.anchors), hits=0)], False
 
     edge_types = _edge_types_for(understanding)
+
+    # Item 16: depth-1 fast path. Seed chunk payloads carry precomputed
+    # intra-resource `neighbor_chunk_ids` (pipeline._graph_payload_metadata),
+    # so we can retrieve neighbors directly and skip the FalkorDB traverse.
+    # Falls back to traverse below when the field is absent on all seed
+    # payloads (old points) or when depth >= 2 (cross-resource / multi-hop).
+    if max_depth <= 1:
+        seed_hits = await ctx.indexer.search_by_graph_nodes(
+            product_id=product_id,
+            graph_node_ids=seed_ids[:40],
+            top_k=limit,
+        )
+        neighbor_ids = _neighbor_chunk_ids_from_hits(seed_hits)
+        if neighbor_ids is not None:
+            neighbor_hits = (
+                await ctx.indexer.chunks_by_ids(
+                    product_id=product_id, chunk_ids=neighbor_ids, limit=limit
+                )
+                if neighbor_ids
+                else []
+            )
+            raw = _dedupe_graph_hits([*seed_hits, *neighbor_hits])
+            out = []
+            for item in raw[:limit]:
+                candidate = _candidate_from_hit(
+                    Hit(
+                        id=str(item["id"]),
+                        score=float(item.get("score") or 1.0),
+                        payload=item.get("payload") or {},
+                        source="graph",
+                    ),
+                    channel="graph",
+                )
+                candidate.metadata["graph_seed_ids"] = seed_ids[:8]
+                candidate.metadata["edge_types"] = edge_types
+                candidate.metadata["graph_neighbor_source"] = "payload"
+                out.append(candidate)
+            trace = [
+                RetrievalTrace(
+                    channel="graph",
+                    query=" ".join(understanding.anchors),
+                    hits=len(out),
+                    detail="depth-1 neighbor payload",
+                )
+            ]
+            return out, trace, False
+
     traversal = await graph_store.traverse(
         product_id=product_id,
         seed_ids=seed_ids[:8],
@@ -634,6 +725,7 @@ async def graph_local_candidates(
             channel="graph",
         )
         candidate.score = _graph_hit_rank(item, rank_by_id)
+        candidate.metadata["graph_proximity"] = _graph_proximity(item, rank_by_id)
         candidate.metadata["graph_seed_ids"] = seed_ids[:8]
         candidate.metadata["edge_types"] = edge_types
         candidate.metadata["graph_edge_count"] = len(traversal_edges)
@@ -923,6 +1015,56 @@ async def repair_missing_facets(
     return additions, trace
 
 
+async def sibling_candidates(
+    *,
+    ctx: RetrievalContext,
+    product_id: str,
+    candidates: list[EvidenceCandidate],
+    top_k: int,
+    max_symbols: int = 4,
+) -> tuple[list[EvidenceCandidate], list[RetrievalTrace]]:
+    """Pull sibling chunks that share a symbol_id with the top candidates —
+    e.g. the doc-comment spill chunk when the declaration chunk hit (or vice
+    versa). One batched Qdrant scroll; no-op when payloads predate symbol_id."""
+    if not hasattr(ctx, "indexer") or not hasattr(ctx.indexer, "chunks_by_symbol_ids"):
+        return [], []
+    seen_ids = {c.chunk_id for c in candidates}
+    symbol_ids = _ordered_unique(
+        str(c.metadata.get("symbol_id") or "")
+        for c in candidates[: max(top_k // 2, 3)]
+        if c.metadata.get("symbol_id")
+    )[:max_symbols]
+    if not symbol_ids:
+        return [], []
+    score_by_symbol: dict[str, float] = {}
+    for c in candidates:
+        sym = str(c.metadata.get("symbol_id") or "")
+        if sym in symbol_ids:
+            score_by_symbol[sym] = max(score_by_symbol.get(sym, 0.0), c.score)
+    try:
+        hits = await ctx.indexer.chunks_by_symbol_ids(
+            product_id=product_id, symbol_ids=symbol_ids
+        )
+    except Exception as e:
+        return [], [
+            RetrievalTrace(channel="sibling", query="", hits=0, detail=str(e))
+        ]
+    out: list[EvidenceCandidate] = []
+    for hit in hits:
+        if hit["id"] in seen_ids:
+            continue
+        payload = hit["payload"]
+        sym = str(payload.get("symbol_id") or "")
+        parent_score = score_by_symbol.get(sym, 0.0)
+        candidate = _candidate_from_hit(
+            Hit(id=hit["id"], score=max(parent_score - 0.05, 0.0), source="sibling", payload=payload),
+            channel="hybrid",
+        )
+        candidate.metadata["sibling_of"] = sym
+        out.append(candidate)
+    return out, [RetrievalTrace(channel="sibling", query="", hits=len(out))]
+
+
 def _candidate_from_hit(hit: Hit, *, channel: EvidenceChannel) -> EvidenceCandidate:
     payload = hit.payload or {}
     file = str(payload.get("resource_uri") or "")
@@ -951,6 +1093,7 @@ def _candidate_from_hit(hit: Hit, *, channel: EvidenceChannel) -> EvidenceCandid
             "source": hit.source,
             "kind": payload.get("kind"),
             "artifact_type": payload.get("artifact_type"),
+            "symbol_id": payload.get("symbol_id"),
         },
     )
 
@@ -996,7 +1139,29 @@ def _role_for(*, file: str, context_path: str | None, content: str, source: str)
     return "definition"
 
 
+# Facet → edge-type whitelist. Narrowing traversal to the facets the query asks
+# about keeps high-degree hub edges (MENTIONS/RELATED_TO) out of unrelated
+# queries, cutting traversal fan-out and irrelevant neighbors.
+_FACET_EDGE_TYPES: dict[str, list[str]] = {
+    "definition": ["DECLARES", "CONTAINS", "IMPLEMENTS"],
+    "relationship": ["CALLS", "IMPORTS", "DEPENDS_ON", "HANDLES", "READS", "WRITES"],
+    "validation": ["COVERS", "CONSTRAINS", "DOCUMENTS"],
+    "overview": ["CONTAINS", "DECLARES", "DOCUMENTS", "EXPOSES"],
+    "implementation": ["CALLS", "DECLARES", "CONTAINS", "HANDLES"],
+    "source": ["CONTAINS", "DECLARES", "DOCUMENTS"],
+}
+
+
 def _edge_types_for(understanding: QueryUnderstanding) -> list[str]:
+    # Prefer facet-driven whitelists when the query classifier produced facets;
+    # fall back to the shape-based defaults otherwise.
+    facet_edges = _ordered_unique(
+        edge
+        for facet in understanding.facets
+        for edge in _FACET_EDGE_TYPES.get(facet, [])
+    )
+    if facet_edges:
+        return facet_edges
     if understanding.shape == "relational":
         return ["IMPORTS", "CALLS", "DEPENDS_ON", "HANDLES", "READS", "WRITES", "DECLARES", "CONTAINS"]
     if understanding.shape == "global":
@@ -1104,6 +1269,18 @@ def _graph_hit_rank(item: dict, rank_by_id: dict[str, float]) -> float:
     return float(item.get("score") or 0.0) + graph_score + artifact_boost
 
 
+# Seed nodes are ranked 10.0 in _graph_rank_by_id; normalize proximity to that
+# so a chunk sitting on a seed entity scores ~1.0 and distant neighbors decay.
+_GRAPH_SEED_RANK = 10.0
+
+
+def _graph_proximity(item: dict, rank_by_id: dict[str, float]) -> float:
+    payload = item.get("payload") or {}
+    ids = list(payload.get("graph_node_ids") or [])
+    best = max((rank_by_id.get(gid, 0.0) for gid in ids), default=0.0)
+    return max(0.0, min(best / _GRAPH_SEED_RANK, 1.0))
+
+
 def _take_channel(
     candidates: Sequence[EvidenceCandidate], channel: EvidenceChannel, count: int
 ) -> list[EvidenceCandidate]:
@@ -1125,7 +1302,17 @@ def _candidate_rank(candidate: EvidenceCandidate) -> float:
     # 0-1 reranker score) lifts the canonical class above same-prefix impl chunks
     # without overriding a clearly-more-relevant result.
     anchor_bonus = 0.5 if candidate.metadata.get("filename_anchor_match") else 0.0
-    return candidate.score + anchor_bonus + _channel_weight(candidate.channel) + _role_weight(candidate.role)
+    # Graph proximity is a tie-breaker in the same <0.2 band as channel weights:
+    # a chunk on/near a resolved seed entity edges ahead of a distant one without
+    # overriding the reranker's relevance score. Max +0.06 (below grep's 0.16).
+    proximity_bonus = 0.06 * float(candidate.metadata.get("graph_proximity") or 0.0)
+    return (
+        candidate.score
+        + anchor_bonus
+        + proximity_bonus
+        + _channel_weight(candidate.channel)
+        + _role_weight(candidate.role)
+    )
 
 
 def _basename_stem(uri: str) -> str:

@@ -140,9 +140,22 @@ class GraphIngestionCfg(BaseModel):
     confidence_floor: float = Field(0.65, ge=0.0, le=1.0)
 
 
+class OrphanSweepCfg(BaseModel):
+    """Reverse reconciliation: delete Qdrant points no manifest row claims.
+
+    Off by default, and dry-run by default when enabled. The sweep only ever
+    considers raw resource chunks (artifact_type code/doc); skill chunks and
+    synthetic summaries are always exempt."""
+
+    enabled: bool = False
+    dry_run: bool = True
+    grace_minutes: int = 60
+
+
 class IngestionCfg(BaseModel):
     enrich_chunks: EnrichCfg = Field(default_factory=EnrichCfg)
     graph: GraphIngestionCfg = Field(default_factory=GraphIngestionCfg)
+    orphan_sweep: OrphanSweepCfg = Field(default_factory=OrphanSweepCfg)
     embed_batch_size: int = 32
     quality_gate_threshold: float = 0.0
     file_batch_size: int = 50

@@ -174,3 +174,93 @@ def test_registry_source_encryption(registry: Registry, monkeypatch) -> None:
         config_data = row["config_js"]
         assert "enc:" in config_data
         assert "my-ultra-secret-token" not in config_data
+
+
+def test_index_status_columns_added_to_legacy_db(tmp_path: Path) -> None:
+    import sqlite3
+
+    db = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE source_resources (
+            product_id TEXT NOT NULL, source_key TEXT NOT NULL,
+            resource_uri TEXT NOT NULL, content_hash TEXT NOT NULL,
+            mime TEXT NOT NULL DEFAULT '', size_bytes INTEGER,
+            last_seen_sync TEXT NOT NULL, chunk_ids_js TEXT NOT NULL DEFAULT '[]',
+            indexed_at TEXT NOT NULL, embedding_version TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (product_id, source_key, resource_uri)
+        )"""
+    )
+    conn.commit()
+    conn.close()
+
+    reg = Registry(db)
+    with reg._conn() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(source_resources)")}
+    assert "index_status" in cols
+    assert "index_status_at" in cols
+
+
+def test_index_status_roundtrip_and_stuck_query(registry: Registry) -> None:
+    row = {
+        "product": "demo",
+        "sourceKey": "local:test",
+        "resourceUri": "a.py",
+        "contentHash": "h1",
+        "lastSeenSync": "s1",
+        "indexedAt": "2026-07-06T00:00:00+00:00",
+        "indexStatus": "pending",
+        "indexStatusAt": "2026-07-06T00:00:00+00:00",
+    }
+    registry.upsert_resource_manifest(row)
+
+    got = registry.get_resource_manifest("demo", "local:test", "a.py")
+    assert got["indexStatus"] == "pending"
+
+    stuck = registry.list_stuck_index_pending(
+        "demo", older_than_iso="2026-07-06T01:00:00+00:00"
+    )
+    assert [r["resourceUri"] for r in stuck] == ["a.py"]
+
+    # Not stuck when cutoff is before the pending mark.
+    assert (
+        registry.list_stuck_index_pending(
+            "demo", older_than_iso="2026-07-05T00:00:00+00:00"
+        )
+        == []
+    )
+
+    registry.update_resource_index_status(
+        "demo", "local:test", "a.py", status="indexed", at="2026-07-06T02:00:00+00:00"
+    )
+    assert (
+        registry.list_stuck_index_pending(
+            "demo", older_than_iso="2026-07-07T00:00:00+00:00"
+        )
+        == []
+    )
+
+
+def test_mark_index_pending_inserts_stub_for_new_resource(registry: Registry) -> None:
+    registry.mark_resource_index_pending(
+        "demo", "local:test", "new.py", at="2026-07-06T00:00:00+00:00"
+    )
+    got = registry.get_resource_manifest("demo", "local:test", "new.py")
+    assert got is not None
+    assert got["indexStatus"] == "pending"
+
+    # Pre-migration rows (index_status = '') are never treated as stuck.
+    registry.upsert_resource_manifest(
+        {
+            "product": "demo",
+            "sourceKey": "local:test",
+            "resourceUri": "old.py",
+            "contentHash": "h",
+            "lastSeenSync": "s",
+            "indexedAt": "2020-01-01T00:00:00+00:00",
+        }
+    )
+    stuck = registry.list_stuck_index_pending(
+        "demo", older_than_iso="2027-01-01T00:00:00+00:00"
+    )
+    assert [r["resourceUri"] for r in stuck] == ["new.py"]

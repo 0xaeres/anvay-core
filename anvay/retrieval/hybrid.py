@@ -30,20 +30,27 @@ def rrf_merge(
     *,
     k: int = RRF_K,
     top_k: int = 20,
+    weights: list[float] | None = None,
 ) -> list[Hit]:
     """Merge multiple ranked lists via Reciprocal Rank Fusion.
 
-    For each item appearing in any input ranking, sum 1/(k+rank) across rankings.
-    Returns the top_k by fused score, with payload taken from the first ranking
-    that contributed the item.
+    For each item appearing in any input ranking, sum weight/(k+rank) across
+    rankings. `weights` (one per ranking, default all 1.0) lets the caller bias
+    fusion toward dense or sparse based on query shape. Returns the top_k by
+    fused score, with payload from the first ranking that contributed the item.
     """
+    if weights is not None and len(weights) != len(rankings):
+        raise ValueError(
+            f"weights length {len(weights)} != rankings length {len(rankings)}"
+        )
     fused: dict[str, float] = {}
     payloads: dict[str, dict] = {}
     sources: dict[str, set[str]] = {}
 
-    for ranking in rankings:
+    for idx, ranking in enumerate(rankings):
+        weight = 1.0 if weights is None else weights[idx]
         for rank, hit in enumerate(ranking, start=1):
-            fused[hit.id] = fused.get(hit.id, 0.0) + 1.0 / (k + rank)
+            fused[hit.id] = fused.get(hit.id, 0.0) + weight / (k + rank)
             if hit.id not in payloads:
                 payloads[hit.id] = hit.payload
             sources.setdefault(hit.id, set()).add(hit.source)

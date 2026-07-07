@@ -196,3 +196,42 @@ async def test_falkordb_store_contract_live() -> None:
         await store.delete_product(product_id=product_id)
     finally:
         await store.aclose()
+
+
+@pytest.mark.asyncio
+async def test_traverse_uses_directed_arrow_for_directional_types() -> None:
+    """All-directional edge types → outward `->` pattern; mixed → undirected."""
+
+    class _CapturingGraph:
+        def __init__(self):
+            self.queries: list[str] = []
+
+        async def ro_query(self, query, params, timeout=None):
+            self.queries.append(query)
+            return FakeQueryResult([])
+
+    cfg = GraphStoreCfg(host="x", graph_prefix="anvay_test")
+    store = FalkorGraphStore(cfg)
+    fake = _CapturingGraph()
+    store._graph = lambda product_id: fake  # type: ignore[assignment]
+
+    async def _noop_schema(product_id):
+        return None
+
+    store._ensure_product_schema = _noop_schema  # type: ignore[assignment]
+
+    await store.traverse(
+        product_id="p", seed_ids=["s1"], edge_types=["CALLS", "IMPORTS"], max_depth=2
+    )
+    assert fake.queries[-1].rstrip().count("]->(n)") == 1
+
+    await store.traverse(
+        product_id="p", seed_ids=["s1"], edge_types=["CALLS", "CONTAINS"], max_depth=2
+    )
+    # Mixed directional + structural → undirected close.
+    assert "]-(n)" in fake.queries[-1] and "]->(n)" not in fake.queries[-1]
+
+    await store.traverse(
+        product_id="p", seed_ids=["s1"], edge_types=["CALLS", "IMPORTS"], max_depth=2
+    )
+    assert ":CALLS|IMPORTS" in fake.queries[-1]

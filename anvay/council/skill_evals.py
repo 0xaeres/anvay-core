@@ -36,6 +36,8 @@ async def evaluate_skill_draft(
     chat: object,
     attempt: int = 0,
     signals_used: Sequence[str] = (),
+    indexer: object | None = None,
+    product_id: str = "",
 ) -> SkillEvalResult:
     failures: list[str] = []
     passed_checks = 0
@@ -85,6 +87,19 @@ async def evaluate_skill_draft(
     deterministic_score = passed_checks / total_checks
     quality_score = max(0.0, min(1.0, deterministic_score))
     signals = list(signals_used)
+
+    # Deterministic citation verifier (no LLM): every `[file: path:line]` must
+    # point at a real indexed chunk covering that line, and the cited claim must
+    # share a token with the chunk. Adds blocking failures (repairable) — fully
+    # free, zero variance. Fail-soft when the indexer is unavailable (tests,
+    # offline runs).
+    anchor_failures = await _anchor_verification_failures(
+        draft=draft, indexer=indexer, product_id=product_id
+    )
+    if anchor_failures:
+        failures.extend(anchor_failures)
+        signals.append("anchor_verification")
+
     faithfulness_failures = await _faithfulness_failures(draft=draft, evidence=evidence, chat=chat)
     if faithfulness_failures:
         failures.extend(faithfulness_failures)
@@ -198,6 +213,92 @@ async def _faithfulness_failures(
         if i in by_id
     ]
     return failures[:_MAX_FAITHFULNESS_CLAIMS]
+
+
+async def _anchor_verification_failures(
+    *,
+    draft: SkillDraft,
+    indexer: object | None,
+    product_id: str,
+) -> list[str]:
+    """Deterministic: each cited (file, line) must land inside a real indexed
+    chunk, and the citing sentence must share ≥1 identifier token or ≥2 content
+    tokens with that chunk. Fail-soft when the indexer can't be queried."""
+    fetch = getattr(indexer, "chunks_at_anchors", None)
+    if not callable(fetch) or not product_id:
+        return []
+    citations = _parse_body_citations(draft.body)
+    if not citations:
+        return []
+    files = [file_ for file_, _line, _claim in citations]
+    try:
+        chunks_by_file = await fetch(product_id=product_id, resource_uris=files)
+    except Exception as e:  # fail-soft
+        log.warning("anchor verification unavailable for skill %s: %s", draft.name, e)
+        return []
+    failures: list[str] = []
+    for file_, line, claim in citations:
+        rows = chunks_by_file.get(file_) or []
+        covering = [
+            r
+            for r in rows
+            if _as_int(r.get("start_line")) <= line <= _as_int(r.get("end_line"), default=line)
+        ]
+        if not covering:
+            failures.append(
+                f"Citation anchor invalid: `[file: {file_}:{line}]` does not match any "
+                f"indexed chunk (line out of range or file not indexed)."
+            )
+            continue
+        if claim and not _claim_overlaps_chunk(claim, covering):
+            failures.append(
+                f"Citation weak: claim near `[file: {file_}:{line}]` shares no key term "
+                f"with the cited chunk."
+            )
+    return failures[:5]
+
+
+def _parse_body_citations(body: str) -> list[tuple[str, int, str]]:
+    out: list[tuple[str, int, str]] = []
+    seen: set[tuple[str, int]] = set()
+    for line in body.splitlines():
+        match = _CITATION_RE.search(line)
+        if not match:
+            continue
+        file_ = match.group(1).strip()
+        try:
+            anchor_line = int(match.group(2))
+        except ValueError:
+            continue
+        if (file_, anchor_line) in seen:
+            continue
+        seen.add((file_, anchor_line))
+        claim = _CITATION_RE.sub("", line).strip(" -*0123456789.\t")
+        out.append((file_, anchor_line, claim))
+    return out
+
+
+def _claim_overlaps_chunk(claim: str, chunks: Sequence[dict]) -> bool:
+    haystack = " ".join(
+        f"{c.get('content') or ''} {c.get('context_path') or ''} {c.get('signature') or ''}"
+        for c in chunks
+    ).lower()
+    hay_tokens = set(_tokens(haystack))
+    claim_tokens = _tokens(claim)
+    # An identifier-ish token (camelCase/snake_case or long word) is strong signal.
+    idents = [t for t in claim_tokens if len(t) >= 6 or "_" in t]
+    if any(t in hay_tokens for t in idents):
+        return True
+    content_tokens = [t for t in claim_tokens if len(t) >= 4]
+    overlap = sum(1 for t in content_tokens if t in hay_tokens)
+    return overlap >= 2
+
+
+def _as_int(value: object, *, default: int = 0) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
 
 
 def _parse_unsupported_ids(content: str) -> list[int]:

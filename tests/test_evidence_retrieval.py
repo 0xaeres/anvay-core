@@ -477,3 +477,262 @@ async def test_retrieve_evidence_combines_hybrid_grep_repomap_graph_and_skills(
     assert {c.channel for c in result.candidates} >= {"hybrid", "grep", "repo_map", "graph", "skill"}
     assert any(c.file == "ENGINEERING.md" for c in result.candidates)
     assert any(c.file == "anvay/ingest/chunker.py" for c in result.candidates)
+
+
+@pytest.mark.asyncio
+async def test_sibling_candidates_pull_doc_spill_for_declaration_hit() -> None:
+    from anvay.retrieval.evidence import EvidenceCandidate, sibling_candidates
+
+    class SymbolIndexer:
+        def __init__(self):
+            self.requested: list[list[str]] = []
+
+        async def chunks_by_symbol_ids(self, *, product_id, symbol_ids, limit_per_symbol=4):
+            self.requested.append(list(symbol_ids))
+            return [
+                {
+                    "id": "spill-1",
+                    "payload": {
+                        "resource_uri": "widget.rs",
+                        "start_line": 2,
+                        "end_line": 12,
+                        "content": "Detail paragraphs about frobnication edge cases.",
+                        "context_path": "frobnicate_widget",
+                        "symbol_id": "sym-a",
+                        "kind": "doc",
+                    },
+                },
+                {
+                    "id": "decl-1",  # already in the merged set — must be skipped
+                    "payload": {"symbol_id": "sym-a"},
+                },
+            ]
+
+    indexer = SymbolIndexer()
+    ctx = SimpleNamespace(indexer=indexer)
+    merged = [
+        EvidenceCandidate(
+            chunk_id="decl-1",
+            channel="hybrid",
+            role="definition",
+            score=0.9,
+            file="widget.rs",
+            line=14,
+            excerpt="pub fn frobnicate_widget(...)",
+            metadata={"symbol_id": "sym-a"},
+        ),
+        EvidenceCandidate(
+            chunk_id="other",
+            channel="grep",
+            role="implementation",
+            score=0.5,
+            file="other.rs",
+            line=1,
+            excerpt="unrelated",
+            metadata={},
+        ),
+    ]
+
+    siblings, trace = await sibling_candidates(
+        ctx=ctx, product_id="demo", candidates=merged, top_k=10
+    )
+
+    assert indexer.requested == [["sym-a"]]
+    assert [s.chunk_id for s in siblings] == ["spill-1"]
+    sib = siblings[0]
+    assert sib.metadata["sibling_of"] == "sym-a"
+    # Scored just under the parent so it never outranks the direct hit.
+    assert sib.score == pytest.approx(0.85)
+    assert trace and trace[0].hits == 1
+
+
+@pytest.mark.asyncio
+async def test_sibling_candidates_noop_without_symbol_ids() -> None:
+    from anvay.retrieval.evidence import EvidenceCandidate, sibling_candidates
+
+    class SymbolIndexer:
+        async def chunks_by_symbol_ids(self, **kwargs):
+            raise AssertionError("must not be called")
+
+    ctx = SimpleNamespace(indexer=SymbolIndexer())
+    merged = [
+        EvidenceCandidate(
+            chunk_id="old-point",
+            channel="hybrid",
+            role="definition",
+            score=0.9,
+            file="a.py",
+            line=1,
+            excerpt="x",
+            metadata={},  # pre-symbol_id payload
+        )
+    ]
+    siblings, trace = await sibling_candidates(
+        ctx=ctx, product_id="demo", candidates=merged, top_k=10
+    )
+    assert siblings == []
+    assert trace == []
+
+
+def test_edge_types_for_uses_facet_whitelist() -> None:
+    from anvay.retrieval.evidence import QueryUnderstanding, _edge_types_for
+
+    u = QueryUnderstanding(query="q", shape="relational", facets=["relationship"])
+    edges = _edge_types_for(u)
+    assert "CALLS" in edges and "DEPENDS_ON" in edges
+    # High-degree hub types excluded from a focused relationship query.
+    assert "MENTIONS" not in edges and "RELATED_TO" not in edges
+
+
+def test_edge_types_for_falls_back_to_shape_without_facets() -> None:
+    from anvay.retrieval.evidence import QueryUnderstanding, _edge_types_for
+
+    u = QueryUnderstanding(query="q", shape="global", facets=[])
+    assert _edge_types_for(u) == [
+        "CONTAINS", "DECLARES", "DOCUMENTS", "COVERS", "IMPLEMENTS", "RELATED_TO"
+    ]
+
+
+def test_graph_proximity_normalizes_to_seed_rank() -> None:
+    from anvay.retrieval.evidence import _graph_proximity
+
+    rank_by_id = {"seed": 10.0, "near": 5.0, "far": 1.0}
+    assert _graph_proximity({"payload": {"graph_node_ids": ["seed"]}}, rank_by_id) == 1.0
+    assert _graph_proximity({"payload": {"graph_node_ids": ["near"]}}, rank_by_id) == 0.5
+    assert _graph_proximity({"payload": {"graph_node_ids": ["far"]}}, rank_by_id) == 0.1
+    assert _graph_proximity({"payload": {}}, rank_by_id) == 0.0
+
+
+def test_candidate_rank_adds_bounded_proximity_bonus() -> None:
+    from anvay.retrieval.evidence import EvidenceCandidate, _candidate_rank
+
+    base = EvidenceCandidate(
+        chunk_id="c", channel="graph", role="relationship", score=0.5, file="a.py", line=1
+    )
+    near = base.model_copy(update={"metadata": {"graph_proximity": 1.0}})
+    far = base.model_copy(update={"metadata": {"graph_proximity": 0.0}})
+    delta = _candidate_rank(near) - _candidate_rank(far)
+    assert abs(delta - 0.06) < 1e-9  # max bonus, inside the <0.2 tie-breaker band
+
+
+def _understanding(anchor: str) -> evidence.QueryUnderstanding:
+    return evidence.QueryUnderstanding(query=anchor, shape="local", anchors=[anchor])
+
+
+def _seed_node(product_id: str) -> GraphNode:
+    return GraphNode(
+        product_id=product_id,
+        stable_id="n-seed",
+        labels=["Symbol"],
+        properties={"resource_uri": "app.py"},
+        last_seen="2026-01-01T00:00:00+00:00",
+    )
+
+
+@pytest.mark.asyncio
+async def test_graph_local_depth1_uses_neighbor_payload_without_traverse() -> None:
+    """Depth-1 reads neighbor_chunk_ids from seed payloads and fetches them
+    directly; graph_store.traverse is never called."""
+    traverse_called = False
+
+    class FakeGraph:
+        async def resolve_entity(self, *, product_id, mention, limit):
+            return GraphQueryResult(nodes=[_seed_node(product_id)])
+
+        async def traverse(self, **kwargs):
+            nonlocal traverse_called
+            traverse_called = True
+            return GraphQueryResult()
+
+    class FakeIndexer:
+        async def search_by_graph_nodes(self, **kwargs):
+            return [
+                {
+                    "id": "seed-1",
+                    "score": 1.0,
+                    "payload": {
+                        "product_id": "p",
+                        "resource_uri": "app.py",
+                        "start_line": 1,
+                        "content": "def seed(): ...",
+                        "neighbor_chunk_ids": ["nb-1"],
+                    },
+                }
+            ]
+
+        async def chunks_by_ids(self, *, product_id, chunk_ids, limit=None):
+            assert chunk_ids == ["nb-1"]
+            return [
+                {
+                    "id": "nb-1",
+                    "score": 1.0,
+                    "payload": {
+                        "product_id": "p",
+                        "resource_uri": "app.py",
+                        "start_line": 10,
+                        "content": "def neighbor(): ...",
+                    },
+                }
+            ]
+
+    ctx = SimpleNamespace(indexer=FakeIndexer())
+    out, trace, _ = await evidence.graph_local_candidates(
+        ctx=ctx,
+        graph_store=FakeGraph(),
+        product_id="p",
+        understanding=_understanding("seed"),
+        max_depth=1,
+        limit=8,
+    )
+
+    assert traverse_called is False
+    ids = {c.chunk_id for c in out}
+    assert ids == {"seed-1", "nb-1"}
+    assert all(c.metadata.get("graph_neighbor_source") == "payload" for c in out)
+    assert trace[0].detail == "depth-1 neighbor payload"
+
+
+@pytest.mark.asyncio
+async def test_graph_local_falls_back_to_traverse_when_neighbor_field_absent() -> None:
+    """Old points lacking neighbor_chunk_ids fall through to FalkorDB traverse."""
+    traverse_called = False
+
+    class FakeGraph:
+        async def resolve_entity(self, *, product_id, mention, limit):
+            return GraphQueryResult(nodes=[_seed_node(product_id)])
+
+        async def traverse(self, **kwargs):
+            nonlocal traverse_called
+            traverse_called = True
+            return GraphQueryResult()
+
+    class FakeIndexer:
+        async def search_by_graph_nodes(self, **kwargs):
+            return [
+                {
+                    "id": "seed-1",
+                    "score": 1.0,
+                    "payload": {
+                        "product_id": "p",
+                        "resource_uri": "app.py",
+                        "start_line": 1,
+                        "content": "def seed(): ...",
+                    },
+                }
+            ]
+
+        async def chunks_by_ids(self, *, product_id, chunk_ids, limit=None):
+            raise AssertionError("payload path must not run when field absent")
+
+    ctx = SimpleNamespace(indexer=FakeIndexer())
+    out, _trace, _ = await evidence.graph_local_candidates(
+        ctx=ctx,
+        graph_store=FakeGraph(),
+        product_id="p",
+        understanding=_understanding("seed"),
+        max_depth=1,
+        limit=8,
+    )
+
+    assert traverse_called is True
+    assert {c.chunk_id for c in out} == {"seed-1"}

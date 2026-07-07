@@ -145,6 +145,7 @@ class Indexer:
         citation_anchor_by_id: dict[str, str] | None = None,
         graph_extraction_version_by_id: dict[str, str] | None = None,
         artifact_type_by_id: dict[str, str] | None = None,
+        neighbor_chunk_ids_by_id: dict[str, list[str]] | None = None,
         embedding_version: str | None = None,
         indexed_at: str | None = None,
     ) -> int:
@@ -159,6 +160,7 @@ class Indexer:
         citation_anchor_by_id = citation_anchor_by_id or {}
         graph_extraction_version_by_id = graph_extraction_version_by_id or {}
         artifact_type_by_id = artifact_type_by_id or {}
+        neighbor_chunk_ids_by_id = neighbor_chunk_ids_by_id or {}
         buckets: dict[tuple[str, str], list[qm.PointStruct]] = {}
         for ec in embedded:
             coll = self._code if ec.vector_name == "dense_code" else self._text
@@ -173,6 +175,7 @@ class Indexer:
                 citation_anchor=citation_anchor_by_id.get(ec.chunk.id),
                 graph_extraction_version=graph_extraction_version_by_id.get(ec.chunk.id),
                 artifact_type=artifact_type_by_id.get(ec.chunk.id),
+                neighbor_chunk_ids=neighbor_chunk_ids_by_id.get(ec.chunk.id),
                 embedding_version=embedding_version,
                 indexed_at=indexed_at,
             )
@@ -225,6 +228,7 @@ class Indexer:
         citation_anchor_by_id: dict[str, str] | None = None,
         graph_extraction_version_by_id: dict[str, str] | None = None,
         artifact_type_by_id: dict[str, str] | None = None,
+        neighbor_chunk_ids_by_id: dict[str, list[str]] | None = None,
     ) -> int:
         """Patch graph-derived payload metadata without rewriting vectors."""
         graph_node_ids_by_id = graph_node_ids_by_id or {}
@@ -233,6 +237,7 @@ class Indexer:
         citation_anchor_by_id = citation_anchor_by_id or {}
         graph_extraction_version_by_id = graph_extraction_version_by_id or {}
         artifact_type_by_id = artifact_type_by_id or {}
+        neighbor_chunk_ids_by_id = neighbor_chunk_ids_by_id or {}
 
         updated = 0
         for chunk in chunks:
@@ -249,6 +254,8 @@ class Indexer:
                 payload["graph_extraction_version"] = graph_extraction_version_by_id[chunk.id]
             if chunk.id in artifact_type_by_id:
                 payload["artifact_type"] = artifact_type_by_id[chunk.id]
+            if chunk.id in neighbor_chunk_ids_by_id:
+                payload["neighbor_chunk_ids"] = neighbor_chunk_ids_by_id[chunk.id]
             if not payload:
                 continue
             collection = self._code if chunk.kind.value == "code" else self._text
@@ -387,6 +394,27 @@ class Indexer:
             for pt in result.points
         ]
 
+    async def existing_point_ids(
+        self, ids: Sequence[str], *, batch_size: int = 500
+    ) -> set[str]:
+        """Which of `ids` actually exist (in either collection). For manifest reconciliation."""
+        unique_ids = sorted(set(ids))
+        found: set[str] = set()
+        for coll in (self._code, self._text):
+            for i in range(0, len(unique_ids), batch_size):
+                batch = unique_ids[i : i + batch_size]
+                points = await self._retry_qdrant(
+                    f"retrieve:{coll}",
+                    lambda coll=coll, batch=batch: self.client.retrieve(
+                        collection_name=coll,
+                        ids=batch,
+                        with_payload=False,
+                        with_vectors=False,
+                    ),
+                )
+                found.update(str(p.id) for p in points)
+        return found
+
     async def count(self, *, product_id: str, vector_kind: str) -> int:
         coll = self._code if vector_kind == "code" else self._text
         res = await self._retry_qdrant(
@@ -439,46 +467,186 @@ class Indexer:
             if offset is None:
                 break
 
+    async def ids_by_resource(
+        self, *, product_id: str, resource_uri: str
+    ) -> dict[str, list[str]]:
+        """All point IDs for a resource, keyed by collection name. Paginates the
+        scroll so resources with >1024 points are fully covered."""
+        resource_filter = qm.Filter(
+            must=[
+                qm.FieldCondition(
+                    key="product_id", match=qm.MatchValue(value=product_id)
+                ),
+                qm.FieldCondition(
+                    key="resource_uri",
+                    match=qm.MatchValue(value=resource_uri),
+                ),
+            ]
+        )
+        found: dict[str, list[str]] = {}
+        for coll in (self._code, self._text):
+            ids: list[str] = []
+            offset = None
+            while True:
+                scrolled, offset = await self._retry_qdrant(
+                    f"scroll_resource_ids:{coll}",
+                    lambda coll=coll, offset=offset: self.client.scroll(
+                        collection_name=coll,
+                        scroll_filter=resource_filter,
+                        limit=1024,
+                        offset=offset,
+                        with_payload=False,
+                        with_vectors=False,
+                    ),
+                )
+                ids.extend(str(pt.id) for pt in scrolled)
+                if offset is None:
+                    break
+            if ids:
+                found[coll] = ids
+        return found
+
+    async def chunks_at_anchors(
+        self,
+        *,
+        product_id: str,
+        resource_uris: Sequence[str],
+    ) -> dict[str, list[dict]]:
+        """All chunk payloads for the given files, grouped by resource_uri.
+
+        Callers verify (start_line ≤ line ≤ end_line) client-side — one scroll
+        per file bounds the round-trips for citation verification."""
+        out: dict[str, list[dict]] = {}
+        for uri in dict.fromkeys(resource_uris):
+            if not uri:
+                continue
+            file_filter = qm.Filter(
+                must=[
+                    qm.FieldCondition(
+                        key="product_id", match=qm.MatchValue(value=product_id)
+                    ),
+                    qm.FieldCondition(
+                        key="resource_uri", match=qm.MatchValue(value=uri)
+                    ),
+                ]
+            )
+            rows: list[dict] = []
+            for coll in (self._code, self._text):
+                offset = None
+                while True:
+                    points, offset = await self._retry_qdrant(
+                        f"scroll_anchor:{coll}",
+                        lambda coll=coll, offset=offset, flt=file_filter: self.client.scroll(
+                            collection_name=coll,
+                            scroll_filter=flt,
+                            limit=512,
+                            offset=offset,
+                            with_payload=True,
+                            with_vectors=False,
+                        ),
+                    )
+                    rows.extend((pt.payload or {}) for pt in points)
+                    if offset is None:
+                        break
+            if rows:
+                out[uri] = rows
+        return out
+
+    async def chunks_by_symbol_ids(
+        self,
+        *,
+        product_id: str,
+        symbol_ids: Sequence[str],
+        limit_per_symbol: int = 4,
+    ) -> list[dict]:
+        """All chunks sharing any of the given symbol_ids (declaration chunk,
+        doc spill, split sub-chunks). One batched scroll per collection."""
+        unique = [s for s in dict.fromkeys(symbol_ids) if s]
+        if not unique:
+            return []
+        sym_filter = qm.Filter(
+            must=[
+                qm.FieldCondition(
+                    key="product_id", match=qm.MatchValue(value=product_id)
+                ),
+                qm.FieldCondition(
+                    key="symbol_id", match=qm.MatchAny(any=list(unique))
+                ),
+            ]
+        )
+        out: list[dict] = []
+        per_symbol: dict[str, int] = {}
+        for coll in (self._code, self._text):
+            points, _ = await self._retry_qdrant(
+                f"scroll_symbols:{coll}",
+                lambda coll=coll: self.client.scroll(
+                    collection_name=coll,
+                    scroll_filter=sym_filter,
+                    limit=max(len(unique) * limit_per_symbol, 16),
+                    with_payload=True,
+                    with_vectors=False,
+                ),
+            )
+            for pt in points:
+                payload = pt.payload or {}
+                sym = str(payload.get("symbol_id") or "")
+                if per_symbol.get(sym, 0) >= limit_per_symbol:
+                    continue
+                per_symbol[sym] = per_symbol.get(sym, 0) + 1
+                out.append({"id": str(pt.id), "payload": payload})
+        return out
+
+    async def chunks_by_ids(
+        self,
+        *,
+        product_id: str,
+        chunk_ids: Sequence[str],
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Fetch chunk points by id from both collections, product-scoped.
+
+        Used by depth-1 graph-local retrieval to pull neighbor chunks named in
+        the `neighbor_chunk_ids` payload directly, without a graph traverse.
+        Ids absent from the index (e.g. stale neighbors after a neighbor
+        reindex changed its uuid5 id) are silently dropped."""
+        unique = [cid for cid in dict.fromkeys(chunk_ids) if cid]
+        if not unique:
+            return []
+        out: list[dict] = []
+        seen: set[str] = set()
+        for coll in (self._code, self._text):
+            points = await self._retry_qdrant(
+                f"retrieve_chunks:{coll}",
+                lambda coll=coll: self.client.retrieve(
+                    collection_name=coll,
+                    ids=list(unique),
+                    with_payload=True,
+                    with_vectors=False,
+                ),
+            )
+            for pt in points:
+                pid = str(pt.id)
+                payload = pt.payload or {}
+                if pid in seen or payload.get("product_id") != product_id:
+                    continue
+                seen.add(pid)
+                out.append(
+                    {"id": pid, "score": 1.0, "payload": payload, "collection": coll}
+                )
+        return out[:limit] if limit else out
+
     async def delete_by_resource(
         self, *, product_id: str, resource_uri: str
     ) -> list[str]:
         """Delete all points for a resource. Returns the deleted IDs for cache
         invalidation hooks."""
-        deleted: list[str] = []
-        for coll in (self._code, self._text):
-            # Scroll for the IDs before we delete, since `delete` doesn't echo them.
-            scrolled, _ = await self._retry_qdrant(
-                f"scroll_delete_resource:{coll}",
-                lambda coll=coll: self.client.scroll(
-                    collection_name=coll,
-                    scroll_filter=qm.Filter(
-                        must=[
-                            qm.FieldCondition(
-                                key="product_id", match=qm.MatchValue(value=product_id)
-                            ),
-                            qm.FieldCondition(
-                                key="resource_uri",
-                                match=qm.MatchValue(value=resource_uri),
-                            ),
-                        ]
-                    ),
-                    limit=1024,
-                    with_payload=False,
-                    with_vectors=False,
-                ),
-            )
-            if not scrolled:
-                continue
-            ids = [str(pt.id) for pt in scrolled]
-            deleted.extend(ids)
-            await self._retry_qdrant(
-                f"delete_resource:{coll}",
-                lambda coll=coll, scrolled=scrolled: self.client.delete(
-                    collection_name=coll,
-                    points_selector=qm.PointIdsList(points=[pt.id for pt in scrolled]),
-                ),
-            )
-        return deleted
+        buckets = await self.ids_by_resource(
+            product_id=product_id, resource_uri=resource_uri
+        )
+        if not buckets:
+            return []
+        await self.delete_points_by_ids(buckets)
+        return [pid for ids in buckets.values() for pid in ids]
 
     async def delete_by_product(self, *, product_id: str) -> dict[str, int]:
         """Delete all points for a product from code/text collections."""
@@ -580,7 +748,11 @@ class Indexer:
             "graph_node_ids": qm.PayloadSchemaType.KEYWORD,
             "entity_ids": qm.PayloadSchemaType.KEYWORD,
             "artifact_type": qm.PayloadSchemaType.KEYWORD,
+            "neighbor_chunk_ids": qm.PayloadSchemaType.KEYWORD,
             "source_ref.resource_uri": qm.PayloadSchemaType.KEYWORD,
+            "symbol_id": qm.PayloadSchemaType.KEYWORD,
+            "start_line": qm.PayloadSchemaType.INTEGER,
+            "end_line": qm.PayloadSchemaType.INTEGER,
         }
         for field_name, field_schema in indexes.items():
             try:
@@ -639,6 +811,7 @@ class Indexer:
         citation_anchor: str | None = None,
         graph_extraction_version: str | None = None,
         artifact_type: str | None = None,
+        neighbor_chunk_ids: list[str] | None = None,
         embedding_version: str | None = None,
         indexed_at: str | None = None,
     ) -> qm.PointStruct:
@@ -664,6 +837,8 @@ class Indexer:
                 "start_line": c.start_line,
                 "end_line": c.end_line,
                 "context_path": c.context_path,
+                "symbol_id": c.symbol_id,
+                "signature": c.signature,
                 "content": c.content,
                 "graph_node_ids": graph_node_ids or [],
                 "entity_ids": entity_ids or [],
@@ -671,5 +846,6 @@ class Indexer:
                 "citation_anchor": citation_anchor or c.anchor,
                 "graph_extraction_version": graph_extraction_version,
                 "artifact_type": artifact_type or c.kind.value,
+                "neighbor_chunk_ids": neighbor_chunk_ids or [],
             },
         )

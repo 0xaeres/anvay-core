@@ -22,15 +22,20 @@ import tree_sitter_solidity
 import tree_sitter_typescript
 from tree_sitter import Language, Node, Parser
 
-from anvay.ingest.models import Chunk, ChunkKind, ResourceRef
+from anvay.ingest.models import Chunk, ChunkKind, ResourceRef, symbol_id_for
 
 # ---------------------------------------------------------------- constants
+
+# Bump whenever chunking output changes shape — feeds embedding_version() so
+# delta ingest re-chunks + re-embeds everything.
+CHUNKER_VERSION = "2"
 
 MAX_CHUNK_CHARS = 1200    # ~300-400 tokens; leaves headroom for HQE prefix under llama.cpp --ubatch-size 512
 MIN_CHUNK_CHARS = 64  # for code — filters trivial 1-liner defs
 MIN_DOC_CHUNK_CHARS = 20  # docs: keep short sections (headings + a sentence)
 CHAR_SPLIT_TARGET = 700   # target for oversized chunks; ~175-250 tokens
 CHAR_SPLIT_OVERLAP = 70
+DOC_SPLIT_CHARS = 400     # doc-comments longer than this spill into a linked DOC chunk
 
 
 
@@ -45,6 +50,11 @@ class _LangCfg:
     boundary_nodes: tuple[str, ...]
     # Node types whose `name` child should be used as the context path component.
     name_field_nodes: tuple[str, ...] = ()
+    # Boundary nodes that contain other boundary nodes (classes, impls, traits).
+    # These emit a "skeleton" chunk (signature + doc + member signatures, bodies
+    # elided) instead of their full span, since members are emitted as their own
+    # chunks — otherwise container chunks duplicate every member.
+    container_nodes: tuple[str, ...] = ()
     # Node types that are doc-comments (block/line) living as prev-siblings of a
     # declaration.  When set, the chunker extends the chunk span back to include the
     # leading comment so it is NOT emitted as an orphaned <module> chunk.
@@ -71,6 +81,7 @@ _LANGS: dict[str, _LangCfg] = {
         language=_language(tree_sitter_python.language()),
         boundary_nodes=("function_definition", "class_definition", "decorated_definition"),
         name_field_nodes=("function_definition", "class_definition"),
+        container_nodes=("class_definition",),
     ),
     "typescript": _LangCfg(
         language=_language(tree_sitter_typescript.language_typescript()),
@@ -92,6 +103,7 @@ _LANGS: dict[str, _LangCfg] = {
             "variable_declarator",
         ),
         doc_comment_nodes=("comment",),
+        container_nodes=("class_declaration", "interface_declaration"),
     ),
     "tsx": _LangCfg(
         language=_language(tree_sitter_typescript.language_tsx()),
@@ -113,6 +125,7 @@ _LANGS: dict[str, _LangCfg] = {
             "variable_declarator",
         ),
         doc_comment_nodes=("comment",),
+        container_nodes=("class_declaration", "interface_declaration"),
     ),
     "javascript": _LangCfg(
         language=_language(tree_sitter_javascript.language()),
@@ -130,6 +143,7 @@ _LANGS: dict[str, _LangCfg] = {
             "variable_declarator",
         ),
         doc_comment_nodes=("comment",),
+        container_nodes=("class_declaration",),
     ),
     "rust": _LangCfg(
         language=_language(tree_sitter_rust.language()),
@@ -141,6 +155,7 @@ _LANGS: dict[str, _LangCfg] = {
         # don't get pulled into unrelated declaration chunks.
         doc_comment_nodes=("line_comment", "block_comment"),
         doc_comment_prefix=("///", "/**"),
+        container_nodes=("impl_item", "trait_item"),
     ),
     "go": _LangCfg(
         language=_language(tree_sitter_go.language()),
@@ -167,6 +182,7 @@ _LANGS: dict[str, _LangCfg] = {
             "method_declaration",
         ),
         doc_comment_nodes=("block_comment", "line_comment"),
+        container_nodes=("class_declaration", "interface_declaration", "enum_declaration", "record_declaration"),
     ),
     "cpp": _LangCfg(
         language=_language(tree_sitter_cpp.language()),
@@ -189,6 +205,7 @@ _LANGS: dict[str, _LangCfg] = {
             "function_definition",
             "declaration",
         ),
+        container_nodes=("namespace_definition", "class_specifier", "struct_specifier"),
     ),
     "kotlin": _LangCfg(
         language=_language(tree_sitter_kotlin.language()),
@@ -206,6 +223,7 @@ _LANGS: dict[str, _LangCfg] = {
             "property_declaration",
             "type_alias",
         ),
+        container_nodes=("class_declaration", "object_declaration"),
     ),
     "solidity": _LangCfg(
         language=_language(tree_sitter_solidity.language()),
@@ -231,6 +249,7 @@ _LANGS: dict[str, _LangCfg] = {
             "event_definition",
             "error_declaration",
         ),
+        container_nodes=("contract_declaration", "interface_declaration", "library_declaration"),
     ),
 }
 
@@ -296,6 +315,7 @@ def _chunk_code(
     for node, ctx_path in _walk_boundaries(root, cfg, parent_ctx=""):
         start = node.start_point[0] + 1
         end = node.end_point[0] + 1
+        decl_line = start  # first line of the declaration itself (before doc attach)
 
         # Attach immediately-preceding doc-comment(s) (e.g. Java javadoc, JSDoc, rustdoc)
         # so they land in the same chunk as the declaration rather than as orphaned
@@ -321,7 +341,73 @@ def _chunk_code(
             if earliest_comment_start is not None:
                 start = earliest_comment_start
 
-        span = "\n".join(lines[start - 1 : end])
+        sym_id = symbol_id_for(product_id, resource.uri, ctx_path or "<module>")
+        signature = lines[decl_line - 1].strip() if decl_line <= len(lines) else ""
+
+        # Long attached doc-comments spill into a linked DOC chunk: the first
+        # paragraph stays with the declaration, the remainder becomes its own
+        # chunk sharing symbol_id — long prose stays bound to the symbol
+        # without blowing the declaration chunk past MAX_CHUNK_CHARS.
+        if start < decl_line:
+            doc_text = "\n".join(lines[start - 1 : decl_line - 1])
+            if len(doc_text) > DOC_SPLIT_CHARS:
+                head_end, remainder, remainder_start = _split_doc_comment(
+                    doc_text, start
+                )
+                if remainder:
+                    yield Chunk(
+                        product_id=product_id,
+                        resource=resource,
+                        content=remainder,
+                        start_line=remainder_start,
+                        end_line=decl_line - 1,
+                        kind=ChunkKind.DOC,
+                        context_path=ctx_path,
+                        symbol_id=sym_id,
+                        signature=signature,
+                    )
+                    emitted_ranges.append((remainder_start, decl_line - 1))
+                    # Declaration chunk keeps only the leading paragraph.
+                    if head_end >= start:
+                        emitted_ranges.append((start, head_end))
+                    start = start if head_end >= start else decl_line
+                    lines_head = lines[start - 1 : head_end] + lines[decl_line - 1 : end]
+                    span_override = "\n".join(lines_head)
+                else:
+                    span_override = None
+            else:
+                span_override = None
+        else:
+            span_override = None
+
+        is_container = node.type in cfg.container_nodes
+        members = _direct_members(node, cfg) if is_container else []
+
+        if is_container and members:
+            skeleton = _skeleton_text(
+                node, cfg, lines, start=start, members=members
+            )
+            if len(skeleton) > MAX_CHUNK_CHARS:
+                skeleton = skeleton[:MAX_CHUNK_CHARS].rsplit("\n", 1)[0] + "\n    # …"
+            yield Chunk(
+                product_id=product_id,
+                resource=resource,
+                content=skeleton,
+                start_line=start,
+                end_line=end,
+                kind=ChunkKind.CODE,
+                context_path=ctx_path,
+                symbol_id=sym_id,
+                signature=signature,
+            )
+            # Record the full container span so _emit_uncovered doesn't re-emit
+            # member bodies; members are still walked and emitted below.
+            emitted_ranges.append((start, end))
+            continue
+
+        span = span_override if span_override is not None else "\n".join(
+            lines[start - 1 : end]
+        )
         if len(span) < MIN_CHUNK_CHARS:
             continue
         if len(span) > MAX_CHUNK_CHARS:
@@ -336,6 +422,8 @@ def _chunk_code(
                     end_line=sub_end,
                     kind=ChunkKind.CODE,
                     context_path=ctx_path,
+                    symbol_id=sym_id,
+                    signature=signature,
                 )
                 emitted_ranges.append((sub_start, sub_end))
         else:
@@ -347,6 +435,8 @@ def _chunk_code(
                 end_line=end,
                 kind=ChunkKind.CODE,
                 context_path=ctx_path,
+                symbol_id=sym_id,
+                signature=signature,
             )
             emitted_ranges.append((start, end))
 
@@ -365,6 +455,79 @@ def _walk_boundaries(
             yield from _walk_boundaries(child, cfg, ctx)
         else:
             yield from _walk_boundaries(child, cfg, parent_ctx)
+
+
+def _direct_members(node: Node, cfg: _LangCfg) -> list[Node]:
+    """Boundary descendants of a container that are not nested inside another
+    boundary — i.e. the container's own methods/fields, not methods of an
+    inner class."""
+
+    def walk(n: Node) -> Iterator[Node]:
+        for child in n.children:
+            if child.type in cfg.boundary_nodes:
+                yield child
+            else:
+                yield from walk(child)
+
+    return list(walk(node))
+
+
+def _skeleton_text(
+    node: Node,
+    cfg: _LangCfg,
+    lines: list[str],
+    *,
+    start: int,
+    members: list[Node],
+) -> str:
+    """Container signature + docstring/header + member signatures with bodies
+    elided. Pure AST + string ops — no model calls.
+
+    Tiny members (below MIN_CHUNK_CHARS, which are skipped as standalone
+    chunks) are inlined whole so their text isn't lost from the index."""
+    first_member_line = members[0].start_point[0]  # 0-indexed
+    header = lines[start - 1 : first_member_line]
+    while header and not header[-1].strip():
+        header.pop()
+    parts = list(header)
+    for m in members:
+        m_start = m.start_point[0]
+        m_end = m.end_point[0]
+        m_text = "\n".join(lines[m_start : m_end + 1])
+        if len(m_text) < MIN_CHUNK_CHARS:
+            parts.append(m_text)
+        else:
+            sig_line = lines[m_start].rstrip()
+            parts.append(f"{sig_line} …")
+    return "\n".join(parts)
+
+
+def _split_doc_comment(doc_text: str, start_line: int) -> tuple[int, str, int]:
+    """Split an attached doc-comment into (head_end_line, remainder_text,
+    remainder_start_line). The head is the first paragraph (up to the first
+    blank-ish comment line); by convention (Javadoc/rustdoc) that's the symbol
+    summary. Returns remainder="" when there is no sensible split point."""
+    doc_lines = doc_text.splitlines()
+
+    def _is_blank(line: str) -> bool:
+        stripped = line.strip()
+        for prefix in ("///", "//!", "//", "/**", "/*", "*/", "*", "#"):
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix) :].strip()
+                break
+        return not stripped
+
+    split_at = None
+    for i, line in enumerate(doc_lines[1:], start=1):
+        if _is_blank(line):
+            split_at = i
+            break
+    if split_at is None or split_at >= len(doc_lines) - 1:
+        return start_line + len(doc_lines) - 1, "", start_line
+    head_end = start_line + split_at - 1
+    remainder_start = start_line + split_at
+    remainder = "\n".join(doc_lines[split_at:])
+    return head_end, remainder, remainder_start
 
 
 def _identifier_of(node: Node) -> str | None:

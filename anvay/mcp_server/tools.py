@@ -34,6 +34,15 @@ from anvay.skills.store import SkillStore
 
 log = logging.getLogger(__name__)
 
+DEFAULT_RESPONSE_TOKENS = 4000
+_EXCERPT_CHAR_CAP = 700  # per-hit content cap at detail="excerpt"
+
+
+async def _warm_sparse() -> None:
+    from anvay.retrieval.sparse import aencode_query
+
+    await aencode_query("warmup")
+
 
 class ToolError(BaseModel):
     error: str
@@ -96,6 +105,7 @@ class RetrievalHitResponse(BaseModel):
     anchor: str
     context_path: str | None = None
     content: str | None = None
+    merged_spans: list[str] | None = None
 
 
 class RetrievalResponse(BaseModel):
@@ -165,6 +175,25 @@ class ToolState:
         if self._queue is None:
             self._queue = ProposalQueue(Path(self.config.storage.proposal_queue))
         return self._queue
+
+    async def warmup(self) -> None:
+        """Best-effort model warm-up so the first interactive call doesn't pay
+        embedder/reranker/fastembed cold-start inside the latency budget. Every
+        step soft-fails — a down Qdrant or embedder must not kill the server."""
+        try:
+            ctx = self.ctx
+        except Exception:
+            log.debug("warmup: retrieval context unavailable", exc_info=True)
+            return
+        for step_name, step in (
+            ("embedder", lambda: ctx.embedder.embed_query("warmup", vector="dense_text")),
+            ("sparse", lambda: _warm_sparse()),
+            ("reranker", lambda: ctx.reranker.rerank("warmup", ["warmup document"], top_k=1)),
+        ):
+            try:
+                await step()
+            except Exception as e:
+                log.debug("warmup %s failed (non-fatal): %s", step_name, e)
 
     async def aclose(self) -> None:
         closers = []
@@ -263,14 +292,27 @@ async def find_skills(
     ).model_dump(mode="json")
 
 
-async def get_skill(state: ToolState, *, name: str) -> dict:
-    """Return the full skill body + frontmatter."""
+async def get_skill(state: ToolState, *, name: str, section: str | None = None) -> dict:
+    """Return the skill body + frontmatter. When `section` names an H2 heading,
+    only that heading's subtree is returned — keeps big master skills cheap for
+    clients that need one procedure, not the whole document."""
     for s in state.store.iter_skills():
         if s.product != state.product:
             continue
         if s.name == name:
             out = s.model_dump(mode="json")
             out["id"] = s.id
+            if section:
+                extracted = _extract_section(s.body, section)
+                if extracted is None:
+                    available = _section_headings(s.body)
+                    return ToolError(
+                        error=(
+                            f"section not found: {section!r}. "
+                            f"Available sections: {available}"
+                        )
+                    ).model_dump(exclude_none=True)
+                out["body"] = extracted
             return SkillResponse.model_validate(out).model_dump(mode="json")
     return ToolError(error=f"skill not found: {name}").model_dump(exclude_none=True)
 
@@ -310,6 +352,8 @@ async def query_code_context(
     *,
     symbol: str,
     file_glob: str = "**/*",
+    detail: str = "excerpt",
+    max_response_tokens: int = DEFAULT_RESPONSE_TOKENS,
 ) -> dict:
     """Cheap symbol lookup — runs the retrieval pipeline in code-only mode."""
     result = await retrieve(
@@ -319,7 +363,9 @@ async def query_code_context(
         top_k=10,
         mode="code",
     )
-    rendered = _render_retrieval(result)
+    rendered = _render_retrieval(
+        result, detail=detail, max_response_tokens=max_response_tokens
+    )
     if file_glob and file_glob != "**/*":
         rendered["hits"] = [
             hit for hit in rendered["hits"] if _matches_file_globs(hit["anchor"].split(":", 1)[0], [file_glob])
@@ -365,6 +411,8 @@ async def hybrid_search_corpus(
     query: str,
     product_id: str | None = None,
     top_k: int = 5,
+    detail: str = "excerpt",
+    max_response_tokens: int = DEFAULT_RESPONSE_TOKENS,
 ) -> dict:
     """Hybrid retrieval (dense + BM25 + rerank) against the indexed corpus."""
     if product_id is not None and product_id != state.product:
@@ -375,7 +423,10 @@ async def hybrid_search_corpus(
     result = await retrieve(
         ctx=state.ctx, product_id=pid, query=query, top_k=top_k, mode="auto"
     )
-    return RetrievalResponse.model_validate(_render_retrieval(result)).model_dump(mode="json")
+    rendered = _render_retrieval(
+        result, detail=detail, max_response_tokens=max_response_tokens
+    )
+    return RetrievalResponse.model_validate(rendered).model_dump(mode="json")
 
 
 async def evidence_search_corpus(
@@ -386,6 +437,9 @@ async def evidence_search_corpus(
     top_k: int = 10,
     current_file: str | None = None,
     mode: str = "auto",
+    detail: str = "excerpt",
+    max_response_tokens: int = DEFAULT_RESPONSE_TOKENS,
+    debug: bool = False,
 ) -> dict:
     """EvidenceGraphRAG retrieval across hybrid, grep, repo-map, graph, and skills."""
     if product_id is not None and product_id != state.product:
@@ -403,7 +457,9 @@ async def evidence_search_corpus(
         skills=[s for s in state.store.iter_skills() if s.product == state.product],
         budget_ms=state.config.retrieval.interactive_budget_ms,
     )
-    return _render_evidence_set(result)
+    return _render_evidence_set(
+        result, detail=detail, max_response_tokens=max_response_tokens, debug=debug
+    )
 
 
 async def ask_product_graph(
@@ -532,6 +588,34 @@ def _tokens(text: str) -> list[str]:
     return out
 
 
+def _section_headings(body: str) -> list[str]:
+    return [
+        line.removeprefix("## ").strip()
+        for line in body.splitlines()
+        if line.startswith("## ")
+    ]
+
+
+def _extract_section(body: str, section: str) -> str | None:
+    """Return the H2 subtree whose heading matches `section` (case-insensitive
+    substring match), or None."""
+    lines = body.splitlines()
+    want = section.strip().lower()
+    start = None
+    for i, line in enumerate(lines):
+        if line.startswith("## ") and want in line.removeprefix("## ").strip().lower():
+            start = i
+            break
+    if start is None:
+        return None
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if lines[j].startswith("## "):
+            end = j
+            break
+    return "\n".join(lines[start:end]).strip()
+
+
 def _first_paragraph(body: str) -> str:
     for block in body.split("\n\n"):
         stripped = block.strip()
@@ -540,41 +624,144 @@ def _first_paragraph(body: str) -> str:
     return ""
 
 
-def _render_retrieval(result) -> dict:
-    return {
-        "reranked": result.reranked,
-        "hits": [
+def _estimate_tokens(text: str) -> int:
+    return len(text) // 4 + 1
+
+
+def _merge_adjacent_hits(hits: list[dict], *, max_gap_lines: int = 3) -> list[dict]:
+    """Merge overlapping/adjacent hits from the same file into one span.
+
+    Keeps the highest score and the first anchor; the union of covered line
+    ranges is reported in `merged_spans` so citations stay line-precise."""
+    by_file: dict[str, list[dict]] = {}
+    passthrough: list[dict] = []
+    for hit in hits:
+        file, line, end = hit.get("_file"), hit.get("_line"), hit.get("_end_line")
+        if not file or line is None:
+            passthrough.append(hit)
+            continue
+        hit["_end_line"] = end if end is not None else line
+        by_file.setdefault(file, []).append(hit)
+
+    merged: list[dict] = list(passthrough)
+    for _file, group in by_file.items():
+        group.sort(key=lambda h: h["_line"])
+        current = dict(group[0])
+        spans = [(current["_line"], current["_end_line"])]
+        for nxt in group[1:]:
+            if nxt["_line"] <= current["_end_line"] + max_gap_lines:
+                if nxt["_end_line"] > current["_end_line"]:
+                    current["_end_line"] = nxt["_end_line"]
+                    if nxt.get("content") and nxt["content"] not in (current.get("content") or ""):
+                        current["content"] = (
+                            f"{current.get('content') or ''}\n…\n{nxt['content']}"
+                        ).strip()
+                current["score"] = max(current["score"], nxt["score"])
+                spans.append((nxt["_line"], nxt["_end_line"]))
+            else:
+                if len(spans) > 1:
+                    current["merged_spans"] = [f"{s}-{e}" for s, e in spans]
+                merged.append(current)
+                current = dict(nxt)
+                spans = [(current["_line"], current["_end_line"])]
+        if len(spans) > 1:
+            current["merged_spans"] = [f"{s}-{e}" for s, e in spans]
+        merged.append(current)
+
+    merged.sort(key=lambda h: h["score"], reverse=True)
+    return merged
+
+
+def _pack_hits(
+    hits: list[dict],
+    *,
+    detail: str = "excerpt",
+    max_response_tokens: int = DEFAULT_RESPONSE_TOKENS,
+) -> list[dict]:
+    """Budget-aware response shaping: content for the top hits while the token
+    budget lasts, anchor + context_path only for the tail. `detail="anchor"`
+    strips content entirely; `"full"` never truncates individual excerpts."""
+    packed: list[dict] = []
+    spent = 0
+    for hit in hits:
+        out = {k: v for k, v in hit.items() if not k.startswith("_")}
+        content = out.get("content")
+        if detail == "anchor":
+            out["content"] = None
+        elif content:
+            if detail == "excerpt" and len(content) > _EXCERPT_CHAR_CAP:
+                content = content[:_EXCERPT_CHAR_CAP] + "…"
+            cost = _estimate_tokens(content)
+            if spent + cost > max_response_tokens:
+                out["content"] = None  # anchor-only tail — client can grep/read
+            else:
+                out["content"] = content
+                spent += cost
+        packed.append(out)
+    return packed
+
+
+def _render_retrieval(
+    result,
+    *,
+    detail: str = "excerpt",
+    max_response_tokens: int = DEFAULT_RESPONSE_TOKENS,
+) -> dict:
+    hits = []
+    for h in result.hits:
+        payload = h.payload or {}
+        hits.append(
             {
                 "score": h.score,
                 "source": h.source,
-                "anchor": f'{(h.payload or {}).get("resource_uri","?")}:'
-                          f'{(h.payload or {}).get("start_line","?")}',
-                "context_path": (h.payload or {}).get("context_path"),
-                "content": (h.payload or {}).get("content"),
+                "anchor": f'{payload.get("resource_uri","?")}:'
+                          f'{payload.get("start_line","?")}',
+                "context_path": payload.get("context_path"),
+                "content": payload.get("content"),
+                "_file": payload.get("resource_uri"),
+                "_line": payload.get("start_line"),
+                "_end_line": payload.get("end_line"),
             }
-            for h in result.hits
-        ],
+        )
+    hits = _merge_adjacent_hits(hits)
+    return {
+        "reranked": result.reranked,
+        "hits": _pack_hits(hits, detail=detail, max_response_tokens=max_response_tokens),
     }
 
 
-def _render_evidence_set(result: EvidenceSet) -> dict:
-    return {
+def _render_evidence_set(
+    result: EvidenceSet,
+    *,
+    detail: str = "excerpt",
+    max_response_tokens: int = DEFAULT_RESPONSE_TOKENS,
+    debug: bool = False,
+) -> dict:
+    hits = []
+    for candidate in result.candidates:
+        hit = {
+            "score": candidate.score,
+            "source": candidate.channel,
+            "role": candidate.role,
+            "anchor": candidate.anchor,
+            "context_path": candidate.context_path,
+            "content": candidate.excerpt,
+            "_file": candidate.file or None,
+            "_line": candidate.line if candidate.file else None,
+            "_end_line": candidate.end_line,
+        }
+        if debug:
+            hit["graph_node_ids"] = candidate.graph_node_ids
+            hit["metadata"] = candidate.metadata
+        hits.append(hit)
+    hits = _merge_adjacent_hits(hits)
+    out = {
         "query": result.query,
         "shape": result.understanding.shape,
         "coverage": result.coverage.model_dump(mode="json"),
         "reranked": result.reranked,
-        "trace": [step.model_dump(mode="json") for step in result.trace],
-        "hits": [
-            {
-                "score": candidate.score,
-                "source": candidate.channel,
-                "role": candidate.role,
-                "anchor": candidate.anchor,
-                "context_path": candidate.context_path,
-                "content": candidate.excerpt,
-                "graph_node_ids": candidate.graph_node_ids,
-                "metadata": candidate.metadata,
-            }
-            for candidate in result.candidates
-        ],
+        "hits": _pack_hits(hits, detail=detail, max_response_tokens=max_response_tokens),
     }
+    if debug:
+        out["trace"] = [step.model_dump(mode="json") for step in result.trace]
+    return out

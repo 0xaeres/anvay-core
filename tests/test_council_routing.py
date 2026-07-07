@@ -71,3 +71,54 @@ def test_build_graph_has_skill_nodes() -> None:
     assert "experts" not in graph.nodes
     assert "judge" not in graph.nodes
     assert "targeted_callback" not in graph.nodes
+
+
+def test_route_after_eval_sends_failures_to_repair() -> None:
+    from anvay.council.graph import _route_after_eval
+    from anvay.council.state import SkillEvalResult
+
+    state = {
+        "eval_results": [
+            SkillEvalResult(skill_name="a", status="failed"),
+        ],
+        "eval_repair_attempts": 0,
+    }
+    assert _route_after_eval(state) == "repair"
+
+
+def test_route_after_eval_sends_pass_to_finalizer() -> None:
+    from anvay.council.graph import _route_after_eval
+    from anvay.council.state import SkillEvalResult
+
+    state = {
+        "eval_results": [SkillEvalResult(skill_name="a", status="passed")],
+        "eval_repair_attempts": 0,
+    }
+    assert _route_after_eval(state) == "finalizer"
+
+
+def test_route_after_eval_stops_at_attempt_cap() -> None:
+    from anvay.council.graph import MAX_EVAL_REPAIR_ATTEMPTS, _route_after_eval
+    from anvay.council.state import SkillEvalResult
+
+    state = {
+        "eval_results": [SkillEvalResult(skill_name="a", status="failed")],
+        "eval_repair_attempts": MAX_EVAL_REPAIR_ATTEMPTS,
+    }
+    # Budget exhausted — proceed to finalizer even though a draft still fails.
+    assert _route_after_eval(state) == "finalizer"
+
+
+def test_route_after_eval_uses_latest_verdict_per_skill() -> None:
+    from anvay.council.graph import _route_after_eval
+    from anvay.council.state import SkillEvalResult
+
+    # eval_results is append-only; a later 'passed' supersedes an earlier 'failed'.
+    state = {
+        "eval_results": [
+            SkillEvalResult(skill_name="a", status="failed"),
+            SkillEvalResult(skill_name="a", status="passed"),
+        ],
+        "eval_repair_attempts": 1,
+    }
+    assert _route_after_eval(state) == "finalizer"
