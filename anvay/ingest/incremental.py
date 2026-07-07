@@ -69,6 +69,8 @@ async def reindex_resource(
     inserted = 0
     new_ids: set[str] = {c.id for c in chunks}
     if chunks:
+        indexed_at = datetime.now(UTC).isoformat()
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         embedded = await embedder.embed_chunks(chunks)
         sparse_by_id = {}
         if getattr(indexer, "requires_sparse_vectors", True):
@@ -76,7 +78,14 @@ async def reindex_resource(
                 [c.sparse_text_for_embedding() for c in chunks]
             )
             sparse_by_id = {c.id: sv for c, sv in zip(chunks, sparse_vecs, strict=True)}
-        inserted = await indexer.upsert(embedded, sparse_by_id=sparse_by_id)
+        inserted = await indexer.upsert(
+            embedded,
+            sparse_by_id=sparse_by_id,
+            source_key=source_key or resource.source_id,
+            content_hash_by_id={c.id: content_hash for c in chunks},
+            embedding_version=embedding_version,
+            indexed_at=indexed_at,
+        )
 
     stale = {
         coll: [pid for pid in ids if pid not in new_ids]

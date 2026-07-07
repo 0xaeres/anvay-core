@@ -689,6 +689,7 @@ async def test_graph_local_depth1_uses_neighbor_payload_without_traverse() -> No
     ids = {c.chunk_id for c in out}
     assert ids == {"seed-1", "nb-1"}
     assert all(c.metadata.get("graph_neighbor_source") == "payload" for c in out)
+    assert all(c.metadata.get("graph_proximity") == 1.0 for c in out)
     assert trace[0].detail == "depth-1 neighbor payload"
 
 

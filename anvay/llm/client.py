@@ -129,8 +129,10 @@ class ChatClient:
 
     async def aclose(self) -> None:
         """Close the SDK client and the owned httpx transport. Do not reuse after this."""
-        await self._client.close()
-        await self._http_client.aclose()
+        try:
+            await self._client.close()
+        finally:
+            await self._http_client.aclose()
 
     async def health(self) -> bool:
         """

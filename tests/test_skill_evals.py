@@ -309,6 +309,29 @@ async def test_anchor_verifier_passes_for_valid_covered_citation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_anchor_verifier_checks_multiple_citations_on_one_line() -> None:
+    from anvay.council.skill_evals import _anchor_verification_failures
+
+    draft = SkillDraft(
+        name="s",
+        description="d",
+        tier="application",
+        body="# s\n\n## Rules\n1. Compare both paths [file: a.rs:10] [file: b.rs:20].\n",
+    )
+    indexer = _AnchorIndexer(
+        {
+            "a.rs": [{"start_line": 5, "end_line": 15, "content": "Compare paths"}],
+        }
+    )
+    failures = await _anchor_verification_failures(
+        draft=draft, indexer=indexer, product_id="demo"
+    )
+    assert "a.rs" in indexer.requested
+    assert "b.rs" in indexer.requested
+    assert any("b.rs:20" in f for f in failures)
+
+
+@pytest.mark.asyncio
 async def test_anchor_verifier_flags_line_out_of_range() -> None:
     from anvay.council.skill_evals import _anchor_verification_failures
 

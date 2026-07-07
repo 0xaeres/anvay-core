@@ -262,19 +262,17 @@ def _parse_body_citations(body: str) -> list[tuple[str, int, str]]:
     out: list[tuple[str, int, str]] = []
     seen: set[tuple[str, int]] = set()
     for line in body.splitlines():
-        match = _CITATION_RE.search(line)
-        if not match:
-            continue
-        file_ = match.group(1).strip()
-        try:
-            anchor_line = int(match.group(2))
-        except ValueError:
-            continue
-        if (file_, anchor_line) in seen:
-            continue
-        seen.add((file_, anchor_line))
-        claim = _CITATION_RE.sub("", line).strip(" -*0123456789.\t")
-        out.append((file_, anchor_line, claim))
+        for match in _CITATION_RE.finditer(line):
+            file_ = match.group(1).strip()
+            try:
+                anchor_line = int(match.group(2))
+            except ValueError:
+                continue
+            if (file_, anchor_line) in seen:
+                continue
+            seen.add((file_, anchor_line))
+            claim = _CITATION_RE.sub("", line).strip(" -*0123456789.\t")
+            out.append((file_, anchor_line, claim))
     return out
 
 

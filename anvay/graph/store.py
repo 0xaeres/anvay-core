@@ -221,7 +221,10 @@ class FalkorGraphStore:
             return GraphQueryResult()
         await self._ensure_product_schema(product_id)
         graph = self._graph(product_id)
-        requested = [t for t in (edge_types or []) if t in _EDGE_TYPES]
+        requested_raw = edge_types or []
+        requested = [t for t in requested_raw if t in _EDGE_TYPES]
+        if requested_raw and not requested:
+            return GraphQueryResult()
         type_clause = ""
         if requested:
             type_clause = f":{'|'.join(_ident(t) for t in requested)}"

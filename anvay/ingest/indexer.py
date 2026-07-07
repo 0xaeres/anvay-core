@@ -225,6 +225,14 @@ class Indexer:
             deleted += len(unique_ids)
         return deleted
 
+    def collection_for_vector_kind(self, vector_kind: str) -> str:
+        """Return Qdrant collection name for a public vector kind."""
+        if vector_kind == "code":
+            return self._code
+        if vector_kind == "text":
+            return self._text
+        raise ValueError(f"unknown vector_kind={vector_kind}")
+
     async def update_payloads(
         self,
         chunks: Sequence[Chunk],
@@ -567,7 +575,8 @@ class Indexer:
         limit_per_symbol: int = 4,
     ) -> list[dict]:
         """All chunks sharing any of the given symbol_ids (declaration chunk,
-        doc spill, split sub-chunks). One batched scroll per collection."""
+        doc spill, split sub-chunks). Paginates each collection until every
+        symbol reaches its per-symbol cap or the collection is exhausted."""
         unique = [s for s in dict.fromkeys(symbol_ids) if s]
         if not unique:
             return []
@@ -584,23 +593,30 @@ class Indexer:
         out: list[dict] = []
         per_symbol: dict[str, int] = {}
         for coll in (self._code, self._text):
-            points, _ = await self._retry_qdrant(
-                f"scroll_symbols:{coll}",
-                lambda coll=coll: self.client.scroll(
-                    collection_name=coll,
-                    scroll_filter=sym_filter,
-                    limit=max(len(unique) * limit_per_symbol, 16),
-                    with_payload=True,
-                    with_vectors=False,
-                ),
-            )
-            for pt in points:
-                payload = pt.payload or {}
-                sym = str(payload.get("symbol_id") or "")
-                if per_symbol.get(sym, 0) >= limit_per_symbol:
-                    continue
-                per_symbol[sym] = per_symbol.get(sym, 0) + 1
-                out.append({"id": str(pt.id), "payload": payload})
+            offset = None
+            while True:
+                points, offset = await self._retry_qdrant(
+                    f"scroll_symbols:{coll}",
+                    lambda coll=coll, offset=offset: self.client.scroll(
+                        collection_name=coll,
+                        scroll_filter=sym_filter,
+                        limit=max(len(unique) * limit_per_symbol, 16),
+                        offset=offset,
+                        with_payload=True,
+                        with_vectors=False,
+                    ),
+                )
+                for pt in points:
+                    payload = pt.payload or {}
+                    sym = str(payload.get("symbol_id") or "")
+                    if per_symbol.get(sym, 0) >= limit_per_symbol:
+                        continue
+                    per_symbol[sym] = per_symbol.get(sym, 0) + 1
+                    out.append({"id": str(pt.id), "payload": payload})
+                if all(per_symbol.get(sym, 0) >= limit_per_symbol for sym in unique):
+                    break
+                if offset is None:
+                    break
         return out
 
     async def chunks_by_ids(

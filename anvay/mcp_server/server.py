@@ -28,6 +28,16 @@ from anvay.mcp_server import tools as nx_tools
 
 log = logging.getLogger("anvay.mcp_server")
 
+_RESPONSE_SHAPE_PROPS = {
+    "detail": {
+        "type": "string",
+        "enum": ["anchor", "excerpt", "full"],
+        "default": "excerpt",
+        "description": "Response density: anchors only, capped excerpts, or full chunk bodies.",
+    },
+    "max_response_tokens": {"type": "integer", "default": 4000},
+}
+
 
 def _build_server(*, product: str, config: AnvayConfig) -> tuple[Server, nx_tools.ToolState]:
     server: Server = Server("anvay")
@@ -59,7 +69,8 @@ def _build_server(*, product: str, config: AnvayConfig) -> tuple[Server, nx_tool
             Tool(
                 name="get_skill",
                 description=(
-                    "Return the full Markdown body and parsed frontmatter for a named skill."
+                    "Return the full Markdown body and parsed frontmatter for a named "
+                    "skill, or only a specified section subtree when `section` is set."
                 ),
                 inputSchema={
                     "type": "object",
@@ -97,13 +108,7 @@ def _build_server(*, product: str, config: AnvayConfig) -> tuple[Server, nx_tool
                     "properties": {
                         "symbol": {"type": "string"},
                         "file_glob": {"type": "string", "default": "**/*"},
-                        "detail": {
-                            "type": "string",
-                            "enum": ["anchor", "excerpt", "full"],
-                            "default": "excerpt",
-                            "description": "Response density: anchors only, capped excerpts, or full chunk bodies.",
-                        },
-                        "max_response_tokens": {"type": "integer", "default": 4000},
+                        **_RESPONSE_SHAPE_PROPS,
                     },
                     "required": ["symbol"],
                 },
@@ -119,13 +124,7 @@ def _build_server(*, product: str, config: AnvayConfig) -> tuple[Server, nx_tool
                     "properties": {
                         "query": {"type": "string"},
                         "top_k": {"type": "integer", "default": 5},
-                        "detail": {
-                            "type": "string",
-                            "enum": ["anchor", "excerpt", "full"],
-                            "default": "excerpt",
-                            "description": "Response density: anchors only, capped excerpts, or full chunk bodies.",
-                        },
-                        "max_response_tokens": {"type": "integer", "default": 4000},
+                        **_RESPONSE_SHAPE_PROPS,
                     },
                     "required": ["query"],
                 },
@@ -163,13 +162,7 @@ def _build_server(*, product: str, config: AnvayConfig) -> tuple[Server, nx_tool
                             "default": "auto",
                         },
                         "top_k": {"type": "integer", "default": 10},
-                        "detail": {
-                            "type": "string",
-                            "enum": ["anchor", "excerpt", "full"],
-                            "default": "excerpt",
-                            "description": "Response density: anchors only, capped excerpts, or full chunk bodies.",
-                        },
-                        "max_response_tokens": {"type": "integer", "default": 4000},
+                        **_RESPONSE_SHAPE_PROPS,
                         "debug": {
                             "type": "boolean",
                             "default": False,

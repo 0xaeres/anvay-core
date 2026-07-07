@@ -342,7 +342,9 @@ def _chunk_code(
                 start = earliest_comment_start
 
         sym_id = symbol_id_for(product_id, resource.uri, ctx_path or "<module>")
-        signature = lines[decl_line - 1].strip() if decl_line <= len(lines) else ""
+        signature_node = _unwrap_decorated_definition(node)
+        signature_line = signature_node.start_point[0] + 1
+        signature = lines[signature_line - 1].strip() if signature_line <= len(lines) else ""
 
         # Long attached doc-comments spill into a linked DOC chunk: the first
         # paragraph stays with the declaration, the remainder becomes its own
@@ -449,7 +451,8 @@ def _walk_boundaries(
 ) -> Iterator[tuple[Node, str]]:
     for child in node.children:
         if child.type in cfg.boundary_nodes:
-            name = _identifier_of(child) if child.type in cfg.name_field_nodes else None
+            name_node = _unwrap_decorated_definition(child)
+            name = _identifier_of(name_node) if name_node.type in cfg.name_field_nodes else None
             ctx = f"{parent_ctx}.{name}" if parent_ctx and name else (name or parent_ctx)
             yield child, ctx
             yield from _walk_boundaries(child, cfg, ctx)
@@ -551,6 +554,15 @@ def _identifier_of(node: Node) -> str | None:
         if nested:
             return nested
     return None
+
+
+def _unwrap_decorated_definition(node: Node) -> Node:
+    if node.type != "decorated_definition":
+        return node
+    return next(
+        (child for child in node.named_children if child.type != "decorator"),
+        node,
+    )
 
 
 # ---------------------------------------------------------------- markdown

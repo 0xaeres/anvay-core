@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import anvay.mcp_server.tools as mcp_tools
 from anvay.mcp_server.tools import (
     ToolState,
     _extract_section,
@@ -162,7 +163,7 @@ def test_extract_section_case_insensitive_and_missing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_warmup_swallows_all_failures() -> None:
+async def test_warmup_swallows_all_failures(monkeypatch) -> None:
     class ExplodingEmbedder:
         async def embed_query(self, *a, **kw):
             raise RuntimeError("embedder down")
@@ -175,4 +176,9 @@ async def test_warmup_swallows_all_failures() -> None:
     state._ctx = SimpleNamespace(
         embedder=ExplodingEmbedder(), reranker=ExplodingReranker()
     )
+
+    async def exploding_sparse():
+        raise RuntimeError("sparse down")
+
+    monkeypatch.setattr(mcp_tools, "_warm_sparse", exploding_sparse)
     await state.warmup()  # must not raise

@@ -585,44 +585,6 @@ def _drafts_for_prompt(drafts: list[SkillDraft]) -> str:
     )
 
 
-async def _repair_eval_failure(
-    *,
-    draft: SkillDraft,
-    result: SkillEvalResult,
-    evidence: list[EvidenceChunk],
-    chat: ChatClient,
-) -> tuple[str, TokenUsage]:
-    resp = await chat.chat_markdown(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "Repair one Anvay Agent Skill after quality eval failure. "
-                    "Output the complete Markdown body only. Keep the exact title, "
-                    "exact required headings, and real `[file: path:line]` citations.\n\n"
-                    # Static template in the system prefix for cache reuse.
-                    f"# Required template\n{_template_for_tier(draft.tier)}"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Skill name: {draft.name}\nTier: {draft.tier}\n"
-                    f"Description: {draft.description}\n\n"
-                    f"# Eval failures\n{failure_brief(result)}\n\n"
-                    f"# Current draft\n{draft.body}\n\n"
-                    f"# Evidence\n{evidence_for_prompt(evidence)}\n\n"
-                    "Return a complete repaired body. The first line must be "
-                    f"`# {draft.name}`."
-                ),
-            },
-        ],
-        max_tokens=3400 if draft.tier == "product_master" else 2600,
-        max_continuations=1,
-    )
-    return resp.content.strip(), resp.usage
-
-
 def _signals_for_prompt(signals: list[dict], *, skill_name: str) -> str:
     relevant = [
         s

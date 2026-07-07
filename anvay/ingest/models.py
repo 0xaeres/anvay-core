@@ -100,8 +100,12 @@ class Chunk(BaseModel):
         header = "\n".join(parts)
         if not header:
             return self.content[:EMBED_CHAR_CAP]
-        budget = max(EMBED_CHAR_CAP - len(header) - 2, 200)
-        return f"{header}\n\n{self.content[:budget]}"
+        if len(header) >= EMBED_CHAR_CAP:
+            return header[:EMBED_CHAR_CAP]
+        budget = EMBED_CHAR_CAP - len(header) - 2
+        if budget <= 0:
+            return header[:EMBED_CHAR_CAP]
+        return f"{header}\n\n{self.content[:budget]}"[:EMBED_CHAR_CAP]
 
     def sparse_text_for_embedding(self) -> str:
         """BM25 passage text: embed text plus split camelCase/snake_case

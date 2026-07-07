@@ -366,12 +366,22 @@ async def retrieve_evidence(
             candidates=merged,
             top_k=top_k,
         )
+        trace.extend(sibling_trace)
         if siblings:
-            trace.extend(sibling_trace)
             merged = merge_candidates(
                 [*merged, *siblings], understanding=understanding, top_k=top_k
             )
             coverage = assess_coverage(understanding, merged)
+    else:
+        plan.budget_exceeded = True
+        trace.append(
+            RetrievalTrace(
+                channel="graph",
+                query=understanding.query,
+                hits=0,
+                detail="sibling stage skipped: budget exceeded",
+            )
+        )
     plan.coverage = coverage
     plan.graph_paths = _ordered_unique(
         str(candidate.metadata.get("graph_path") or "")
@@ -666,6 +676,7 @@ async def graph_local_candidates(
                 candidate.metadata["graph_seed_ids"] = seed_ids[:8]
                 candidate.metadata["edge_types"] = edge_types
                 candidate.metadata["graph_neighbor_source"] = "payload"
+                candidate.metadata["graph_proximity"] = 1.0
                 out.append(candidate)
             trace = [
                 RetrievalTrace(
@@ -1210,7 +1221,7 @@ def _graph_rank_by_id(
     nodes: Sequence[object],
     edges: Sequence[object] | None = None,
 ) -> dict[str, float]:
-    ranks = {seed_id: 10.0 for seed_id in seed_ids}
+    ranks = {seed_id: _GRAPH_SEED_RANK for seed_id in seed_ids}
     for node in nodes:
         stable_id = getattr(node, "stable_id", "")
         if not stable_id:
@@ -1269,8 +1280,6 @@ def _graph_hit_rank(item: dict, rank_by_id: dict[str, float]) -> float:
     return float(item.get("score") or 0.0) + graph_score + artifact_boost
 
 
-# Seed nodes are ranked 10.0 in _graph_rank_by_id; normalize proximity to that
-# so a chunk sitting on a seed entity scores ~1.0 and distant neighbors decay.
 _GRAPH_SEED_RANK = 10.0
 
 

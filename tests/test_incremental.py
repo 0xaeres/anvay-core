@@ -42,6 +42,7 @@ class FakeIndexer:
         self.calls: list[str] = []
         self.upserted_ids: list[str] = []
         self.deleted_ids: list[str] = []
+        self.upsert_kwargs: dict = {}
 
     async def ids_by_resource(self, *, product_id: str, resource_uri: str):
         self.calls.append("ids_by_resource")
@@ -49,6 +50,7 @@ class FakeIndexer:
 
     async def upsert(self, embedded, *, sparse_by_id=None, **kwargs):
         self.calls.append("upsert")
+        self.upsert_kwargs = dict(kwargs)
         if self.fail_upsert:
             raise RuntimeError("qdrant down")
         self.upserted_ids.extend(e.chunk.id for e in embedded)
@@ -122,6 +124,26 @@ async def test_unchanged_chunk_ids_are_not_deleted() -> None:
     assert result.chunks_indexed == len(same_ids)
     assert indexer.deleted_ids == []
     assert "delete" not in indexer.calls
+
+
+@pytest.mark.asyncio
+async def test_incremental_upsert_threads_payload_metadata() -> None:
+    indexer = FakeIndexer()
+    await incremental.reindex_resource(
+        product_id="demo",
+        resource=_ref(),
+        content=CONTENT_V1,
+        embedder=FakeEmbedder(),
+        enricher=FakeEnricher(),
+        indexer=indexer,
+        source_key="local:test",
+        embedding_version="embed-v1",
+    )
+
+    assert indexer.upsert_kwargs["source_key"] == "local:test"
+    assert indexer.upsert_kwargs["embedding_version"] == "embed-v1"
+    assert indexer.upsert_kwargs["indexed_at"]
+    assert set(indexer.upsert_kwargs["content_hash_by_id"]) == set(indexer.upserted_ids)
 
 
 @pytest.mark.asyncio

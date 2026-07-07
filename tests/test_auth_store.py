@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from anvay.auth.roles import LEGACY_ROLE_MAP, normalize_role
 from anvay.auth.store import AuthError, AuthStore, hash_password
 
 
@@ -63,6 +64,14 @@ def test_access_request_approval_creates_approved_user(tmp_path: Path) -> None:
     assert user is not None
     assert user["status"] == "approved"
     assert user["role"] == "viewer"
+
+
+def test_normalize_role_maps_legacy_and_preserves_unknown() -> None:
+    for legacy, current in LEGACY_ROLE_MAP.items():
+        assert normalize_role(legacy) == current
+
+    assert normalize_role("admin") == "admin"
+    assert normalize_role("custom_role") == "custom_role"
 
 
 def test_auth_store_migrates_legacy_user_roles(tmp_path: Path) -> None:

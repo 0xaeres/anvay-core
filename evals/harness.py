@@ -252,6 +252,7 @@ async def _run_product(
             *[
                 _score_item(
                     item,
+                    product=product,
                     product_id=product.product_id,
                     ctx=ctx,
                     judge=judge,
@@ -281,6 +282,7 @@ async def _run_product(
 async def _score_item(
     item: GoldenItem,
     *,
+    product: ProductEval,
     product_id: str,
     ctx: RetrievalContext,
     judge: RagasJudge,
@@ -337,13 +339,26 @@ async def _score_item(
         latency_ms=latency_ms,
         n_candidates=len(candidates),
         graph_used=graph_used,
-        top_files=[c.file for c in candidates[:5] if c.file],
+        top_files=[_relative_eval_file(c.file, product) for c in candidates[:5] if c.file],
         answer=answer,
         faithfulness=ragas.faithfulness if ragas else None,
         answer_correctness=ragas.answer_correctness if ragas else None,
         context_precision=ragas.context_precision if ragas else None,
         context_recall=ragas.context_recall if ragas else None,
     )
+
+
+def _relative_eval_file(path: str, product: ProductEval) -> str:
+    p = Path(path)
+    if not p.is_absolute():
+        return path
+    try:
+        return p.relative_to(product.ingest_root().resolve()).as_posix()
+    except ValueError:
+        try:
+            return p.relative_to(product.checkout_dir().resolve()).as_posix()
+        except ValueError:
+            return p.name
 
 
 async def _synthesize(answerer: ChatClient, question: str, contexts: list[str]) -> str:

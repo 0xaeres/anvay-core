@@ -83,7 +83,7 @@ async def sweep_orphan_points(
         return result
 
     buckets = {
-        (indexer._code if kind == "code" else indexer._text): ids
+        indexer.collection_for_vector_kind(kind): ids
         for kind, ids in orphans_by_kind.items()
     }
     result.deleted = await indexer.delete_points_by_ids(buckets)

@@ -235,3 +235,25 @@ async def test_traverse_uses_directed_arrow_for_directional_types() -> None:
         product_id="p", seed_ids=["s1"], edge_types=["CALLS", "IMPORTS"], max_depth=2
     )
     assert ":CALLS|IMPORTS" in fake.queries[-1]
+
+
+@pytest.mark.asyncio
+async def test_traverse_unknown_edge_types_fail_closed() -> None:
+    class _CapturingGraph:
+        async def ro_query(self, query, params, timeout=None):
+            raise AssertionError("query should not run for invalid edge types")
+
+    cfg = GraphStoreCfg(host="x", graph_prefix="anvay_test")
+    store = FalkorGraphStore(cfg)
+    store._graph = lambda product_id: _CapturingGraph()  # type: ignore[assignment]
+
+    async def _noop_schema(product_id):
+        return None
+
+    store._ensure_product_schema = _noop_schema  # type: ignore[assignment]
+
+    result = await store.traverse(
+        product_id="p", seed_ids=["s1"], edge_types=["NOT_REAL"], max_depth=2
+    )
+    assert result.nodes == []
+    assert result.edges == []

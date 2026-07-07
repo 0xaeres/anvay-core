@@ -474,7 +474,36 @@ def test_embed_text_capped_but_content_untruncated() -> None:
         signature="def f():",
     )
     assert len(c.content) == 5000
-    assert len(c.text_for_embedding()) <= EMBED_CHAR_CAP + 2
+    assert len(c.text_for_embedding()) <= EMBED_CHAR_CAP
+
+
+def test_embed_text_caps_oversized_header() -> None:
+    from anvay.ingest.models import EMBED_CHAR_CAP, Chunk, ResourceRef
+
+    c = Chunk(
+        product_id="p",
+        resource=ResourceRef(source_id="local:test", uri="a.py", mime="text/x-python"),
+        content="body",
+        start_line=1,
+        end_line=1,
+        kind=ChunkKind.CODE,
+        context_path="ctx",
+        signature="def f():",
+        context_summary="s" * (EMBED_CHAR_CAP + 500),
+    )
+    assert len(c.text_for_embedding()) == EMBED_CHAR_CAP
+
+
+def test_decorated_python_signature_uses_definition_header() -> None:
+    chunks = chunk_resource(
+        "p",
+        _res("decorated.py", "text/x-python"),
+        "@route('/items')\ndef list_items():\n"
+        "    values = [str(i) for i in range(50)]\n"
+        "    return ','.join(values)\n",
+    )
+    fn = next(c for c in chunks if c.context_path == "list_items")
+    assert fn.signature == "def list_items():"
 
 
 def test_sparse_text_decorates_identifiers() -> None:

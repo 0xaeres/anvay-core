@@ -31,6 +31,13 @@ class FakeIndexer:
         self.deleted.extend(ids)
         return len(ids)
 
+    def collection_for_vector_kind(self, vector_kind: str) -> str:
+        if vector_kind == "code":
+            return self._code
+        if vector_kind == "text":
+            return self._text
+        raise ValueError(vector_kind)
+
 
 def _registry(tmp_path: Path, chunk_ids: list[str]) -> Registry:
     reg = Registry(tmp_path / "registry.db")

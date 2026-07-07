@@ -11,6 +11,7 @@ Two phases:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -87,7 +88,7 @@ async def run_daemon(
                 orphan_sweep=config.ingestion.orphan_sweep,
             )
         )
-        stack.callback(maintenance.cancel)
+        stack.push_async_callback(_cancel_and_await, maintenance)
 
         log.info("daemon: watching for updates (product=%s)", product_id)
         async for event in manager.updates():
@@ -172,8 +173,8 @@ async def _periodic_maintenance(
     indexer: Any,
     embed_version: str,
     orphan_sweep=None,
-    interval_s: float = 300.0,
-    stuck_after_s: float = 600.0,
+    interval_s: float | None = None,
+    stuck_after_s: float | None = None,
 ) -> None:
     """Re-run indexing for manifest rows stuck in index_status=pending, and
     (when enabled) sweep orphaned Qdrant points that no manifest row claims.
@@ -182,6 +183,16 @@ async def _periodic_maintenance(
     manifest commit (process kill, Qdrant outage mid-write)."""
     from anvay.ingest.models import ResourceRef
     from anvay.ingest.reconcile import sweep_orphan_points
+
+    if orphan_sweep is not None:
+        interval_s = interval_s if interval_s is not None else orphan_sweep.interval_seconds
+        stuck_after_s = (
+            stuck_after_s
+            if stuck_after_s is not None
+            else orphan_sweep.stuck_after_seconds
+        )
+    interval_s = 300.0 if interval_s is None else interval_s
+    stuck_after_s = 600.0 if stuck_after_s is None else stuck_after_s
 
     while True:
         await asyncio.sleep(interval_s)
@@ -204,14 +215,18 @@ async def _periodic_maintenance(
             continue
         for row in stuck:
             uri = row["resourceUri"]
+            source_key = row["sourceKey"]
+            if not _daemon_readable_source(manager, source_key):
+                log.debug("daemon: sweep skip unsupported source %s for %s", source_key, uri)
+                continue
             ref = ResourceRef(
-                source_id=row["sourceKey"],
+                source_id=source_key,
                 uri=uri,
                 mime=row.get("mime") or "text/plain",
             )
             try:
                 content = await _read_with_manager(
-                    manager, _StuckEvent(source_id=row["sourceKey"], resource=ref)
+                    manager, _StuckEvent(source_id=source_key, resource=ref)
                 )
             except Exception as e:
                 log.warning("daemon: sweep read failed for %s: %s", uri, e)
@@ -225,12 +240,27 @@ async def _periodic_maintenance(
                     enricher=enricher,
                     indexer=indexer,
                     registry=registry,
-                    source_key=row["sourceKey"],
+                    source_key=source_key,
                     embedding_version=embed_version,
                 )
                 log.info("daemon: sweep re-indexed stuck resource %s", uri)
             except Exception:
                 log.exception("daemon: sweep reindex failed for %s", uri)
+
+
+async def _cancel_and_await(task: asyncio.Task) -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+def _daemon_readable_source(manager: ConnectorManager, source_id: str) -> bool:
+    for state in manager._states.values():
+        if source_id == f"mcp:{state.cfg.name}":
+            return True
+        if source_id == f"local:{state.cfg.name}" and state.cfg.type == "local_fs":
+            return True
+    return False
 
 
 async def _read_with_manager(manager: ConnectorManager, event) -> str:

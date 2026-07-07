@@ -164,6 +164,8 @@ class OrphanSweepCfg(BaseModel):
     enabled: bool = False
     dry_run: bool = True
     grace_minutes: int = 60
+    interval_seconds: float = Field(300.0, gt=0)
+    stuck_after_seconds: float = Field(600.0, gt=0)
 
 
 class IngestionCfg(BaseModel):
