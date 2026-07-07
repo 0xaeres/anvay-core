@@ -99,6 +99,13 @@ class Indexer:
     async def aclose(self) -> None:
         await self.client.close()
 
+    async def health(self) -> bool:
+        try:
+            await self.client.get_collections()
+            return True
+        except Exception:
+            return False
+
     # ------------------------------------------------------------ setup
 
     async def ensure_collections(self) -> None:

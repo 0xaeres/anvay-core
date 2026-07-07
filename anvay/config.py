@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from functools import lru_cache
@@ -12,17 +13,30 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+log = logging.getLogger(__name__)
+
 _ENV_VAR_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
-def _expand_env(value: Any) -> Any:
-    """Recursively substitute ${VAR} placeholders with environment values."""
+def _expand_env(value: Any, *, missing: set[str] | None = None) -> Any:
+    """Recursively substitute ${VAR} placeholders with environment values.
+
+    Unresolved names are collected into `missing` (when provided) instead of
+    silently becoming empty strings, so callers can warn/fail with the
+    variable name rather than a confusing downstream provider error.
+    """
     if isinstance(value, str):
-        return _ENV_VAR_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        def _sub(m: re.Match[str]) -> str:
+            name = m.group(1)
+            if name not in os.environ and missing is not None:
+                missing.add(name)
+            return os.environ.get(name, "")
+
+        return _ENV_VAR_RE.sub(_sub, value)
     if isinstance(value, dict):
-        return {k: _expand_env(v) for k, v in value.items()}
+        return {k: _expand_env(v, missing=missing) for k, v in value.items()}
     if isinstance(value, list):
-        return [_expand_env(v) for v in value]
+        return [_expand_env(v, missing=missing) for v in value]
     return value
 
 
@@ -230,7 +244,14 @@ class AnvayConfig(BaseSettings):
                 f"Config not found at {p}. Run `cp anvay.yaml.example anvay.yaml` and edit."
             )
         raw = yaml.safe_load(p.read_text())
-        expanded = _expand_env(raw)
+        missing: set[str] = set()
+        expanded = _expand_env(raw, missing=missing)
+        if missing:
+            log.warning(
+                "anvay.yaml references undefined env var(s): %s "
+                "(substituted with empty string)",
+                ", ".join(sorted(missing)),
+            )
         return cls(**expanded)
 
 

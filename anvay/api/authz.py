@@ -19,6 +19,24 @@ def prod_enabled() -> bool:
     return (os.getenv("ANVAY_ENV") or "").strip().lower() == "production"
 
 
+def client_ip(request: Request) -> str:
+    """Best-effort client IP, trusting the proxy in front of the app.
+
+    Production runs behind Caddy (docs/DEPLOYMENT.md), so `request.client.host`
+    is the proxy's own address, not the caller's — every real user would share
+    one rate-limit bucket. In production, trust the first hop of
+    `X-Forwarded-For` (the address Caddy appends closest to the client);
+    otherwise fall back to the raw socket address.
+    """
+    if prod_enabled():
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            first = forwarded.split(",", 1)[0].strip()
+            if first:
+                return first
+    return request.client.host if request.client else "unknown"
+
+
 def auth_enabled() -> bool:
     return bool((os.getenv("ANVAY_SECRET_KEY") or "").strip())
 

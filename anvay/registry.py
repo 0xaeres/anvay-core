@@ -11,17 +11,14 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from anvay.auth.roles import LEGACY_ROLE_MAP as _LEGACY_USER_ROLE_MAP
+from anvay.auth.roles import normalize_role as _normalize_user_role
 from anvay.auth.token_cipher import TokenCipher, TokenCipherError
 
 log = logging.getLogger(__name__)
 
 # Keys whose values are encrypted at rest in source config blobs.
 _SECRET_KEY_HINTS = ("token", "api_key", "password", "secret")
-_LEGACY_USER_ROLE_MAP = {
-    "org_admin": "admin",
-    "product_admin": "editor",
-    "sme": "viewer",
-}
 
 
 def _now_iso() -> str:
@@ -234,9 +231,13 @@ class Registry:
     def upsert_product(self, product: dict) -> None:
         with self._conn() as conn:
             conn.execute(
-                """INSERT OR REPLACE INTO products
-                   (id, name, tagline, owner_js, onboarded_at)
-                   VALUES (?,?,?,?,?)""",
+                """INSERT INTO products (id, name, tagline, owner_js, onboarded_at)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       name = excluded.name,
+                       tagline = excluded.tagline,
+                       owner_js = excluded.owner_js,
+                       onboarded_at = excluded.onboarded_at""",
                 (
                     product["id"],
                     product["name"],
@@ -339,10 +340,6 @@ def _backfill_product_members(conn: sqlite3.Connection) -> None:
                    VALUES (?,?,?,?)""",
                 (str(product_id), row["id"], role, now),
             )
-
-
-def _normalize_user_role(role: str) -> str:
-    return _LEGACY_USER_ROLE_MAP.get(role, role)
 
 
 def _migrate_user_roles(conn: sqlite3.Connection) -> None:

@@ -8,7 +8,7 @@ import os
 import secrets
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,15 +16,12 @@ from pathlib import Path
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
+from anvay.auth.roles import LEGACY_ROLE_MAP, ROLES
+from anvay.auth.roles import normalize_role as normalize_user_role
+
 SESSION_COOKIE = "anvay_session"
 CSRF_COOKIE = "anvay_csrf"
 SESSION_TTL_DAYS = 14
-ROLES = {"admin", "editor", "viewer"}
-LEGACY_ROLE_MAP = {
-    "org_admin": "admin",
-    "product_admin": "editor",
-    "sme": "viewer",
-}
 
 _HASHER = PasswordHasher(
     time_cost=3,
@@ -32,6 +29,12 @@ _HASHER = PasswordHasher(
     parallelism=4,
     hash_len=32,
     salt_len=16,
+)
+# Fixed valid hash (matching params above) used only to burn verify-equivalent
+# time on unknown/unapproved-email login attempts. Never matches a real password.
+_DUMMY_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=4$4bc0+SdYOcbtpInKlbl0uw$"
+    "9bkaOvpQR3u0q0B3N4ScCKUQWnBjxcsksuptwU0nVNo"
 )
 
 _SCHEMA = """
@@ -264,6 +267,11 @@ class AuthStore:
     def login(self, *, email: str, password: str) -> LoginResult:
         user = self.get_user_by_email(email)
         if not user or user["status"] != "approved":
+            # Hash against a dummy value so unknown/unapproved emails take the same
+            # time as a real verify — otherwise response latency leaks which emails
+            # are registered (user-enumeration timing oracle).
+            with suppress(InvalidHashError, VerifyMismatchError):
+                _HASHER.verify(_DUMMY_HASH, password)
             raise AuthError("invalid credentials")
         try:
             ok = _HASHER.verify(user["password_hash"], password)
@@ -476,10 +484,6 @@ class AuthStore:
 
 def hash_password(password: str) -> str:
     return _HASHER.hash(password)
-
-
-def normalize_user_role(role: str) -> str:
-    return LEGACY_ROLE_MAP.get(role, role)
 
 
 def _row_to_user(row: sqlite3.Row) -> dict:

@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import lru_cache
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,8 +33,10 @@ from anvay.api.routes import (
     sources,
 )
 from anvay.auth.store import CSRF_COOKIE, SESSION_COOKIE
-from anvay.graph.store import create_graph_store
+from anvay.graph.store import FalkorGraphStore, create_graph_store
 from anvay.ingest.enrichment_worker import EnrichmentWorker
+from anvay.ingest.indexer import Indexer
+from anvay.ingest.indexer_factory import create_indexer
 from anvay.logging_config import setup_logging
 
 setup_logging()
@@ -92,6 +95,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await stop_enrichment_worker()
+        if _health_graph_store.cache_info().currsize:
+            await _health_graph_store().aclose()
+        if _health_indexer.cache_info().currsize:
+            await _health_indexer().aclose()
 
 
 app = FastAPI(
@@ -192,10 +199,6 @@ async def _authenticate_request(request: Request) -> JSONResponse | None:
     return None
 
 
-def _auth_enabled() -> bool:
-    return auth_enabled()
-
-
 def _is_public_path(path: str) -> bool:
     public = {
         "/health",
@@ -245,6 +248,7 @@ def _validate_production_config() -> None:
 
 class HealthDependencies(BaseModel):
     falkordb: str
+    qdrant: str
 
 
 class HealthResponse(BaseModel):
@@ -252,22 +256,42 @@ class HealthResponse(BaseModel):
     dependencies: HealthDependencies
 
 
+@lru_cache(maxsize=1)
+def _health_graph_store() -> FalkorGraphStore:
+    """Process-wide graph store used only for health pings.
+
+    `/health` is polled frequently by load balancers/uptime checks; creating
+    and tearing down a fresh FalkorDB connection on every poll churns
+    connections for no benefit, so this connection is kept open for the life
+    of the process instead.
+    """
+    return create_graph_store(get_config_dep())
+
+
+@lru_cache(maxsize=1)
+def _health_indexer() -> Indexer:
+    """Process-wide Qdrant client used only for health pings (see above)."""
+    return create_indexer(get_config_dep())
+
+
 @app.get("/health", tags=["meta"], response_model=HealthResponse)
 async def health() -> HealthResponse:
     try:
-        cfg = get_config_dep()
-        graph_store = create_graph_store(cfg)
-        try:
-            falkor_ok = await graph_store.health()
-        finally:
-            await graph_store.aclose()
+        falkor_ok = await _health_graph_store().health()
     except Exception as e:
-        log.warning("health config/dependency check failed: %s", e)
+        log.warning("health falkordb check failed: %s", e)
         falkor_ok = False
+    try:
+        qdrant_ok = await _health_indexer().health()
+    except Exception as e:
+        log.warning("health qdrant check failed: %s", e)
+        qdrant_ok = False
+    ok = falkor_ok and qdrant_ok
     return HealthResponse(
-        status="ok" if falkor_ok else "degraded",
+        status="ok" if ok else "degraded",
         dependencies=HealthDependencies(
             falkordb="ok" if falkor_ok else "unavailable",
+            qdrant="ok" if qdrant_ok else "unavailable",
         ),
     )
 
