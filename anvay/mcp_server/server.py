@@ -28,8 +28,18 @@ from anvay.mcp_server import tools as nx_tools
 
 log = logging.getLogger("anvay.mcp_server")
 
+_RESPONSE_SHAPE_PROPS = {
+    "detail": {
+        "type": "string",
+        "enum": ["anchor", "excerpt", "full"],
+        "default": "excerpt",
+        "description": "Response density: anchors only, capped excerpts, or full chunk bodies.",
+    },
+    "max_response_tokens": {"type": "integer", "default": 4000},
+}
 
-def _build_server(*, product: str, config: AnvayConfig) -> Server:
+
+def _build_server(*, product: str, config: AnvayConfig) -> tuple[Server, nx_tools.ToolState]:
     server: Server = Server("anvay")
     state = nx_tools.ToolState(product=product, config=config)
 
@@ -59,11 +69,18 @@ def _build_server(*, product: str, config: AnvayConfig) -> Server:
             Tool(
                 name="get_skill",
                 description=(
-                    "Return the full Markdown body and parsed frontmatter for a named skill."
+                    "Return the full Markdown body and parsed frontmatter for a named "
+                    "skill, or only a specified section subtree when `section` is set."
                 ),
                 inputSchema={
                     "type": "object",
-                    "properties": {"name": {"type": "string"}},
+                    "properties": {
+                        "name": {"type": "string"},
+                        "section": {
+                            "type": "string",
+                            "description": "Optional H2 heading — returns only that section's subtree.",
+                        },
+                    },
                     "required": ["name"],
                 },
             ),
@@ -91,6 +108,7 @@ def _build_server(*, product: str, config: AnvayConfig) -> Server:
                     "properties": {
                         "symbol": {"type": "string"},
                         "file_glob": {"type": "string", "default": "**/*"},
+                        **_RESPONSE_SHAPE_PROPS,
                     },
                     "required": ["symbol"],
                 },
@@ -106,6 +124,7 @@ def _build_server(*, product: str, config: AnvayConfig) -> Server:
                     "properties": {
                         "query": {"type": "string"},
                         "top_k": {"type": "integer", "default": 5},
+                        **_RESPONSE_SHAPE_PROPS,
                     },
                     "required": ["query"],
                 },
@@ -143,6 +162,12 @@ def _build_server(*, product: str, config: AnvayConfig) -> Server:
                             "default": "auto",
                         },
                         "top_k": {"type": "integer", "default": 10},
+                        **_RESPONSE_SHAPE_PROPS,
+                        "debug": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include retrieval trace and per-hit metadata.",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -240,7 +265,7 @@ def _build_server(*, product: str, config: AnvayConfig) -> Server:
             return json.dumps(summary, indent=2)
         raise ValueError(f"unknown resource: {uri}")
 
-    return server
+    return server, state
 
 
 async def _render_meta_skill(state: nx_tools.ToolState) -> str:
@@ -283,7 +308,11 @@ def _parse_args() -> argparse.Namespace:
 async def amain() -> None:
     args = _parse_args()
     config = AnvayConfig.load(args.config)
-    server = _build_server(product=args.product, config=config)
+    server, state = _build_server(product=args.product, config=config)
+    # Fire-and-forget model warm-up so the first tool call doesn't pay
+    # embedder/reranker cold-start inside the interactive latency budget.
+    warmup_task = asyncio.create_task(state.warmup())
+    warmup_task.add_done_callback(lambda _t: None)
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
 

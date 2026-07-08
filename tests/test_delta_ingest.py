@@ -9,7 +9,7 @@ import pytest
 
 from anvay.config import AnvayConfig, EnrichCfg
 from anvay.ingest import pipeline
-from anvay.ingest.models import EmbeddedChunk, ResourceRef
+from anvay.ingest.models import Chunk, ChunkKind, EmbeddedChunk, ResourceRef
 from anvay.registry import Registry
 from anvay.retrieval.sparse import SparseVector
 
@@ -572,3 +572,87 @@ async def test_progress_events_cover_read_and_index_phases(tmp_path: Path) -> No
     assert read[-1]["done"] == 5
     assert index[-1]["done"] == 5
     assert index[-1]["pct"] == 100
+
+
+def _chunk(uri: str, start: int, end: int) -> Chunk:
+    return Chunk(
+        product_id="p",
+        resource=ResourceRef(source_id="local", uri=uri, mime="text/x-python"),
+        content="x\n" * (end - start + 1),
+        start_line=start,
+        end_line=end,
+        kind=ChunkKind.CODE,
+    )
+
+
+def test_graph_payload_metadata_computes_neighbor_chunk_ids() -> None:
+    """Depth-1 neighbors come from edge-adjacent nodes' anchored chunk ids,
+    sorted by edge confidence desc and capped."""
+    from anvay.graph.models import GraphEdge, GraphExtraction, GraphNode, SourceRef
+
+    uri = "app.py"
+    chunk_a = _chunk(uri, 1, 4)
+    chunk_b = _chunk(uri, 10, 14)
+    chunk_c = _chunk(uri, 20, 24)
+
+    def _node(sid: str, start: int, end: int) -> GraphNode:
+        return GraphNode(
+            product_id="p",
+            stable_id=sid,
+            labels=["Symbol"],
+            properties={"resource_uri": uri, "start_line": start, "end_line": end},
+            source_refs=[
+                SourceRef(
+                    product_id="p",
+                    source_key="source",
+                    source_id="local",
+                    resource_uri=uri,
+                    anchor=f"{uri}:{start}",
+                    start_line=start,
+                    end_line=end,
+                )
+            ],
+            last_seen="2026-01-01T00:00:00+00:00",
+        )
+
+    extraction = GraphExtraction(
+        product_id="p",
+        source_key="source",
+        resource_uri=uri,
+        extraction_version="v1",
+        nodes=[_node("n-a", 1, 4), _node("n-b", 10, 14), _node("n-c", 20, 24)],
+        edges=[
+            GraphEdge(
+                product_id="p",
+                stable_id="e-ab",
+                type="CALLS",
+                from_id="n-a",
+                to_id="n-b",
+                confidence=0.9,
+                last_seen="2026-01-01T00:00:00+00:00",
+            ),
+            GraphEdge(
+                product_id="p",
+                stable_id="e-ac",
+                type="CALLS",
+                from_id="n-a",
+                to_id="n-c",
+                confidence=0.4,
+                last_seen="2026-01-01T00:00:00+00:00",
+            ),
+        ],
+    )
+
+    result = pipeline._graph_payload_metadata(
+        [chunk_a, chunk_b, chunk_c],
+        graph_extractions={uri: extraction},
+        product_id="p",
+        source_key="source",
+    )
+    neighbor_chunk_ids_by_id = result[6]
+
+    # A links to B (0.9) and C (0.4) → both, ordered by confidence.
+    assert neighbor_chunk_ids_by_id[chunk_a.id] == [chunk_b.id, chunk_c.id]
+    # B and C only touch A.
+    assert neighbor_chunk_ids_by_id[chunk_b.id] == [chunk_a.id]
+    assert neighbor_chunk_ids_by_id[chunk_c.id] == [chunk_a.id]

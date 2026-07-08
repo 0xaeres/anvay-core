@@ -114,9 +114,9 @@ async def test_product_skill_creates_one_proposal_with_fake_retrieval(tmp_path, 
         config_path="anvay.yaml",
     )
 
+    # New topology: synthesizer → skill_eval → (conditional repair) → finalizer.
     state.update(await skill.planner(state, config=cfg, retrieval=retrieval, chat=chat))
     state.update(await skill.synthesizer(state, config=cfg, chat=chat))
-    state.update(await skill.repair_loop(state, chat=chat))
     state.update(await skill.evaluator(state, config=cfg, chat=chat))
     state.update(await skill.finalizer(state))
 

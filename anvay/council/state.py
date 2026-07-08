@@ -92,6 +92,8 @@ class CouncilState(TypedDict, total=False):
     proposal_id: str | None
     critique: Critique | None
     revision_count: int
+    # Graph-level eval→repair loop counter (bounded by the conditional edge).
+    eval_repair_attempts: int
 
     # Append-only streams
     deliberation: Annotated[list[DeliberationMessage], operator.add]
@@ -122,6 +124,7 @@ def initial_state(
         "proposal_id": None,
         "critique": None,
         "revision_count": 0,
+        "eval_repair_attempts": 0,
         "deliberation": [],
         "costs": [],
     }

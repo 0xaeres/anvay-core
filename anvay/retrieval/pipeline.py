@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -172,11 +173,38 @@ async def _hybrid_search(
             for r in raw
         ]
 
+    dense_w, sparse_w = _shape_weights(sparse_query)
     rankings: list[list[Hit]] = []
+    weights: list[float] = []
     for kind in vector_kinds:
         d, s, g = await asyncio.gather(_dense(kind), _sparse(kind), _graph(kind))
         rankings.extend([d, s, g])
-    return rrf_merge(rankings, top_k=20)
+        weights.extend([dense_w, sparse_w, 1.0])
+    return rrf_merge(rankings, top_k=20, weights=weights)
+
+
+# Symbol/path shape: identifiers, dotted paths, file extensions, snake/camelCase.
+_SYMBOL_SHAPE_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*"       # a.b dotted
+    r"|[A-Za-z0-9_./-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|sql|ya?ml|toml|md)\b"  # file paths
+    r"|[a-z0-9]+_[a-z0-9_]+"                                  # snake_case
+    r"|[a-z]+[A-Z][A-Za-z0-9]*"                               # camelCase
+)
+
+
+def _shape_weights(query: str) -> tuple[float, float]:
+    """Bias RRF fusion by query shape: symbol/path-like queries lean on BM25
+    (exact lexical), natural-language questions lean on dense. Returns
+    (dense_weight, sparse_weight). Deterministic — a cheap regex, gate-able."""
+    has_symbol = bool(_SYMBOL_SHAPE_RE.search(query))
+    words = re.findall(r"[A-Za-z']+", query)
+    nl_words = [w for w in words if len(w) >= 3]
+    looks_nl = len(nl_words) >= 5 and not has_symbol
+    if has_symbol and not looks_nl:
+        return 0.8, 1.2
+    if looks_nl:
+        return 1.2, 0.8
+    return 1.0, 1.0
 
 
 async def _embed_query_vectors(

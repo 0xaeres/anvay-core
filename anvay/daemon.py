@@ -10,9 +10,12 @@ Two phases:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from contextlib import AsyncExitStack
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +25,8 @@ from anvay.ingest.embedder import EmbedderClient
 from anvay.ingest.enricher import ContextualEnricher
 from anvay.ingest.incremental import reindex_resource
 from anvay.ingest.indexer_factory import create_indexer
+from anvay.ingest.pipeline import embedding_version
+from anvay.registry import Registry
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +53,8 @@ async def run_daemon(
         )
         indexer = create_indexer(config)
         manager = ConnectorManager(config)
+        registry = Registry(config.storage.proposal_queue.parent / "registry.db")
+        embed_version = embedding_version(config)
 
         stack.push_async_callback(embedder.aclose)
         stack.push_async_callback(enricher.aclose)
@@ -65,7 +72,23 @@ async def run_daemon(
                 enricher=enricher,
                 indexer=indexer,
                 enrich=True,
+                registry=registry,
+                embed_version=embed_version,
             )
+
+        maintenance = asyncio.create_task(
+            _periodic_maintenance(
+                registry=registry,
+                manager=manager,
+                product_id=product_id,
+                embedder=embedder,
+                enricher=enricher,
+                indexer=indexer,
+                embed_version=embed_version,
+                orphan_sweep=config.ingestion.orphan_sweep,
+            )
+        )
+        stack.push_async_callback(_cancel_and_await, maintenance)
 
         log.info("daemon: watching for updates (product=%s)", product_id)
         async for event in manager.updates():
@@ -82,6 +105,12 @@ async def run_daemon(
                     embedder=embedder,
                     enricher=enricher,
                     indexer=indexer,
+                    registry=registry,
+                    # Daemon manifests are namespaced by connector source_id
+                    # (e.g. "local:docs"), distinct from the API's
+                    # "<source_name>:<repo>" keys.
+                    source_key=event.source_id,
+                    embedding_version=embed_version,
                 )
                 log.info("daemon: reindexed %s", event.resource.uri)
             except Exception as e:
@@ -96,6 +125,8 @@ async def _bootstrap_sync(
     enricher: ContextualEnricher,
     indexer: Any,
     enrich: bool,
+    registry: Registry | None = None,
+    embed_version: str = "",
 ) -> None:
     log.info("daemon: bootstrap sync (product=%s)", product_id)
     started = datetime.now(UTC)
@@ -115,12 +146,121 @@ async def _bootstrap_sync(
                 enricher=enricher,
                 indexer=indexer,
                 enrich=enrich,
+                registry=registry,
+                source_key=resource.source_id,
+                embedding_version=embed_version,
             )
             count += 1
         except Exception as e:
             log.warning("bootstrap reindex failed %s: %s", resource.uri, e)
     elapsed = (datetime.now(UTC) - started).total_seconds()
     log.info("daemon: bootstrap done - %d resources in %.1fs", count, elapsed)
+
+
+@dataclass
+class _StuckEvent:
+    source_id: str
+    resource: Any
+
+
+async def _periodic_maintenance(
+    *,
+    registry: Registry,
+    manager: ConnectorManager,
+    product_id: str,
+    embedder: EmbedderClient,
+    enricher: ContextualEnricher,
+    indexer: Any,
+    embed_version: str,
+    orphan_sweep=None,
+    interval_s: float | None = None,
+    stuck_after_s: float | None = None,
+) -> None:
+    """Re-run indexing for manifest rows stuck in index_status=pending, and
+    (when enabled) sweep orphaned Qdrant points that no manifest row claims.
+
+    Catches resources whose index run died between the pending mark and the
+    manifest commit (process kill, Qdrant outage mid-write)."""
+    from anvay.ingest.models import ResourceRef
+    from anvay.ingest.reconcile import sweep_orphan_points
+
+    if orphan_sweep is not None:
+        interval_s = interval_s if interval_s is not None else orphan_sweep.interval_seconds
+        stuck_after_s = (
+            stuck_after_s
+            if stuck_after_s is not None
+            else orphan_sweep.stuck_after_seconds
+        )
+    interval_s = 300.0 if interval_s is None else interval_s
+    stuck_after_s = 600.0 if stuck_after_s is None else stuck_after_s
+
+    while True:
+        await asyncio.sleep(interval_s)
+        if orphan_sweep is not None and orphan_sweep.enabled:
+            try:
+                await sweep_orphan_points(
+                    registry=registry,
+                    indexer=indexer,
+                    product_id=product_id,
+                    grace_minutes=orphan_sweep.grace_minutes,
+                    dry_run=orphan_sweep.dry_run,
+                )
+            except Exception:
+                log.exception("daemon: orphan sweep failed")
+        cutoff = (datetime.now(UTC) - timedelta(seconds=stuck_after_s)).isoformat()
+        try:
+            stuck = registry.list_stuck_index_pending(product_id, older_than_iso=cutoff)
+        except Exception:
+            log.exception("daemon: stuck-pending query failed")
+            continue
+        for row in stuck:
+            uri = row["resourceUri"]
+            source_key = row["sourceKey"]
+            if not _daemon_readable_source(manager, source_key):
+                log.debug("daemon: sweep skip unsupported source %s for %s", source_key, uri)
+                continue
+            ref = ResourceRef(
+                source_id=source_key,
+                uri=uri,
+                mime=row.get("mime") or "text/plain",
+            )
+            try:
+                content = await _read_with_manager(
+                    manager, _StuckEvent(source_id=source_key, resource=ref)
+                )
+            except Exception as e:
+                log.warning("daemon: sweep read failed for %s: %s", uri, e)
+                continue
+            try:
+                await reindex_resource(
+                    product_id=product_id,
+                    resource=ref,
+                    content=content,
+                    embedder=embedder,
+                    enricher=enricher,
+                    indexer=indexer,
+                    registry=registry,
+                    source_key=source_key,
+                    embedding_version=embed_version,
+                )
+                log.info("daemon: sweep re-indexed stuck resource %s", uri)
+            except Exception:
+                log.exception("daemon: sweep reindex failed for %s", uri)
+
+
+async def _cancel_and_await(task: asyncio.Task) -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+def _daemon_readable_source(manager: ConnectorManager, source_id: str) -> bool:
+    for state in manager._states.values():
+        if source_id == f"mcp:{state.cfg.name}":
+            return True
+        if source_id == f"local:{state.cfg.name}" and state.cfg.type == "local_fs":
+            return True
+    return False
 
 
 async def _read_with_manager(manager: ConnectorManager, event) -> str:

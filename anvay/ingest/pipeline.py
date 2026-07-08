@@ -19,6 +19,7 @@ import json
 import logging
 import sys
 import time
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,7 +37,7 @@ from anvay.graph.extractor import (
 from anvay.graph.llm_extractor import extract_bounded_llm_graph, graph_llm_supported_resource
 from anvay.graph.models import GraphExtraction
 from anvay.graph.store import create_graph_store
-from anvay.ingest.chunker import chunk_resource
+from anvay.ingest.chunker import CHUNKER_VERSION, chunk_resource
 from anvay.ingest.embedder import EmbedderClient, EmbedderError
 from anvay.ingest.enricher import ContextualEnricher
 from anvay.ingest.indexer import SourceRefPayload
@@ -79,6 +80,9 @@ class _Registry(Protocol):
     def delete_resource_manifest(
         self, product_id: str, source_key: str, resource_uri: str
     ) -> bool: ...
+    def mark_resource_index_pending(
+        self, product_id: str, source_key: str, resource_uri: str, *, at: str
+    ) -> None: ...
 
 
 @dataclass
@@ -119,6 +123,10 @@ def embedding_version(config: AnvayConfig) -> str:
         "vector_quantization_enabled": config.vector_store.quantization.enabled,
         "vector_quantization_type": config.vector_store.quantization.type,
         "vector_quantization_bits": config.vector_store.quantization.bits,
+        # Chunk shape + sparse passage text: bumping either re-chunks and
+        # re-embeds everything through the normal delta path.
+        "chunker_version": CHUNKER_VERSION,
+        "sparse_decoration": True,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -333,6 +341,30 @@ async def run_ingest(
                 embedding_version=version,
                 graph_extraction_version=graph_index_version,
             )
+            if manifest_by_uri and hasattr(indexer, "existing_point_ids"):
+                all_manifest_ids = [
+                    cid
+                    for row in manifest_by_uri.values()
+                    for cid in row["chunkIds"]
+                ]
+                existing = await indexer.existing_point_ids(all_manifest_ids)
+                stale_uris = [
+                    uri
+                    for uri, row in manifest_by_uri.items()
+                    if any(cid not in existing for cid in row["chunkIds"])
+                ]
+                for uri in stale_uris:
+                    del manifest_by_uri[uri]
+                    registry.delete_resource_manifest(product_id, source_key, uri)
+                if stale_uris:
+                    await emit(
+                        "warn",
+                        "manifest",
+                        f"Dropped {len(stale_uris)} stale manifest entries "
+                        f"(points missing from vector store) — will fully reindex",
+                        source_key=source_key,
+                        stale=len(stale_uris),
+                    )
         await emit("stage", "discover", "Discovering resources")
 
         pending: list[_ResourcePayload] = []
@@ -599,7 +631,7 @@ async def run_ingest(
                         chunks=len(vector_chunks),
                     )
                     sparse_vecs = await aencode_passages(
-                        [c.text_for_embedding() for c in vector_chunks]
+                        [c.sparse_text_for_embedding() for c in vector_chunks]
                     )
                     sparse_by_id = {
                         c.id: sv for c, sv in zip(vector_chunks, sparse_vecs, strict=True)
@@ -615,6 +647,7 @@ async def run_ingest(
                     citation_anchor_by_id,
                     graph_extraction_version_by_id,
                     artifact_type_by_id,
+                    neighbor_chunk_ids_by_id,
                 ) = _graph_payload_metadata(
                     vector_chunks,
                     graph_extractions=graph_extractions,
@@ -628,6 +661,11 @@ async def run_ingest(
                     batch=batch_id,
                     chunks=len(embedded),
                 )
+                if delta_enabled:
+                    for uri in {c.resource.uri for c in vector_chunks}:
+                        registry.mark_resource_index_pending(
+                            product_id, source_key, uri, at=indexed_at
+                        )
                 n = await indexer.upsert(
                     embedded,
                     sparse_by_id=sparse_by_id,
@@ -639,6 +677,7 @@ async def run_ingest(
                     citation_anchor_by_id=citation_anchor_by_id,
                     graph_extraction_version_by_id=graph_extraction_version_by_id,
                     artifact_type_by_id=artifact_type_by_id,
+                    neighbor_chunk_ids_by_id=neighbor_chunk_ids_by_id,
                     embedding_version=version,
                     indexed_at=indexed_at,
                 )
@@ -650,6 +689,7 @@ async def run_ingest(
                     citation_anchor_by_id,
                     graph_extraction_version_by_id,
                     artifact_type_by_id,
+                    neighbor_chunk_ids_by_id,
                 ) = _graph_payload_metadata(
                     graph_refresh_chunks,
                     graph_extractions=graph_extractions,
@@ -664,6 +704,7 @@ async def run_ingest(
                     citation_anchor_by_id=citation_anchor_by_id,
                     graph_extraction_version_by_id=graph_extraction_version_by_id,
                     artifact_type_by_id=artifact_type_by_id,
+                    neighbor_chunk_ids_by_id=neighbor_chunk_ids_by_id,
                 )
 
             graph_updates: dict[str, tuple[str, list[str], str]] = {}
@@ -760,6 +801,8 @@ async def run_ingest(
                             "graphStatus": graph_status,
                             "graphFactIds": graph_fact_ids,
                             "graphIndexedAt": graph_indexed_at,
+                            "indexStatus": "indexed",
+                            "indexStatusAt": indexed_at,
                         }
                     )
                     await emit(
@@ -1035,6 +1078,7 @@ def _graph_payload_metadata(
     dict[str, str],
     dict[str, str],
     dict[str, str],
+    dict[str, list[str]],
 ]:
     graph_node_ids_by_id: dict[str, list[str]] = {}
     entity_ids_by_id: dict[str, list[str]] = {}
@@ -1043,10 +1087,12 @@ def _graph_payload_metadata(
     graph_extraction_version_by_id: dict[str, str] = {}
     artifact_type_by_id: dict[str, str] = {}
 
+    chunks_by_uri: dict[str, list[Chunk]] = defaultdict(list)
     for chunk in chunks:
         extraction = graph_extractions.get(chunk.resource.uri)
         if extraction is None:
             continue
+        chunks_by_uri[chunk.resource.uri].append(chunk)
         graph_node_ids_by_id[chunk.id] = graph_node_ids_for_chunk(extraction, chunk)
         entity_ids_by_id[chunk.id] = entity_ids_for_chunk(extraction, chunk)
         source_ref_by_id[chunk.id] = SourceRefPayload(
@@ -1067,6 +1113,10 @@ def _graph_payload_metadata(
         else:
             artifact_type_by_id[chunk.id] = chunk.kind.value
 
+    neighbor_chunk_ids_by_id = _neighbor_chunk_ids(
+        chunks_by_uri, graph_extractions=graph_extractions
+    )
+
     return (
         graph_node_ids_by_id,
         entity_ids_by_id,
@@ -1074,7 +1124,94 @@ def _graph_payload_metadata(
         citation_anchor_by_id,
         graph_extraction_version_by_id,
         artifact_type_by_id,
+        neighbor_chunk_ids_by_id,
     )
+
+
+# Cap on precomputed depth-1 neighbors stored per chunk payload.
+_NEIGHBOR_CHUNK_CAP = 8
+
+
+def _node_chunk_spans(node: object, uri: str) -> list[tuple[int, int]]:
+    """Line spans a graph node anchors to within `uri`, from its source_refs
+    chunk anchors (preferred) or its start/end_line properties."""
+    spans: list[tuple[int, int]] = []
+    for ref in getattr(node, "source_refs", []) or []:
+        if (
+            getattr(ref, "resource_uri", None) == uri
+            and isinstance(getattr(ref, "start_line", None), int)
+            and isinstance(getattr(ref, "end_line", None), int)
+        ):
+            spans.append((ref.start_line, ref.end_line))
+    props = getattr(node, "properties", {}) or {}
+    if props.get("resource_uri") == uri:
+        start, end = props.get("start_line"), props.get("end_line")
+        if isinstance(start, int) and isinstance(end, int):
+            spans.append((start, end))
+    return spans
+
+
+def _neighbor_chunk_ids(
+    chunks_by_uri: dict[str, list[Chunk]],
+    *,
+    graph_extractions: dict[str, GraphExtraction],
+) -> dict[str, list[str]]:
+    """Per-chunk depth-1 neighbor chunk ids from edge-adjacent graph nodes.
+
+    For each chunk, walk the resource's GraphExtraction edges touching a node
+    that anchors to the chunk, resolve the adjacent node to the sibling chunk(s)
+    it anchors to (via source_refs / line properties), and keep up to
+    `_NEIGHBOR_CHUNK_CAP` sorted by edge confidence desc (stable tiebreak on id).
+
+    Cross-resource limitation: node stable_ids are resource-scoped and a
+    neighbor in another resource has no resolvable chunk id in this batch, so
+    only intra-resource edges contribute. Cross-resource depth-1 still requires
+    the FalkorDB traverse path in retrieval.
+    """
+    out: dict[str, list[str]] = {}
+    for uri, uri_chunks in chunks_by_uri.items():
+        extraction = graph_extractions.get(uri)
+        if extraction is None:
+            continue
+        # node stable_id -> chunk ids the node anchors to (precise line overlap)
+        node_to_chunks: dict[str, list[str]] = defaultdict(list)
+        for node in extraction.nodes:
+            spans = _node_chunk_spans(node, uri)
+            if not spans:
+                continue
+            for chunk in uri_chunks:
+                if any(
+                    s <= chunk.end_line and e >= chunk.start_line for s, e in spans
+                ):
+                    node_to_chunks[node.stable_id].append(chunk.id)
+
+        chunk_to_nodes: dict[str, set[str]] = defaultdict(set)
+        for node_id, cids in node_to_chunks.items():
+            for cid in cids:
+                chunk_to_nodes[cid].add(node_id)
+
+        for chunk in uri_chunks:
+            node_ids = chunk_to_nodes.get(chunk.id)
+            if not node_ids:
+                continue
+            best_conf: dict[str, float] = {}
+            for edge in extraction.edges:
+                if edge.from_id in node_ids:
+                    other = edge.to_id
+                elif edge.to_id in node_ids:
+                    other = edge.from_id
+                else:
+                    continue
+                conf = float(edge.confidence)
+                for neighbor_id in node_to_chunks.get(other, []):
+                    if neighbor_id == chunk.id:
+                        continue
+                    if conf > best_conf.get(neighbor_id, -1.0):
+                        best_conf[neighbor_id] = conf
+            if best_conf:
+                ranked = sorted(best_conf.items(), key=lambda kv: (-kv[1], kv[0]))
+                out[chunk.id] = [cid for cid, _ in ranked[:_NEIGHBOR_CHUNK_CAP]]
+    return out
 
 
 async def run_query(

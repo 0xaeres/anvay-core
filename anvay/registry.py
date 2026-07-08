@@ -11,17 +11,14 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from anvay.auth.roles import LEGACY_ROLE_MAP as _LEGACY_USER_ROLE_MAP
+from anvay.auth.roles import normalize_role as _normalize_user_role
 from anvay.auth.token_cipher import TokenCipher, TokenCipherError
 
 log = logging.getLogger(__name__)
 
 # Keys whose values are encrypted at rest in source config blobs.
 _SECRET_KEY_HINTS = ("token", "api_key", "password", "secret")
-_LEGACY_USER_ROLE_MAP = {
-    "org_admin": "admin",
-    "product_admin": "editor",
-    "sme": "viewer",
-}
 
 
 def _now_iso() -> str:
@@ -140,6 +137,8 @@ CREATE TABLE IF NOT EXISTS source_resources (
     graph_status TEXT NOT NULL DEFAULT '',
     graph_fact_ids_js TEXT NOT NULL DEFAULT '[]',
     graph_indexed_at TEXT NOT NULL DEFAULT '',
+    index_status TEXT NOT NULL DEFAULT '',
+    index_status_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (product_id, source_key, resource_uri)
 );
 
@@ -232,9 +231,13 @@ class Registry:
     def upsert_product(self, product: dict) -> None:
         with self._conn() as conn:
             conn.execute(
-                """INSERT OR REPLACE INTO products
-                   (id, name, tagline, owner_js, onboarded_at)
-                   VALUES (?,?,?,?,?)""",
+                """INSERT INTO products (id, name, tagline, owner_js, onboarded_at)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       name = excluded.name,
+                       tagline = excluded.tagline,
+                       owner_js = excluded.owner_js,
+                       onboarded_at = excluded.onboarded_at""",
                 (
                     product["id"],
                     product["name"],
@@ -306,6 +309,14 @@ def _ensure_registry_columns(conn: sqlite3.Connection) -> None:
         "graph_indexed_at",
         "ALTER TABLE source_resources ADD COLUMN graph_indexed_at TEXT NOT NULL DEFAULT ''",
     )
+    _add_column_if_missing(
+        "index_status",
+        "ALTER TABLE source_resources ADD COLUMN index_status TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column_if_missing(
+        "index_status_at",
+        "ALTER TABLE source_resources ADD COLUMN index_status_at TEXT NOT NULL DEFAULT ''",
+    )
 
 
 def _backfill_product_members(conn: sqlite3.Connection) -> None:
@@ -329,10 +340,6 @@ def _backfill_product_members(conn: sqlite3.Connection) -> None:
                    VALUES (?,?,?,?)""",
                 (str(product_id), row["id"], role, now),
             )
-
-
-def _normalize_user_role(role: str) -> str:
-    return _LEGACY_USER_ROLE_MAP.get(role, role)
 
 
 def _migrate_user_roles(conn: sqlite3.Connection) -> None:
@@ -516,6 +523,8 @@ def _row_to_resource_manifest(row: sqlite3.Row) -> dict:
     d["graphStatus"] = d.pop("graph_status", "")
     d["graphFactIds"] = json.loads(d.pop("graph_fact_ids_js", None) or "[]")
     d["graphIndexedAt"] = d.pop("graph_indexed_at", "")
+    d["indexStatus"] = d.pop("index_status", "")
+    d["indexStatusAt"] = d.pop("index_status_at", "")
     d["contentHash"] = d.pop("content_hash")
     d["resourceUri"] = d.pop("resource_uri")
     d["sourceKey"] = d.pop("source_key")
@@ -554,8 +563,9 @@ def add_manifest_methods(cls):
                    (product_id, source_key, resource_uri, content_hash, mime, size_bytes,
                     last_seen_sync, chunk_ids_js, indexed_at, embedding_version,
                     enrichment_version, enrichment_status, graph_extraction_version,
-                    graph_status, graph_fact_ids_js, graph_indexed_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    graph_status, graph_fact_ids_js, graph_indexed_at,
+                    index_status, index_status_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     row["product"],
                     row["sourceKey"],
@@ -573,6 +583,8 @@ def add_manifest_methods(cls):
                     row.get("graphStatus", ""),
                     json.dumps(row.get("graphFactIds", [])),
                     row.get("graphIndexedAt", ""),
+                    row.get("indexStatus", ""),
+                    row.get("indexStatusAt", ""),
                 ),
             )
 
@@ -610,6 +622,81 @@ def add_manifest_methods(cls):
                 ),
             )
             return cur.rowcount > 0
+
+    def update_resource_index_status(
+        self,
+        product_id: str,
+        source_key: str,
+        resource_uri: str,
+        *,
+        status: str,
+        at: str,
+    ) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                """UPDATE source_resources
+                   SET index_status = ?, index_status_at = ?
+                   WHERE product_id = ? AND source_key = ? AND resource_uri = ?""",
+                (status, at, product_id, source_key, resource_uri),
+            )
+            return cur.rowcount > 0
+
+    def mark_resource_index_pending(
+        self,
+        product_id: str,
+        source_key: str,
+        resource_uri: str,
+        *,
+        at: str,
+    ) -> None:
+        """Set index_status=pending, inserting a stub row when the resource is
+        not in the manifest yet (first-ever index of a resource)."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                """UPDATE source_resources
+                   SET index_status = 'pending', index_status_at = ?
+                   WHERE product_id = ? AND source_key = ? AND resource_uri = ?""",
+                (at, product_id, source_key, resource_uri),
+            )
+            if cur.rowcount == 0:
+                conn.execute(
+                    """INSERT OR IGNORE INTO source_resources
+                       (product_id, source_key, resource_uri, content_hash,
+                        last_seen_sync, indexed_at, index_status, index_status_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (product_id, source_key, resource_uri, "", "", "", "pending", at),
+                )
+
+    def list_manifest_chunk_ids(self, product_id: str) -> set[str]:
+        """Every chunk id any manifest row claims for the product, across all
+        source keys. Used by the reverse orphan sweep."""
+        out: set[str] = set()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT chunk_ids_js FROM source_resources WHERE product_id = ?",
+                (product_id,),
+            ).fetchall()
+        for row in rows:
+            try:
+                out.update(json.loads(row["chunk_ids_js"] or "[]"))
+            except json.JSONDecodeError:
+                continue
+        return out
+
+    def list_stuck_index_pending(
+        self, product_id: str, *, older_than_iso: str
+    ) -> list[dict]:
+        """Rows stuck in index_status=pending since before `older_than_iso`.
+        Rows with the pre-migration default '' are never returned."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM source_resources
+                   WHERE product_id = ? AND index_status = 'pending'
+                     AND index_status_at != '' AND index_status_at < ?
+                   ORDER BY index_status_at""",
+                (product_id, older_than_iso),
+            ).fetchall()
+        return [_row_to_resource_manifest(r) for r in rows]
 
     def start_sync_run(self, product_id: str, source_key: str, started_at: str) -> str:
         import uuid as _uuid
@@ -649,6 +736,10 @@ def add_manifest_methods(cls):
     cls.upsert_resource_manifest = upsert_resource_manifest
     cls.delete_resource_manifest = delete_resource_manifest
     cls.update_resource_enrichment = update_resource_enrichment
+    cls.update_resource_index_status = update_resource_index_status
+    cls.mark_resource_index_pending = mark_resource_index_pending
+    cls.list_manifest_chunk_ids = list_manifest_chunk_ids
+    cls.list_stuck_index_pending = list_stuck_index_pending
     cls.start_sync_run = start_sync_run
     cls.finish_sync_run = finish_sync_run
     return cls

@@ -9,7 +9,6 @@ from anvay.council.agents.skill import (  # private guardrails
     _anchor_uncited_sections,
     repair_loop,
 )
-from anvay.council.errors import CouncilIncompleteSkill
 from anvay.council.skill_parser import (
     _normalise_name,  # private but stable for tests
     parse_skill_markdown,
@@ -351,16 +350,21 @@ async def test_repair_loop_keeps_reviewable_draft_with_warning() -> None:
     body = "# product-skill\n\n## Interfaces And Contracts\nRoutes [file: a.rs:10].\n"
     chat = _RepairChat([""] * 4)
 
-    with pytest.raises(CouncilIncompleteSkill):
-        await repair_loop(
-            {
-                "evidence": _evi(),
-                "skill_drafts": [
-                    SkillDraft(name="product-skill", tier="application", body=body)
-                ],
-            },
-            chat=chat,
-        )
+    # New behavior: repair no longer raises on an unfixable draft — it passes the
+    # best-effort draft through with a warning so the eval→repair loop can decide.
+    out = await repair_loop(
+        {
+            "evidence": _evi(),
+            "skill_drafts": [
+                SkillDraft(name="product-skill", tier="application", body=body)
+            ],
+        },
+        chat=chat,
+    )
+    drafts = out["skill_drafts"]
+    assert len(drafts) == 1
+    assert drafts[0].repair_warnings, "expected a warning note on the unfixable draft"
+    assert out["eval_repair_attempts"] == 1
 
 
 class _ChunkGrepIndexer:

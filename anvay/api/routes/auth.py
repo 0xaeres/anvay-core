@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
 from anvay.api.authz import (
+    client_ip,
     current_user,
     product_permissions,
     public_user,
@@ -88,7 +89,7 @@ async def login(
         expires=expires,
         max_age=SESSION_TTL_DAYS * 24 * 60 * 60,
     )
-    return {"user": _public_user(result.user), "csrf_token": result.csrf_token}
+    return {"user": public_user(result.user), "csrf_token": result.csrf_token}
 
 
 @router.post("/logout")
@@ -198,7 +199,7 @@ async def list_users(
     store: AuthStore = Depends(get_auth_store),
 ) -> dict:
     require_admin(request)
-    return {"users": [_public_user(u) for u in store.list_users()]}
+    return {"users": [public_user(u) for u in store.list_users()]}
 
 
 @router.post("/users/{email}/revoke")
@@ -212,11 +213,7 @@ async def revoke_user(
         user = store.revoke_user(email)
     except AuthError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"ok": True, "user": _public_user(user)}
-
-
-def _public_user(user: dict) -> dict:
-    return public_user(user)
+    return {"ok": True, "user": public_user(user)}
 
 
 def _valid_email(value: str) -> str:
@@ -227,8 +224,7 @@ def _valid_email(value: str) -> str:
 
 
 def _client_key(request: Request, bucket: str) -> str:
-    host = request.client.host if request.client else "unknown"
-    return f"{bucket}:{host}"
+    return f"{bucket}:{client_ip(request)}"
 
 
 def _secure_cookie(request: Request) -> bool:

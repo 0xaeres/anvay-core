@@ -156,7 +156,9 @@ class EnrichmentWorker:
         embedded = await self.embedder.embed_chunks(chunks)
         sparse_by_id = {}
         if getattr(self.indexer, "requires_sparse_vectors", True):
-            sparse_vecs = await aencode_passages([c.text_for_embedding() for c in chunks])
+            sparse_vecs = await aencode_passages(
+                [c.sparse_text_for_embedding() for c in chunks]
+            )
             sparse_by_id = {c.id: sv for c, sv in zip(chunks, sparse_vecs, strict=True)}
         content_hash_by_id = {c.id: job["contentHash"] for c in chunks}
         return await self.indexer.upsert(

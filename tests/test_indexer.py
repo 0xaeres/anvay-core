@@ -111,3 +111,101 @@ async def test_indexer_splits_large_upserts() -> None:
 
     assert await indexer.upsert(embedded) == 5
     assert fake.batch_sizes == [2, 2, 1]
+
+
+@pytest.mark.asyncio
+async def test_ids_by_resource_paginates_past_scroll_limit() -> None:
+    class _Pt:
+        def __init__(self, pid: str) -> None:
+            self.id = pid
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.scroll_calls: list[tuple[str, object]] = []
+
+        async def scroll(self, *, collection_name, scroll_filter, limit, offset,
+                         with_payload, with_vectors):
+            self.scroll_calls.append((collection_name, offset))
+            if collection_name.endswith("text"):
+                return [], None
+            # Two pages for the code collection.
+            if offset is None:
+                return [_Pt(f"code-{i}") for i in range(1024)], "page2"
+            return [_Pt("code-last")], None
+
+    fake = FakeClient()
+    indexer = Indexer(url="http://127.0.0.1:6333")
+    indexer.client = fake  # type: ignore[assignment]
+
+    found = await indexer.ids_by_resource(product_id="demo", resource_uri="big.py")
+
+    code_ids = found[indexer._code]
+    assert len(code_ids) == 1025
+    assert "code-last" in code_ids
+    # Second page requested with the returned offset.
+    assert (indexer._code, "page2") in fake.scroll_calls
+
+
+@pytest.mark.asyncio
+async def test_delete_by_resource_deletes_all_paginated_ids() -> None:
+    class _Pt:
+        def __init__(self, pid: str) -> None:
+            self.id = pid
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        async def scroll(self, *, collection_name, scroll_filter, limit, offset,
+                         with_payload, with_vectors):
+            if collection_name.endswith("text"):
+                return [], None
+            if offset is None:
+                return [_Pt("a"), _Pt("b")], "next"
+            return [_Pt("c")], None
+
+        async def delete(self, *, collection_name, points_selector):
+            self.deleted.extend(str(p) for p in points_selector.points)
+
+    fake = FakeClient()
+    indexer = Indexer(url="http://127.0.0.1:6333")
+    indexer.client = fake  # type: ignore[assignment]
+
+    deleted = await indexer.delete_by_resource(product_id="demo", resource_uri="big.py")
+
+    assert sorted(deleted) == ["a", "b", "c"]
+    assert sorted(fake.deleted) == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_chunks_by_symbol_ids_paginates_until_symbols_found() -> None:
+    class _Pt:
+        def __init__(self, pid: str, symbol_id: str) -> None:
+            self.id = pid
+            self.payload = {"symbol_id": symbol_id, "resource_uri": "a.py"}
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.scroll_calls: list[object] = []
+
+        async def scroll(
+            self, *, collection_name, scroll_filter, limit, offset=None,
+            with_payload, with_vectors
+        ):
+            if collection_name.endswith("text"):
+                return [], None
+            self.scroll_calls.append(offset)
+            if offset is None:
+                return [_Pt("s1-1", "s1")], "next"
+            return [_Pt("s2-1", "s2")], None
+
+    fake = FakeClient()
+    indexer = Indexer(url="http://127.0.0.1:6333")
+    indexer.client = fake  # type: ignore[assignment]
+
+    found = await indexer.chunks_by_symbol_ids(
+        product_id="demo", symbol_ids=["s1", "s2"], limit_per_symbol=1
+    )
+
+    assert {row["id"] for row in found} == {"s1-1", "s2-1"}
+    assert fake.scroll_calls == [None, "next"]

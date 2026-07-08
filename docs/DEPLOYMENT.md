@@ -71,6 +71,16 @@ ANVAY_TRACE_CONTENT=false
 Keep `ANVAY_TRACE_CONTENT=false` unless you explicitly want prompt/response
 content in Langfuse.
 
+### Client IP behind Caddy
+
+With `ANVAY_ENV=production`, login rate limiting and access-request rate
+limiting (`anvay/api/authz.py::client_ip`) trust the rightmost trusted
+`X-Forwarded-For` hop closest to Caddy instead of the raw socket address.
+Caddy's `reverse_proxy` (`deploy/Caddyfile`) appends the client address by
+default, so no extra Caddy config is needed. If you put another proxy in front
+of Caddy, ensure it forwards the original client chain correctly; otherwise all
+clients behind it can collapse into one rate-limit bucket.
+
 ## 3. Start Backend
 
 ```bash

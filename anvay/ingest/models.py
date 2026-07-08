@@ -7,6 +7,8 @@ An `EmbeddedChunk` is a chunk plus its dense vector (named in Qdrant).
 
 from __future__ import annotations
 
+import hashlib
+import re
 import uuid
 from enum import StrEnum
 from typing import Literal
@@ -14,6 +16,20 @@ from typing import Literal
 from pydantic import BaseModel, computed_field
 
 _ANVAY_NS = uuid.UUID("8c4f4d7e-2c1b-4a6a-9a3e-1f5b8d2c9e10")
+
+# Hard cap on the characters fed to the embedder. Stored `content` is never
+# truncated — this only bounds the embedding representation so oversized
+# skeletons/doc spills stay inside local llama.cpp physical batch limits
+# (--ubatch-size 512 ≈ ~2000 chars incl. context header).
+EMBED_CHAR_CAP = 1600
+
+
+def symbol_id_for(product_id: str, resource_uri: str, context_path: str) -> str:
+    """Deterministic id linking all chunks of one symbol (declaration chunk,
+    doc-comment spill chunk, oversized-split sub-chunks). Keyed on the
+    qualified name — NOT line spans — so it survives line shifts."""
+    key = f"{product_id}|{resource_uri}|{context_path}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
 class ChunkKind(StrEnum):
@@ -51,6 +67,10 @@ class Chunk(BaseModel):
     context_path: str | None = None
     # Filled by the contextual enricher (ADR-010); falsy = no enrichment
     context_summary: str | None = None
+    # Links declaration / doc-spill / split sub-chunks of the same symbol.
+    symbol_id: str | None = None
+    # First declaration line — breadcrumb for embed text of split sub-chunks.
+    signature: str | None = None
 
     @computed_field
     @property
@@ -65,12 +85,36 @@ class Chunk(BaseModel):
         return f"{self.resource.uri}:{self.start_line}"
 
     def text_for_embedding(self) -> str:
-        """Return the string actually fed to the embedder (with context prepended)."""
-        if self.context_summary:
-            return f"{self.context_summary}\n\n{self.content}"
+        """The string actually fed to the embedder.
+
+        Header (context path + signature + enricher summary) is never
+        truncated; content is head-truncated so header + content stays under
+        EMBED_CHAR_CAP. Stored `content` is unaffected."""
+        parts: list[str] = []
         if self.context_path:
-            return f"{self.context_path}\n\n{self.content}"
-        return self.content
+            parts.append(self.context_path)
+        if self.signature and self.signature.strip() != (self.context_path or "").strip():
+            parts.append(self.signature)
+        if self.context_summary:
+            parts.append(self.context_summary)
+        header = "\n".join(parts)
+        if not header:
+            return self.content[:EMBED_CHAR_CAP]
+        if len(header) >= EMBED_CHAR_CAP:
+            return header[:EMBED_CHAR_CAP]
+        budget = EMBED_CHAR_CAP - len(header) - 2
+        if budget <= 0:
+            return header[:EMBED_CHAR_CAP]
+        return f"{header}\n\n{self.content[:budget]}"[:EMBED_CHAR_CAP]
+
+    def sparse_text_for_embedding(self) -> str:
+        """BM25 passage text: embed text plus split camelCase/snake_case
+        identifier parts so exact-word queries match code tokens."""
+        base = self.text_for_embedding()
+        decoration = _identifier_decoration(base)
+        if not decoration:
+            return base
+        return f"{base}\n{decoration}"
 
 
 class EmbeddedChunk(BaseModel):
@@ -82,6 +126,34 @@ class EmbeddedChunk(BaseModel):
 
 
 # ---------------------------------------------------------------- helpers
+
+
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+_CAMEL_SPLIT_RE = re.compile(
+    r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+"
+)
+_MAX_DECORATION_TOKENS = 80
+
+
+def _identifier_decoration(text: str) -> str:
+    """Split compound identifiers into word parts (`getUserById` →
+    `get user by id`). Doc-side only; appended, never replacing the original
+    tokens. Deterministic — no model calls."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for ident in _IDENTIFIER_RE.findall(text):
+        if "_" not in ident and ident.lower() == ident:
+            continue  # single lowercase word — already a BM25 token
+        parts = [p.lower() for p in _CAMEL_SPLIT_RE.findall(ident) if len(p) > 1]
+        if len(parts) < 2:
+            continue
+        for p in parts:
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+                if len(out) >= _MAX_DECORATION_TOKENS:
+                    return " ".join(out)
+    return " ".join(out)
 
 
 _CODE_EXTS = {

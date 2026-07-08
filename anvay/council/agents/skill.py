@@ -208,25 +208,50 @@ async def synthesizer(
     }
 
 
+def _blocking_skill_names(state: CouncilState) -> set[str]:
+    """Skills whose latest eval verdict is `failed` — the repair targets."""
+    latest: dict[str, str] = {}
+    for result in state.get("eval_results") or []:
+        latest[result.skill_name] = result.status
+    return {name for name, status in latest.items() if status == "failed"}
+
+
 async def repair_loop(
     state: CouncilState,
     *,
     chat: ChatClient,
     retrieval: RetrievalContext | None = None,
 ) -> dict:
+    """One targeted repair pass per graph iteration, driven by eval verdicts.
+
+    Only drafts whose latest eval status is `failed` are repaired; the graph's
+    conditional edge (bounded by MAX_EVAL_REPAIR_ATTEMPTS) decides whether to
+    loop back through eval or proceed. Never raises — an unfixable draft is
+    passed through with its warnings and filtered at finalization."""
     evidence = state.get("evidence") or []
     supplemental_evidence: list[EvidenceChunk] = []
     repaired: list[SkillDraft] = []
     total = TokenUsage()
     messages: list[DeliberationMessage] = []
+    blocking = _blocking_skill_names(state)
+    # First iteration (no eval results yet): fall back to repairing every draft.
+    repair_all = not state.get("eval_results")
+    attempt_no = state.get("eval_repair_attempts", 0) + 1
 
     for draft in state.get("skill_drafts") or []:
+        if not repair_all and draft.name not in blocking:
+            repaired.append(draft)  # eval passed it — leave untouched
+            continue
         body = draft.body
         if not body.strip():
-            raise CouncilIncompleteSkill(
-                user_message="Council stopped because a generated skill draft was empty.",
-                detail=f"skill `{draft.name}` tier={draft.tier} had no meaningful body",
+            repaired.append(
+                draft.model_copy(
+                    update={
+                        "repair_warnings": [*draft.repair_warnings, "empty draft body"],
+                    }
+                )
             )
+            continue
         attempts = 0
         while attempts <= REPAIR_ATTEMPT_CAP:
             body = _ensure_fixed_h1(body, draft.name)
@@ -287,21 +312,33 @@ async def repair_loop(
             )
             report = validate_skill_markdown(body, tier=draft.tier)
             if report.is_complete and not citation_issues:
-                repaired.append(draft.model_copy(update={"body": body, "repair_attempts": attempts}))
+                repaired.append(
+                    draft.model_copy(
+                        update={
+                            "body": body,
+                            "repair_attempts": draft.repair_attempts + attempts,
+                        }
+                    )
+                )
                 break
             if attempts == REPAIR_ATTEMPT_CAP:
-                detail = (
-                    f"skill `{draft.name}` tier={draft.tier} incomplete after "
-                    f"{REPAIR_ATTEMPT_CAP} repair attempts: "
+                # Don't raise — pass the best-effort draft through with a warning
+                # note. The graph-level eval→repair loop (bounded) re-evaluates;
+                # finalizer filters drafts still failing after the loop budget.
+                warning = (
+                    f"incomplete after {REPAIR_ATTEMPT_CAP} inner attempts: "
                     f"{_format_missing(report)}{_format_citation_issues(citation_issues)}"
                 )
-                raise CouncilIncompleteSkill(
-                    user_message=(
-                        "Council stopped because a generated skill could not be "
-                        "completed after 3 repair attempts."
-                    ),
-                    detail=detail,
+                repaired.append(
+                    draft.model_copy(
+                        update={
+                            "body": body,
+                            "repair_attempts": draft.repair_attempts + attempts,
+                            "repair_warnings": [*draft.repair_warnings, warning],
+                        }
+                    )
                 )
+                break
             attempts += 1
             issues = citation_issues if report.is_complete else _repair_issues(report, tier=draft.tier)
             section_evidence = await _evidence_for_repair_issues(
@@ -366,6 +403,7 @@ async def repair_loop(
         )
     return {
         "skill_drafts": repaired,
+        "eval_repair_attempts": attempt_no,
         "deliberation": messages,
         "costs": [_cost("repair", total, chat)] if total.total else [],
         **(
@@ -377,22 +415,29 @@ async def repair_loop(
 
 
 async def evaluator(
-    state: CouncilState, *, config: AnvayConfig, chat: ChatClient | None = None
+    state: CouncilState,
+    *,
+    config: AnvayConfig,
+    chat: ChatClient | None = None,
+    retrieval: RetrievalContext | None = None,
 ) -> dict:
     evidence = list(state.get("evidence") or [])
     plan = state.get("skill_plan") or catalog_plan(state["product_id"], state["topic"])
     signals = state.get("skill_signals") or []
-    passed: list[SkillDraft] = []
+    all_drafts: list[SkillDraft] = []
     results: list[SkillEvalResult] = []
     messages: list[DeliberationMessage] = []
     total = TokenUsage()
 
-    # Deterministic-only by default: the 5 checks run without an LLM. The bounded
-    # faithfulness judge (and its LLM eval-repair) are opt-in via config so skill
-    # generation stays a single synthesis call. Completeness/citation repair is
-    # already the repair node's job, which runs before eval.
+    # Deterministic-only by default: the checks run without an LLM. The bounded
+    # faithfulness judge is opt-in via config (check-only — it annotates the
+    # verdict, it does not repair). Repair is the repair node's job, reached via
+    # the conditional edge on a `failed` verdict. All drafts (pass and fail) flow
+    # to the finalizer, which filters by eval status; failing drafts route back
+    # to repair while the graph-level attempt budget allows.
     gate_on = bool(getattr(getattr(config, "council", None), "faithfulness_gate", False))
     judge: ChatClient | None = chat if gate_on else None
+    attempt = min(state.get("eval_repair_attempts", 0), 1)
 
     for draft in state.get("skill_drafts") or []:
         signal_ids = _signal_ids_for_skill(signals, skill_name=draft.name)
@@ -401,43 +446,20 @@ async def evaluator(
             evidence=evidence,
             plan=plan,
             chat=judge,
+            attempt=attempt,
             signals_used=signal_ids,
+            indexer=getattr(retrieval, "indexer", None),
+            product_id=state["product_id"],
         )
-        if result.status == "failed" and gate_on and judge is not None:
-            repaired_body, usage = await _repair_eval_failure(
-                draft=draft,
-                result=result,
-                evidence=evidence,
-                chat=judge,
-            )
-            total = _add_usage(total, usage)
-            repaired = draft.model_copy(
-                update={
-                    "body": _ensure_fixed_h1(repaired_body, draft.name),
-                    "repair_attempts": draft.repair_attempts + 1,
-                    "repair_warnings": [*draft.repair_warnings, *result.failures],
-                }
-            )
-            result = await evaluate_skill_draft(
-                draft=repaired,
-                evidence=evidence,
-                plan=plan,
-                chat=judge,
-                attempt=1,
-                signals_used=signal_ids,
-            )
-            draft = repaired
-
         results.append(result)
-        if result.status in {"passed", "repaired"}:
-            passed.append(draft)
-        else:
+        all_drafts.append(draft)
+        if result.status not in {"passed", "repaired"}:
             messages.append(
                 DeliberationMessage(
                     agent="skill-eval",
                     timestamp=datetime.now(UTC).isoformat(),
                     body=(
-                        f"`{draft.name}` failed deterministic skill eval; not queued. "
+                        f"`{draft.name}` failed deterministic skill eval. "
                         f"Fix instructions:\n{failure_brief(result)}"
                     ),
                 )
@@ -453,7 +475,7 @@ async def evaluator(
         ),
     )
     return {
-        "skill_drafts": passed,
+        "skill_drafts": all_drafts,
         "eval_results": results,
         "deliberation": messages,
         "costs": [_cost("skill-eval", total, chat)] if total.total else [],
@@ -464,25 +486,30 @@ async def finalizer(state: CouncilState) -> dict:
     evidence = list(state.get("evidence") or [])
     proposals: list[SkillProposal] = []
     now = datetime.now(UTC).isoformat()
-    eval_by_skill = {
-        result.skill_name: result for result in state.get("eval_results", [])
-        if result.status in {"passed", "repaired"}
+    # Latest verdict per skill (eval_results is append-only across repair loops).
+    latest_eval: dict[str, SkillEvalResult] = {}
+    for result in state.get("eval_results", []):
+        latest_eval[result.skill_name] = result
+    passed_names = {
+        name for name, r in latest_eval.items() if r.status in {"passed", "repaired"}
     }
     for draft in state.get("skill_drafts") or []:
+        # Only finalize drafts that passed eval. Drafts still failing after the
+        # bounded eval→repair loop are dropped (not raised) so a single bad
+        # draft can't sink a batch of otherwise-good proposals.
+        if latest_eval and draft.name not in passed_names:
+            continue
         body = _ensure_fixed_h1(draft.body, draft.name)
         report = validate_skill_markdown(body, tier=draft.tier)
         if not report.is_complete:
-            raise CouncilIncompleteSkill(
-                user_message="Council stopped because an incomplete skill reached finalization.",
-                detail=f"skill `{draft.name}` tier={draft.tier}: {_format_missing(report)}",
-            )
+            continue
         parsed = parse_skill_markdown(body, fallback_name=draft.name, evidence=evidence)
-        eval_result = eval_by_skill.get(draft.name)
+        eval_result = latest_eval.get(draft.name)
         paragraphs = max(1, parsed.body.count("\n\n") + 1)
         confidence = compute_confidence(
             citations=parsed.citations,
             paragraphs=paragraphs,
-            revision_count=1 if draft.repair_attempts else 0,
+            revision_count=min(draft.repair_attempts, 2),
         )
         proposals.append(
             SkillProposal(
@@ -556,44 +583,6 @@ def _drafts_for_prompt(drafts: list[SkillDraft]) -> str:
     return "\n\n".join(
         f"## {draft.name} ({draft.tier})\n{draft.body[:2200]}" for draft in drafts
     )
-
-
-async def _repair_eval_failure(
-    *,
-    draft: SkillDraft,
-    result: SkillEvalResult,
-    evidence: list[EvidenceChunk],
-    chat: ChatClient,
-) -> tuple[str, TokenUsage]:
-    resp = await chat.chat_markdown(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "Repair one Anvay Agent Skill after quality eval failure. "
-                    "Output the complete Markdown body only. Keep the exact title, "
-                    "exact required headings, and real `[file: path:line]` citations.\n\n"
-                    # Static template in the system prefix for cache reuse.
-                    f"# Required template\n{_template_for_tier(draft.tier)}"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Skill name: {draft.name}\nTier: {draft.tier}\n"
-                    f"Description: {draft.description}\n\n"
-                    f"# Eval failures\n{failure_brief(result)}\n\n"
-                    f"# Current draft\n{draft.body}\n\n"
-                    f"# Evidence\n{evidence_for_prompt(evidence)}\n\n"
-                    "Return a complete repaired body. The first line must be "
-                    f"`# {draft.name}`."
-                ),
-            },
-        ],
-        max_tokens=3400 if draft.tier == "product_master" else 2600,
-        max_continuations=1,
-    )
-    return resp.content.strip(), resp.usage
 
 
 def _signals_for_prompt(signals: list[dict], *, skill_name: str) -> str:

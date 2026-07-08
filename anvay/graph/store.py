@@ -71,6 +71,10 @@ _EDGE_TYPES = (
     "PART_OF_FLOW",
 )
 
+# Edge types with meaningful direction (from → to). Undirected types like
+# MENTIONS/RELATED_TO/CONTAINS are traversed both ways.
+_DIRECTED_TYPES = frozenset({"CALLS", "IMPORTS", "DEPENDS_ON"})
+
 
 def create_graph_store(config: AnvayConfig) -> FalkorGraphStore:
     return FalkorGraphStore(config.graph_store)
@@ -217,15 +221,22 @@ class FalkorGraphStore:
             return GraphQueryResult()
         await self._ensure_product_schema(product_id)
         graph = self._graph(product_id)
+        requested_raw = edge_types or []
+        requested = [t for t in requested_raw if t in _EDGE_TYPES]
+        if requested_raw and not requested:
+            return GraphQueryResult()
         type_clause = ""
-        if edge_types:
-            safe_types = "|".join(_ident(t) for t in edge_types if t in _EDGE_TYPES)
-            if safe_types:
-                type_clause = f":{safe_types}"
+        if requested:
+            type_clause = f":{'|'.join(_ident(t) for t in requested)}"
+        # Direction-aware pattern: when every requested type is directional
+        # (CALLS/IMPORTS/DEPENDS_ON), expand outward from the seed only — halves
+        # fan-out and keeps semantically-directional results. Mixed or hub-type
+        # requests stay undirected.
+        arrow_close = "->" if requested and all(t in _DIRECTED_TYPES for t in requested) else "-"
         effective_limit = min(limit, _traversal_limit(edge_types, limit))
         query = (
             "MATCH p=(seed)-[r"
-            f"{type_clause}*1..{max(1, min(max_depth, 5))}]-(n) "
+            f"{type_clause}*1..{max(1, min(max_depth, 5))}]{arrow_close}(n) "
             "WHERE seed.product_id = $product_id AND seed.stable_id IN $seed_ids "
             "AND n.product_id = $product_id AND n.status = 'active' "
             "AND all(rel IN relationships(p) WHERE rel.product_id = $product_id AND rel.status = 'active') "

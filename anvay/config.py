@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from functools import lru_cache
@@ -12,17 +13,30 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+log = logging.getLogger(__name__)
+
 _ENV_VAR_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
-def _expand_env(value: Any) -> Any:
-    """Recursively substitute ${VAR} placeholders with environment values."""
+def _expand_env(value: Any, *, missing: set[str] | None = None) -> Any:
+    """Recursively substitute ${VAR} placeholders with environment values.
+
+    Unresolved names are collected into `missing` (when provided) instead of
+    silently becoming empty strings, so callers can warn/fail with the
+    variable name rather than a confusing downstream provider error.
+    """
     if isinstance(value, str):
-        return _ENV_VAR_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        def _sub(m: re.Match[str]) -> str:
+            name = m.group(1)
+            if name not in os.environ and missing is not None:
+                missing.add(name)
+            return os.environ.get(name, "")
+
+        return _ENV_VAR_RE.sub(_sub, value)
     if isinstance(value, dict):
-        return {k: _expand_env(v) for k, v in value.items()}
+        return {k: _expand_env(v, missing=missing) for k, v in value.items()}
     if isinstance(value, list):
-        return [_expand_env(v) for v in value]
+        return [_expand_env(v, missing=missing) for v in value]
     return value
 
 
@@ -140,9 +154,24 @@ class GraphIngestionCfg(BaseModel):
     confidence_floor: float = Field(0.65, ge=0.0, le=1.0)
 
 
+class OrphanSweepCfg(BaseModel):
+    """Reverse reconciliation: delete Qdrant points no manifest row claims.
+
+    Off by default, and dry-run by default when enabled. The sweep only ever
+    considers raw resource chunks (artifact_type code/doc); skill chunks and
+    synthetic summaries are always exempt."""
+
+    enabled: bool = False
+    dry_run: bool = True
+    grace_minutes: int = 60
+    interval_seconds: float = Field(300.0, gt=0)
+    stuck_after_seconds: float = Field(600.0, gt=0)
+
+
 class IngestionCfg(BaseModel):
     enrich_chunks: EnrichCfg = Field(default_factory=EnrichCfg)
     graph: GraphIngestionCfg = Field(default_factory=GraphIngestionCfg)
+    orphan_sweep: OrphanSweepCfg = Field(default_factory=OrphanSweepCfg)
     embed_batch_size: int = 32
     quality_gate_threshold: float = 0.0
     file_batch_size: int = 50
@@ -217,7 +246,14 @@ class AnvayConfig(BaseSettings):
                 f"Config not found at {p}. Run `cp anvay.yaml.example anvay.yaml` and edit."
             )
         raw = yaml.safe_load(p.read_text())
-        expanded = _expand_env(raw)
+        missing: set[str] = set()
+        expanded = _expand_env(raw, missing=missing)
+        if missing:
+            log.warning(
+                "anvay.yaml references undefined env var(s): %s "
+                "(substituted with empty string)",
+                ", ".join(sorted(missing)),
+            )
         return cls(**expanded)
 
 
