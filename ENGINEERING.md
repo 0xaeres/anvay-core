@@ -15,23 +15,22 @@ The system is deliberately small. Anything that doesn't move the
 ergonomic pain point should not be in the codebase.
 
 ```
-ingest                                              council
-─────────────                                       ─────────────
-chunker         tree-sitter / heading-aware         drafter
-enricher        optional HQE / Anthropic CR         critic   ← own retrieval
-embedder        OpenAI-compatible client (cloud or local llama.cpp)   reviser  ← only on blocking
-indexer         Qdrant (dense + BM25)                  │
-repomap         tree-sitter symbol outline             ▼
-                                                    SkillProposal
-                                                       │
-retrieval       dense + BM25 → RRF → rerank            ▼
-                                                    human approval
-mcp_server      find_skills, query_code_context,       │
-                hybrid_search_corpus                   ▼
-                                                    skill.md committed
-                                                       │
-                                                       ▼
-                                                    MCP serves it
+ingest                                          council
+────────────────────────────                   ────────────────────────────
+chunker    tree-sitter / heading-aware          planner      seeds evidence + context_pack
+enricher   optional HQE / doc context (off)     synthesizer  one Markdown skill, one LLM call
+embedder   OpenAI-compat (cloud or llama.cpp)   eval    ◄─┐  deterministic checks
+indexer    Qdrant (dense + BM25)                repair  ──┘  bounded loop back to eval
+graph      tree-sitter + bounded LLM facts      finalizer    emits SkillProposal
+repomap    tree-sitter symbol outline                │
+                                                     ▼
+retrieval  dense + BM25 → RRF → rerank +         human approval
+           grep + repomap + graph + skills           │
+                                                     ▼
+mcp_server find_skills, query_code_context,      SKILL.md committed to Git
+           hybrid / evidence search, graph           │
+                                                     ▼
+                                                 MCP serves it
 ```
 
 ## 1. Invariants
@@ -57,20 +56,46 @@ All cross-process boundary types are Pydantic. In-memory-only types use
 The unit of curated guidance Anvay serves to agents.
 
 ```python
+SkillTier = Literal[
+    "product_master", "application", "domain",
+    "interface", "tech_stack", "quality_security",
+]
+
+class SkillCoverage(BaseModel):
+    repos: list[str]
+    applications: list[str]
+    topics: list[str]
+
 class Skill(BaseModel):
     name: str
-    description: str
+    description: str = ""
     product: str
+    tier: SkillTier = "domain"
+    parent: str | None = None
+    related: list[str]
+    coverage: SkillCoverage
     version: int = 1
     confidence: float          # [0.0, 1.0]
+    eval_status: Literal["not_run", "passed", "failed", "repaired"] = "not_run"
+    eval_summary: str = ""
+    eval_failures: list[str]
+    quality_score: float       # [0.0, 1.0]
+    signals_used: list[str]
     applies_to: AppliesTo      # files: list[str], contexts: list[str]
     provenance: Provenance
-    body: str                  # markdown body (no frontmatter)
+    body: str = ""              # markdown body (no frontmatter)
 
     @property
     def id(self) -> str:
         return f"{self.product}/{self.name}"
 ```
+
+`tier`/`parent`/`related`/`coverage` are carried on every `Skill` and
+`SkillProposal`, but the current council (§5) only ever emits `tier =
+"product_master"` with no parent — the multi-tier hierarchy these fields
+describe (application/domain/interface/tech_stack/quality_security children of
+a product master) is schema-ready but not produced by any pipeline today. Don't
+assume a UI or API surfaces child tiers until the council actually emits them.
 
 On disk: `<hierarchy_root>/<product>/<name>/SKILL.md` with Agent Skills
 frontmatter (`name`, `description`, `compatibility`, and `metadata.anvay_*`).
@@ -104,11 +129,21 @@ Council output queued for human review. Persisted in the
 class SkillProposal(BaseModel):
     id: str
     name: str
+    description: str = ""
+    tier: SkillTier = "domain"
+    parent: str | None = None
+    related: list[str]
+    coverage: SkillCoverage
     body: str
     citations: list[Citation]
     confidence: float
+    eval_status: Literal["not_run", "passed", "failed", "repaired"] = "not_run"
+    eval_summary: str = ""
+    eval_failures: list[str]
+    quality_score: float
+    signals_used: list[str]
     adversary_critique: Critique | None
-    status: Literal["pending", "approved", "rejected", "edited"]
+    status: Literal["pending", "approved", "rejected", "edited"] = "pending"
     created_at: str
     approved_by: str | None
     approved_at: str | None
@@ -487,15 +522,21 @@ Still out of scope without an eval-set win: HyDE, semantic cache, classifier
 fallbacks, free-form code graph extraction, and circuit breakers. The retrieval
 eval set (§10) is the floor; new layers must improve it.
 
-## 5. Council — Expert Product Skill
+## 5. Council — Product Skill
 
 `anvay/council/graph.py`. LangGraph state graph for the single product skill:
 
 ```text
-START ──► Planner ──► Architect ─┐
-                  └─► Domain Expert ├─► Synthesizer ─► Repair ─► Eval ─► Finalizer ─► END
-                  └─► Quality Expert┘
+START ──► Planner ──► Synthesizer ──► Eval ──► Finalizer ──► END
+                                       ▲  │
+                                       └──┘
+                                  Repair (bounded)
 ```
+
+Skill generation is one synthesis LLM call grounded in the deterministic KB
+artifacts the planner assembles (repo map + graph/structural summaries built at
+ingest), **not** a multi-expert fanout. Eval is deterministic-only by default;
+the LLM faithfulness judge is opt-in via `config.council.faithfulness_gate`.
 
 State (`anvay/council/state.py::CouncilState`):
 
@@ -505,39 +546,49 @@ class CouncilState(TypedDict, total=False):
     product_id: str
     topic: str
     config_path: str
-    evidence: list[EvidenceChunk]   # reducer-merged: planner + experts + repair
+    evidence: list[EvidenceChunk]   # reducer-merged: planner + repair
+    skill_signals: list[dict]
     skill_plan: list[SkillPlanItem]
-    expert_reports: list[ExpertReport]
+    context_pack: str               # deterministic graph/structural block the
+                                    # planner assembles for the synthesizer
+                                    # (replaces the old expert reports)
     skill_drafts: list[SkillDraft]
+    eval_results: list[SkillEvalResult]  # reducer-merged, append-only across loops
     proposals: list[SkillProposal]  # one product_master proposal
-    eval_results: list[SkillEvalResult]
     proposal: SkillProposal | None
     proposal_id: str | None         # primary/master proposal for compatibility
     critique: Critique | None
     revision_count: int
+    eval_repair_attempts: int       # graph-level eval→repair loop counter (bounded)
     deliberation: list[DeliberationMessage]  # append-only stream
     costs: list[AgentCost]
 ```
 
 ### Skill Agents (`anvay/council/agents/skill.py`)
 
-Planner retrieves the initial evidence and creates exactly one `product_master`
-skill outline. Expert fanout runs three bounded lenses: architect,
-domain_expert, and quality_expert. Each expert produces compact JSON only:
-`summary`, `findings`, and `missing_questions`. Experts do fresh retrieval so
-the Synthesizer sees more than the planner's initial chunk pool.
+Planner retrieves the initial evidence, assembles the deterministic KB
+`context_pack` (repo map + graph/structural summaries built at ingest), and
+creates exactly one `product_master` skill outline. There is **no expert
+fanout** — the Synthesizer builds the full skill from the planner's context
+pack in a single LLM call. The synthesizer model resolves
+`models.synthesizer → models.planner → models.council`.
 
 Synthesizer emits one Markdown product skill. The completeness repair loop
-validates the draft against the tier-specific schema and retries missing
-sections or factual citation gaps up to `REPAIR_ATTEMPT_CAP = 3`. Factual
-product claims require citations; procedural guidance does not unless it names
-a concrete product fact. Incomplete skills are never queued: if repair still
-fails, the session stops with `reason="incomplete_skill"`.
+inside the `repair` node validates the draft against the tier-specific schema
+and retries missing sections or factual citation gaps up to
+`REPAIR_ATTEMPT_CAP = 3` inner attempts. Factual product claims require
+citations; procedural guidance does not unless it names a concrete product
+fact. Incomplete skills are never queued: if repair still fails, the session
+stops with `reason="incomplete_skill"`.
 
-Eval runs deterministic skill checks, including identity, structure, name
-match, citation faithfulness, and trigger quality. Finalizer parses the
-complete draft into one `SkillProposal`. `proposal_id` points at that single
-proposal, and sessions persist `proposal_ids` with one entry.
+Eval runs deterministic skill checks (identity, structure, name match, citation
+faithfulness, trigger quality). The optional LLM faithfulness judge is gated by
+`config.council.faithfulness_gate` (off by default). The conditional edge routes
+blocking eval failures back through `repair`, bounded at the graph level by
+`MAX_EVAL_REPAIR_ATTEMPTS = 2` (distinct from the inner `REPAIR_ATTEMPT_CAP`).
+Finalizer parses the complete draft into one `SkillProposal`; `proposal_id`
+points at that single proposal, and sessions persist `proposal_ids` with one
+entry.
 
 ### LLM client (`anvay/llm/client.py`)
 
@@ -582,9 +633,10 @@ within a session — re-approving a row already at `approved` is a no-op.
 Flow:
 
 1. Look up the queue row by `proposal_id`.
-2. Build a `Skill` from the row's fields (no `kind` / `scope` — Skill is
-   flat) with `Provenance(council_session, validated_by, validated_at,
-evidence_chunks, adversary_critique, revision_count)`.
+2. Build a `Skill` from the row's fields (no separate `kind` / `scope` from
+   the old org-library model — see §13; the current council only produces
+   `tier="product_master"`) with `Provenance(council_session, validated_by,
+   validated_at, evidence_chunks, adversary_critique, revision_count)`.
 3. `SkillStore.save(skill)` writes `SKILL.md` under
    `<hierarchy_root>/<product>/<name>/SKILL.md`.
 4. `commit_and_push()` commits + pushes (skill repo is a Git repo).
@@ -739,29 +791,31 @@ vector_store:
     bits: bits4 # bits4 best recall; lower bits compress more
     always_ram: true
 
+graph_store: # required derived product graph (FalkorDB / Redis protocol)
+  host: localhost
+  port: 6379
+  # username / password / ssl optional; graph_prefix namespaces the product graph
+  graph_prefix: anvay
+  max_connections: 16
+  timeout_ms: 5000
+
+council:
+  faithfulness_gate: false # opt-in LLM entailment judge in the eval node
+
 models:
-  council: # default for drafter + critic + reviser
+  council: # default model for planner, synthesizer, evaluator, repair
     provider: deepinfra
     model: google/gemma-4-26B-A4B-it
     api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
-  # Optional role-specific overrides. Omit any role to use models.council.
-  drafter:
-    provider: deepinfra
-    model: google/gemma-4-26B-A4B-it
-    api_key: ${LLM_API_KEY}
-    base_url: https://api.deepinfra.com/v1/openai
-  critic:
-    provider: deepinfra
-    model: google/gemma-4-26B-A4B-it
-    api_key: ${LLM_API_KEY}
-    base_url: https://api.deepinfra.com/v1/openai
-  reviser:
-    provider: deepinfra
-    model: google/gemma-4-26B-A4B-it
-    api_key: ${LLM_API_KEY}
-    base_url: https://api.deepinfra.com/v1/openai
-  light: # optional enricher (HQE + Anthropic CR)
+  # Optional per-role overrides — same ModelCfg shape as `council`. Omit a role
+  # to inherit it. Resolution: planner/evaluator/repair -> council;
+  # synthesizer -> planner -> council.
+  #   planner:     { provider: ..., model: ..., api_key: ..., base_url: ... }
+  #   synthesizer: { ... }
+  #   evaluator:   { ... }
+  #   repair:      { ... }
+  light: # optional enricher (HQE + doc contextual retrieval)
     provider: deepinfra
     model: google/gemma-4-26B-A4B-it
     api_key: ${LLM_API_KEY}
@@ -1009,9 +1063,12 @@ derived index cleanup for offline/local-only recovery.
   in every module.
 - **FastAPI** for the API. **Pydantic** for boundary types. **httpx** for
   outbound HTTP. **LangGraph** for the council state machine.
-- **tree-sitter** for code parsing (Python, TS, TSX, JS, Rust, Go).
+- **tree-sitter** for code parsing (Python, TS, TSX, JS, Rust, Go, Java, C++,
+  Kotlin, Solidity).
 - **Qdrant** for vector + sparse storage, with native TurboQuant for dense
   vector compression. **fastembed** backs Qdrant BM25 sparse encoding.
+- **FalkorDB** (Redis-protocol graph) for the derived product graph;
+  tree-sitter + a bounded, validated LLM fact layer populate it.
 - **DeepInfra Qwen3** embeddings/reranker are the default low-resource dev
   profile. Alternative providers — including local llama.cpp servers — are
   supported through the same OpenAI-compatible `ModelCfg` by setting
@@ -1027,8 +1084,8 @@ reintroduce them without a written justification + a measured win on the
 eval set.
 
 - **Assistant layer** (Jira/Confluence conversational + action loop)
-- **Neo4j / GraphRAG** (entity-relation graph + graph-expansion retrieval
-  stage)
+- **Neo4j** (the graph backend — replaced by FalkorDB; the GraphRAG layer
+  itself is active, see §3–§4)
 - **HyDE, query classifier, semantic cache, circuit breakers, prompt-
   injection guard** (retrieval over-engineering)
 - **Org library** (`OrgSkill`, tech_stack / language / security kinds,
@@ -1036,7 +1093,9 @@ eval set.
 - **Skill composition** (`composes_with`, SkillKind master / product_domain,
   SkillScope product / org)
 - **Multi-agent council** (Archaeologist + Domain Expert + Synthesizer +
-  Adversary — collapsed to 3 nodes per Reflexion)
+  Adversary, and the later architect/domain/quality expert fanout — collapsed
+  to a single synthesis call: planner → synthesizer → eval ⇄ repair →
+  finalizer)
 - **Change-gated cadence, weekly cap, override flag, corrections compaction**
   (premature; council fires when the user clicks the button)
 - **Webhook automation, PR review agent, changelog agent** (demo task
