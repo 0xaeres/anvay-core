@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 286 72" fill="none" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" fill="none" role="img" aria-labelledby="title desc">
   <title id="title">Anvay</title>
-  <desc id="desc">Anvay context engine logo and wordmark</desc>
+  <desc id="desc">Anvay context engine logo</desc>
   <defs>
     <linearGradient id="anvay-doc-av" x1="9" y1="63" x2="66" y2="16" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#12A57C"/>
@@ -8,5 +8,4 @@
     </linearGradient>
   </defs>
   <path transform="translate(6 10) scale(0.62)" d="M5.00 76.00 L37.00 9.64 L64.00 65.64 L86.00 20.00 L96.00 20.00 L64.00 86.36 L37.00 30.36 L15.00 76.00 Z" fill="url(#anvay-doc-av)"/>
-  <text x="86" y="49" fill="#10131F" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="700" letter-spacing="-0.5">Anvay</text>
 </svg>
