@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/assets/anvay-wordmark.svg" alt="Anvay" width="280">
+  <img src="./docs/assets/anvay-wordmark.svg" alt="Anvay" width="80">
 </p>
 
 <h1 align="center">Anvay</h1>
@@ -284,7 +284,7 @@ sequenceDiagram
   participant AG as MCP client
 
   rect rgb(20,20,42)
-    Note over User,RM: 1 — Connect &amp; sync a source
+    Note over User,RM: 1 — Connect & sync a source
     User->>UI: Create product + add source
     UI->>API: POST /products · POST /sources
     API->>REG: Store product, membership, encrypted config
