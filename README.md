@@ -108,7 +108,7 @@ difficult, done right:
 
 ## Product quality, measured
 
-Anvay runs the shipping retrieval path against two external product corpora:
+We tested Anvay's retrieval accuracy against two widely known Open Source products:
 Zod (TypeScript) and Guava (Java). The latest full run passed across both
 products with **0.967 evidence recall**, **0.799 nDCG ranking quality**,
 **0.600 answer correctness**, and **100% graph navigation**.
@@ -117,7 +117,7 @@ products with **0.967 evidence recall**, **0.799 nDCG ranking quality**,
 
 These are measured eval results, not target thresholds. Each product run uses
 15 grounded questions and reports retrieval, answer-quality, graph-use, and
-latency diagnostics independently.
+latency diagnostics independently. The metrics of eval results speak for themselves.
 
 ## Ask Anvay anything about your product
 
