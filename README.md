@@ -5,13 +5,13 @@
 <h1 align="center">Anvay</h1>
 
 <p align="center">
-  <strong>A living brain for your product — not just your code.</strong>
+  <strong>A living brain for your product</strong>
 </p>
 
 <p align="center">
   Anvay fuses your repos, tickets, docs, and hard-won tribal knowledge into one
-  continuously-synced, cited intelligence layer — then serves it to every AI
-  coding agent you use, over MCP.
+  continuously-synced, cited intelligence layer, then serves it to every AI
+  agent you use, over MCP.
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@
 
 ## The context problem is a knowledge problem
 
-Every product carries a brain that lives nowhere. It's split across the codebase,
+Every product carries a brain that is split across the codebase,
 the Jira board, the Confluence space, the README nobody updated, and the three
 senior engineers who answer the same questions in Slack every week. New
 contributors can't find the starting line. Maintainers re-explain the same
