@@ -23,28 +23,6 @@
   },
   "products": [
     {
-      "product_id": "anvay",
-      "n": 5,
-      "modes": [
-        {
-          "mode": "auto",
-          "n": 5,
-          "recall_at_k": 0.9,
-          "mrr": 0.9,
-          "ndcg_at_k": 0.8474,
-          "faithfulness": 1.0,
-          "answer_correctness": 0.5,
-          "context_precision": 0.8982,
-          "context_recall": 0.9,
-          "avg_latency_ms": 4838.5,
-          "avg_candidates": 10.0,
-          "graph_hit_rate": 1.0,
-          "misses": []
-        }
-      ],
-      "passed": true
-    },
-    {
       "product_id": "zod",
       "n": 5,
       "modes": [

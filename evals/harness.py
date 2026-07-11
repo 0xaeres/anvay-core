@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -42,6 +43,8 @@ from evals.metrics import first_match_rank, mean, ndcg_at_k, recall_at_k, recipr
 from evals.ragas_adapter import METRIC_KEYS, RagasJudge
 
 log = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[str, dict], Awaitable[None]]
 
 DEFAULT_OUT_DIR = Path("artifacts/evals")
 DEFAULT_MODES = ("auto",)
@@ -167,6 +170,7 @@ async def run_eval(
     out_dir: Path = DEFAULT_OUT_DIR,
     thresholds: Thresholds | None = None,
     judge_model: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> EvalRunArtifact:
     thresholds = thresholds or Thresholds()
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -182,6 +186,9 @@ async def run_eval(
     product_results: list[ProductResult] = []
     try:
         for product in products:
+            log.info("eval product %s started", product.product_id)
+            if progress:
+                await progress("product_start", {"product_id": product.product_id})
             result = await _run_product(
                 product=product,
                 config=config,
@@ -194,9 +201,26 @@ async def run_eval(
                 limit=limit,
                 thresholds=thresholds,
                 run_dir=run_dir,
+                progress=progress,
             )
             if result is not None:
                 product_results.append(result)
+                log.info(
+                    "eval product %s completed: passed=%s queries=%s",
+                    product.product_id,
+                    result.passed,
+                    result.n,
+                )
+                if progress:
+                    await progress(
+                        "product_done",
+                        {
+                            "product_id": product.product_id,
+                            "passed": result.passed,
+                            "done": result.n,
+                            "total": result.n,
+                        },
+                    )
     finally:
         await answerer.aclose()
         await judge.aclose()
@@ -235,6 +259,7 @@ async def _run_product(
     limit: int | None,
     thresholds: Thresholds,
     run_dir: Path,
+    progress: ProgressCallback | None = None,
 ) -> ProductResult | None:
     if product.golden_path is None or not Path(product.golden_path).exists():
         log.warning("product %s has no golden dataset; skipping", product.product_id)
@@ -248,8 +273,8 @@ async def _run_product(
     mode_metrics: list[ModeMetrics] = []
     detail: dict[str, list[dict]] = {}
     for mode in modes:
-        scores = await asyncio.gather(
-            *[
+        tasks = [
+            asyncio.create_task(
                 _score_item(
                     item,
                     product=product,
@@ -261,9 +286,32 @@ async def _run_product(
                     top_k=top_k,
                     mode=mode,
                 )
-                for item in golden
-            ]
-        )
+            )
+            for item in golden
+        ]
+        scores: list[_ItemScore] = []
+        for done, task in enumerate(asyncio.as_completed(tasks), start=1):
+            score = await task
+            scores.append(score)
+            log.info(
+                "eval product %s mode %s progress %s/%s: %s",
+                product.product_id,
+                mode,
+                done,
+                len(golden),
+                score.id,
+            )
+            if progress:
+                await progress(
+                    "item_progress",
+                    {
+                        "product_id": product.product_id,
+                        "mode": mode,
+                        "done": done,
+                        "total": len(golden),
+                        "item_id": score.id,
+                    },
+                )
         mode_metrics.append(_aggregate(mode, scores, top_k))
         detail[mode] = [s.model_dump() for s in scores]
 

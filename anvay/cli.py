@@ -283,7 +283,7 @@ def eval_run(
         "all",
         "--products",
         "-p",
-        help="all, or a comma-separated list of registered product ids (anvay, zod, guava).",
+        help="all, or a comma-separated list of registered product ids (zod, guava).",
     ),
     config_path: Path = typer.Option(Path("anvay.yaml"), "--config", "-c"),
     out_dir: Path = typer.Option(Path("artifacts/evals"), "--out-dir"),

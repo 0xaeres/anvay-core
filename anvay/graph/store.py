@@ -93,7 +93,10 @@ class FalkorGraphStore:
     async def health(self) -> bool:
         try:
             graph = self._graph("_health")
-            await graph.ro_query("RETURN 1", timeout=self.cfg.timeout_ms)
+            # write query, not ro_query: ro_query 400s on a graph key that
+            # doesn't exist yet (fresh/reset FalkorDB volume), so a plain
+            # write bootstraps the key on first call and is a no-op after.
+            await graph.query("RETURN 1", timeout=self.cfg.timeout_ms)
             return True
         except Exception:
             log.exception("falkordb health check failed")

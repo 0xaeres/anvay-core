@@ -21,7 +21,7 @@ from git.exc import GitError
 from anvay.config import AnvayConfig
 from anvay.council.queue import ProposalQueue
 from anvay.ingest.embedder import EmbedderClient
-from anvay.ingest.indexer import Indexer
+from anvay.ingest.indexer_factory import create_indexer
 from anvay.ingest.models import Chunk, ChunkKind, EmbeddedChunk, ResourceRef
 from anvay.retrieval.sparse import aencode_passages
 from anvay.skills.git import GitPublishResult, commit_and_push, ensure_checkout
@@ -274,7 +274,7 @@ async def _embed_skill_body(
         return 0
 
     embedder = EmbedderClient.from_cfg(config.models.embedding)
-    indexer = Indexer(url=config.vector_store.url)
+    indexer = create_indexer(config)
     try:
         resource = ResourceRef(
             source_id=f"skill:{skill.product}",
@@ -310,7 +310,11 @@ async def _embed_skill_body(
 
         sparse = await aencode_passages([chunk.sparse_text_for_embedding()])
         sparse_by_id = {chunk.id: sparse[0]} if sparse else {}
-        return await indexer.upsert(embedded, sparse_by_id=sparse_by_id)
+        try:
+            return await indexer.upsert(embedded, sparse_by_id=sparse_by_id)
+        except Exception as e:
+            log.warning("approval: qdrant upsert failed, skipping vector index: %s", e)
+            return 0
     finally:
         await embedder.aclose()
         await indexer.aclose()

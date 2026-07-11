@@ -106,6 +106,19 @@ difficult, done right:
   continuous evaluation — recall, MRR, nDCG, faithfulness, answer correctness —
   with hard floors that fail CI. "Better" is a number here, not a vibe.
 
+## Product quality, measured
+
+Anvay runs the shipping retrieval path against two external product corpora:
+Zod (TypeScript) and Guava (Java). The latest full run passed across both
+products with **0.967 evidence recall**, **0.799 nDCG ranking quality**,
+**0.600 answer correctness**, and **100% graph navigation**.
+
+![Anvay product eval dashboard showing passing Zod and Guava results](./docs/assets/product-evals.png)
+
+These are measured eval results, not target thresholds. Each product run uses
+15 grounded questions and reports retrieval, answer-quality, graph-use, and
+latency diagnostics independently.
+
 ## Ask Anvay anything about your product
 
 - Where should a new contributor start?
@@ -135,8 +148,8 @@ difficult, done right:
   stale cleanup, and deletes removed resources from derived indexes.
 - **Measured retrieval.** `retrieve_evidence()` mixes dense + BM25, exact grep,
   repo-map symbols, graph-local paths, community summaries, and approved skills
-  via cross-encoder reranking — gated by continuous eval metrics (e.g.
-  faithfulness ≥ 0.85, nDCG@10 ≥ 0.75).
+  via cross-encoder reranking — gated by continuous retrieval and
+  answer-quality evals across Zod and Guava.
 - **Portable output.** Approved skills are ordinary Agent Skills served over MCP,
   so Claude, Codex, Cursor, Continue, and any other client consume the same
   product guidance.

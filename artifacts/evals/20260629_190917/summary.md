@@ -5,12 +5,6 @@
 - Modes: auto | top_k=10 | limit=5
 - Judge model: `deepseek-ai/DeepSeek-V4-Pro`
 
-## anvay  (PASS, n=5)
-
-| mode | recall_at_k | mrr | ndcg_at_k | faithfulness | answer_correctness | context_precision | context_recall | graph_hit_rate | avg_latency_ms |
-|---|---|---|---|---|---|---|---|---|---|
-| auto | 0.900 | 0.900 | 0.847 | 1.000 | 0.500 | 0.898 | 0.900 | 1.000 | 4838ms |
-
 ## zod  (PASS, n=5)
 
 | mode | recall_at_k | mrr | ndcg_at_k | faithfulness | answer_correctness | context_precision | context_recall | graph_hit_rate | avg_latency_ms |

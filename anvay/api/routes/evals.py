@@ -95,6 +95,7 @@ class _JobHub:
         self._subscribers: dict[str, list[asyncio.Queue[dict | str]]] = {}
         self._live: set[str] = set()
         self._completed: set[str] = set()
+        self._latest: dict[str, dict] = {}
         self._lock = asyncio.Lock()
 
     async def start(self, job_id: str) -> None:
@@ -104,6 +105,7 @@ class _JobHub:
 
     async def publish(self, job_id: str, event: dict) -> None:
         async with self._lock:
+            self._latest[job_id] = event
             queues = list(self._subscribers.get(job_id, []))
         for q in queues:
             try:
@@ -123,6 +125,9 @@ class _JobHub:
         q: asyncio.Queue = asyncio.Queue(maxsize=1024)
         async with self._lock:
             self._subscribers.setdefault(job_id, []).append(q)
+            latest = self._latest.get(job_id)
+            if latest is not None:
+                await q.put(latest)
             if job_id in self._completed:
                 await q.put(self._END)
         return q
@@ -167,6 +172,7 @@ def _evict_stale_jobs() -> None:
         _JOBS.pop(jid, None)
         # Also clean up the hub's completed set so memory stays bounded.
         HUB._completed.discard(jid)
+        HUB._latest.pop(jid, None)
 
 
 def _make_job_id() -> str:
@@ -189,6 +195,7 @@ async def _run_eval_job(
 ) -> None:
     status = _JOBS[job_id]
     try:
+        log.info("eval job %s started: products=%s", job_id, ",".join(products))
         product_evals = resolve_products(products)
         if ingest:
             for pe in product_evals:
@@ -197,6 +204,10 @@ async def _run_eval_job(
                 )
                 await ensure_ingested(pe, config=config)
         await HUB.publish(job_id, {"event": "eval_start", "data": {"products": products}})
+
+        async def publish_progress(event: str, data: dict) -> None:
+            await HUB.publish(job_id, {"event": event, "data": data})
+
         artifact = await run_eval(
             config=config,
             config_path=_CONFIG_PATH,
@@ -205,6 +216,7 @@ async def _run_eval_job(
             top_k=top_k,
             limit=limit,
             out_dir=DEFAULT_OUT_DIR,
+            progress=publish_progress,
         )
         status.run_id = artifact.run_id
         status.status = "completed"
@@ -212,6 +224,12 @@ async def _run_eval_job(
         await HUB.publish(
             job_id,
             {"event": "job_done", "data": {"run_id": artifact.run_id, "passed": artifact.passed}},
+        )
+        log.info(
+            "eval job %s completed: run_id=%s passed=%s",
+            job_id,
+            artifact.run_id,
+            artifact.passed,
         )
     except Exception as e:  # pragma: no cover - defensive
         log.exception("eval job %s crashed", job_id)
@@ -260,8 +278,12 @@ async def start_run(
         started_at=datetime.now(UTC).isoformat(),
     )
     await HUB.start(job_id)
-    task = asyncio.create_task(
-        _run_eval_job(
+
+    async def run_after_response_yield() -> None:
+        # Give FastAPI time to flush the job reference before eval client setup
+        # can briefly block the event loop.
+        await asyncio.sleep(0.05)
+        await _run_eval_job(
             job_id=job_id,
             products=products,
             modes=modes,
@@ -269,7 +291,10 @@ async def start_run(
             top_k=body.top_k,
             ingest=body.ingest,
             config=config,
-        ),
+        )
+
+    task = asyncio.create_task(
+        run_after_response_yield(),
         name=f"eval-{job_id}",
     )
     _RUNNING.add(task)

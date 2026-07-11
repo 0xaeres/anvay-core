@@ -110,8 +110,10 @@ def test_passes_gates_on_deterministic_and_llm_metrics() -> None:
 
 
 def test_resolve_products() -> None:
-    assert {p.product_id for p in resolve_products(["all"])} >= {"anvay", "zod", "guava"}
+    assert {p.product_id for p in resolve_products(["all"])} == {"zod", "guava"}
     assert [p.product_id for p in resolve_products(["zod"])] == ["zod"]
+    with pytest.raises(ValueError):
+        resolve_products(["anvay"])
     with pytest.raises(ValueError):
         resolve_products(["nope"])
 

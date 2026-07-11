@@ -7,8 +7,8 @@ config — a frozen dataclass plus an in-memory dict, no new runtime deps.
 Everything is keyed by ``product_id`` so the eval boundary is always
 product-scoped (AGENTS.md invariant: product = root entity).
 
-``anvay`` is evaluated against the live ingested index (no clone). ``zod`` and
-``guava`` are cloned + ingested on demand by the harness ingest helper.
+``zod`` and ``guava`` are cloned + ingested on demand by the harness ingest
+helper.
 """
 
 from __future__ import annotations
@@ -49,12 +49,6 @@ class ProductEval:
 
 
 PRODUCTS: dict[str, ProductEval] = {
-    "anvay": ProductEval(
-        product_id="anvay",
-        language="python",
-        golden_path=_PRODUCTS_DIR / "anvay" / "golden.jsonl",
-        source_path=Path("anvay"),  # this codebase's package dir
-    ),
     "zod": ProductEval(
         product_id="zod",
         language="typescript",

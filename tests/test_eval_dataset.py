@@ -51,5 +51,3 @@ def test_ingest_root_respects_subdir() -> None:
     zod = PRODUCTS["zod"]
     assert zod.ingest_subdir
     assert str(zod.ingest_root()).endswith(zod.ingest_subdir)
-    anvay = PRODUCTS["anvay"]
-    assert anvay.ingest_root() == anvay.checkout_dir()  # no subdir

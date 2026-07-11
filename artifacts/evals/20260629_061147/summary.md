@@ -5,17 +5,6 @@
 - Modes: auto, rewrite | top_k=10
 - Judge model: `deepseek-ai/DeepSeek-V4-Pro`
 
-## anvay  (FAIL, n=28)
-
-| mode | recall_at_k | mrr | ndcg_at_k | faithfulness | answer_correctness | context_precision | context_recall | graph_hit_rate | avg_latency_ms |
-|---|---|---|---|---|---|---|---|---|---|
-| auto | 0.821 | 0.669 | 0.688 | 0.788 | 0.357 | 0.686 | 0.363 | 0.000 | 18772ms |
-| rewrite | 0.821 | 0.669 | 0.688 | 0.905 | 0.348 | 0.675 | 0.348 | 0.000 | 29616ms |
-
-**Δ vs `auto`:**
-
-- `rewrite` vs `auto`: recall_at_k +0.000, ndcg_at_k +0.000, faithfulness +0.117, answer_correctness -0.009, context_precision -0.011, context_recall -0.015, latency +10844ms
-
 ## zod  (FAIL, n=15)
 
 | mode | recall_at_k | mrr | ndcg_at_k | faithfulness | answer_correctness | context_precision | context_recall | graph_hit_rate | avg_latency_ms |

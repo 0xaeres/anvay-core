@@ -113,7 +113,7 @@ trivia — a reference the corpus can't actually answer tanks `context_recall`.
 
 ```bash
 uv run anvay eval run \
-  --products anvay,zod \      # or "all"
+  --products guava,zod \      # or "all"
   --top-k 10 \
   --limit 10 \                # routine/smoke runs; drop for a full sweep
   --judge-model deepseek-ai/DeepSeek-V4-Pro \

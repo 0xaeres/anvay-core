@@ -884,7 +884,7 @@ It evaluates the full production retrieval path
 + graph-local traversal + summaries + skills — not the low-level primitive.
 
 ```bash
-uv run anvay eval run --products guava,zod,anvay          # all products, full golden set
+uv run anvay eval run --products guava,zod                # all products, full golden set
 uv run anvay eval run --products guava --force-ingest     # clean re-ingest then evaluate
 uv run anvay eval run --products guava --limit 5          # smoke run (noisy LLM scores at n=5)
 ```
