@@ -495,16 +495,34 @@ needed evidence.
 engine used by council, MCP evidence search, and product chat. It runs
 complementary candidate channels, then assembles a coverage-aware evidence set:
 
-```text
-query understanding
-  ├─ hybrid dense+BM25+rerank
-  ├─ exact indexed grep
-  ├─ repo-map symbol search
-  ├─ graph-local traversal -> attached chunks
-  ├─ structural + graph community summary chunks
-  └─ approved skill memory
-      ↓
-mixed rerank + dedupe + channel quotas + file diversity + coverage gate
+```mermaid
+flowchart TD
+  Q["Product-scoped query"] --> U["Deterministic query understanding<br/>shape · anchors · paths · facets"]
+
+  U --> H["Hybrid channel<br/>dense + BM25 → RRF → configured reranker"]
+  U --> X["Exact indexed grep"]
+  U --> R["Repo-map symbol search"]
+  U --> S["Structural + graph-community summaries"]
+  U --> K["Approved-skill memory"]
+  U --> RE["Resolve anchors in FalkorDB"]
+
+  RE --> GT["Traverse graph relationships<br/>bounded depth"]
+  GT --> IDs["Related stable graph node IDs"]
+  IDs --> QD["Fetch Qdrant chunks tagged<br/>with graph_node_ids"]
+
+  H --> P["Pool source-backed candidates"]
+  X --> P
+  R --> P
+  S --> P
+  K --> P
+  QD --> P
+
+  P --> MR["Mixed rerank"]
+  MR --> M["Dedupe · channel quotas · file diversity"]
+  M --> C{"Coverage sufficient?"}
+  C -->|yes| E["Final cited EvidenceSet"]
+  C -->|no| F["Deterministic DRIFT-lite /<br/>coverage-repair retrieval"]
+  F --> MR
 ```
 
 Graph is a navigation layer, not an answer source by itself. Graph traversal
@@ -521,6 +539,97 @@ channels before applying quotas.
 Still out of scope without an eval-set win: HyDE, semantic cache, classifier
 fallbacks, free-form code graph extraction, and circuit breakers. The retrieval
 eval set (§10) is the floor; new layers must improve it.
+
+### Vector + Graph Implementation (`anvay/ingest/indexer.py`, `anvay/graph/`)
+
+The two derived stores hold different things and never query each other.
+FalkorDB never reads Qdrant embeddings; Qdrant never runs graph traversals.
+Anvay performs the join in application code using stable graph node IDs
+written into chunk payloads at ingest time.
+
+```mermaid
+flowchart LR
+  ING["Ingest per changed resource<br/>chunk · embed · extract graph"]
+
+  subgraph QD["Qdrant: source text (anvay_code / anvay_text)"]
+    PT["One point per chunk<br/>dense vector + BM25 sparse"]
+    PL["Payload: product_id · resource_uri · lines · content<br/>graph_node_ids · entity_ids · neighbor_chunk_ids<br/>source_ref · citation_anchor · artifact_type"]
+  end
+
+  subgraph FK["FalkorDB: structure (one graph per product)"]
+    ND["Nodes: stable_id · labels · properties<br/>source_refs · confidence · extraction_method"]
+    ED["Edges: typed · confidence · source_refs"]
+  end
+
+  ING --> PT
+  PT --- PL
+  ING --> ND
+  ND --- ED
+  PL -. "graph_node_ids = join key" .- ND
+```
+
+**Qdrant side.** Two collections, `anvay_code` and `anvay_text` (§3 Indexer).
+One point per chunk, keyed by the chunk's deterministic UUID5 id, carrying a
+dense vector and a BM25 sparse vector. Beyond the base payload fields,
+`pipeline._graph_payload_metadata()` adds the graph join metadata to every
+chunk whose resource produced a `GraphExtraction`: `graph_node_ids`,
+`entity_ids`, `source_ref`, `citation_anchor`, `graph_extraction_version`,
+`artifact_type`, and `neighbor_chunk_ids`.
+
+**FalkorDB side.** `FalkorGraphStore` (`anvay/graph/store.py`) keeps one named
+graph per product. `GraphNode` and `GraphEdge` (`anvay/graph/models.py`) carry
+`stable_id`, `labels`/`type`, `properties`, `source_refs` (product, source,
+resource URI, anchor, line span), `confidence`, `extraction_method`
+(`deterministic | heuristic | llm | human`), `freshness`, and `status`. Node
+IDs are deterministic and human-readable, of the form `kind:product_id:part:…` (e.g.
+`symbol:<pid>:<uri>:<name>:Class`); edge IDs are `edge:<uuid5>` over
+`(product, from, type, to, uri)`. The store contract is
+`upsert_resource_graph`, `retire_resource_graph`, `resolve_entity`,
+`traverse`, and `delete_product`; resync retires a resource's old fact IDs
+the same way stale Qdrant chunks are cleaned up.
+
+**What populates the graph.** The deterministic extractor
+(`anvay/graph/extractor.py`) always runs: tree-sitter symbols plus heuristics
+produce nodes labeled `CodeFile`/`Document` (plus `Test`, `Migration`,
+`Config`), `Class`, `Function`, `Module`, `APIEndpoint`, `Config`, `DBTable`,
+`Actor`, `Repository`, `JiraTicket`, and `Epic`, and edges such as `CONTAINS`,
+`DECLARES`, `IMPORTS`, `CALLS`, `EXPOSES`, `HANDLES`, `READS`, `WRITES`,
+`DOCUMENTS`, `MENTIONS`, `COVERS`, `ASSIGNED_TO`, and `RELATED_TO`. The
+bounded LLM layer (`anvay/graph/llm_extractor.py`, §3) may add allowlisted
+facts (`CALLS`, `IMPLEMENTS`, `DOCUMENTS`, `CONSTRAINS`, `DEPENDS_ON`,
+`MENTIONS`, `PART_OF_FLOW`) with confidence and source-line anchors; anything
+outside the allowlist is dropped.
+
+**Ingest-time join.** For each chunk of a resource,
+`graph_node_ids_for_chunk()` collects the stable IDs of extraction nodes
+whose line span overlaps the chunk (whole-resource nodes always match), and
+`entity_ids_for_chunk()` collects nodes whose name appears verbatim in the
+chunk text. `_neighbor_chunk_ids()` precomputes the depth-one hop: for every
+graph edge touching one of the chunk's nodes, resolve the adjacent node back
+to the sibling chunk(s) it anchors to, keep the top few by edge confidence.
+Node stable IDs are resource-scoped in a batch, so only intra-resource edges
+contribute; cross-resource neighbors still require a FalkorDB traverse.
+
+**Query-time join (`evidence.py::graph_local_candidates`).** Deterministic
+query understanding yields anchors. Each anchor (max 8) is resolved via
+`resolve_entity` (max 4 nodes each) into seed stable IDs. Then:
+
+1. *Depth ≤ 1 fast path*: `search_by_graph_nodes` fetches Qdrant chunks
+   tagged with the seed IDs. If those payloads carry `neighbor_chunk_ids`,
+   neighbors are fetched directly by chunk ID and the FalkorDB round-trip is
+   skipped entirely. Absent field (pre-upgrade points) falls through.
+2. *Traverse path* (depth ≥ 2 or fallback): `traverse` walks edges from the
+   seeds (depth clamped to 1–4, bounded node limit, edge types chosen from
+   the query shape), the seed + related node IDs (max 40) are sent back to
+   Qdrant via `search_by_graph_nodes` across both collections, and hits are
+   ranked by graph proximity to the seeds.
+
+Either way the output is source-backed chunks that enter the mixed candidate
+pool as the `graph` channel, carrying `graph_path` and proximity metadata so
+`QueryPlan` can report which relationships were used. The depth-one payload
+fast path does not make Qdrant the graph store: FalkorDB remains the
+canonical graph; the payload fields are a precomputed cache of one specific
+traversal shape.
 
 ## 5. Council — Product Skill
 

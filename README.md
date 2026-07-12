@@ -273,6 +273,124 @@ For a code-level module map and end-to-end traces, use
 [CONTRIBUTING.md](./CONTRIBUTING.md). For API contracts and data models, use
 [ENGINEERING.md](./ENGINEERING.md).
 
+## Inside the Brain: Vector + Graph
+
+Anvay's retrieval quality comes from running two very different stores side by
+side. **Qdrant** holds the *text*: every chunk of code and docs, searchable
+semantically and lexically. **FalkorDB** holds the *structure*: which symbol
+calls which, what a service depends on, which doc explains which module. They
+never query each other. Anvay queries both and joins the results in
+application code, using stable graph node IDs as the join key.
+
+### What each store holds
+
+```mermaid
+flowchart LR
+  classDef ingest  fill:#14142a,stroke:#7C8CFF,color:#e8e8ff
+  classDef vec     fill:#12241d,stroke:#39d3a0,color:#d6fff0
+  classDef gr      fill:#2a1622,stroke:#ff7cae,color:#ffd6e8
+
+  ING["Ingest<br/>per changed resource:<br/>chunk · embed · extract graph"]
+
+  subgraph QD["Qdrant: the text"]
+    direction TB
+    PT["One point per chunk<br/>dense vector + BM25 sparse<br/>(anvay_code · anvay_text)"]
+    PL["Payload<br/>product · file · line span · content<br/>graph_node_ids · neighbor_chunk_ids"]
+  end
+
+  subgraph FK["FalkorDB: the structure"]
+    direction TB
+    ND["Nodes with stable IDs<br/>CodeFile · Function · Class · Module<br/>APIEndpoint · Config · DBTable<br/>Document · JiraTicket · Epic"]
+    ED["Typed edges with confidence<br/>CALLS · IMPORTS · DECLARES · EXPOSES<br/>IMPLEMENTS · DEPENDS_ON · CONSTRAINS<br/>DOCUMENTS · READS · WRITES"]
+  end
+
+  ING --> PT
+  PT --- PL
+  ING --> ND
+  ND --- ED
+  PL -. "graph_node_ids = join key" .- ND
+
+  class ING ingest
+  class PT,PL vec
+  class ND,ED gr
+```
+
+**The vector side.** Every synced file is chunked along code structure
+(tree-sitter function/class boundaries) or doc structure (heading hierarchy).
+Each chunk becomes one Qdrant point with two vectors (a dense embedding for
+semantic similarity and a BM25 sparse vector for exact terms), split across a
+code collection and a text collection, always filtered by `product_id`.
+
+**The graph side.** The same ingest pass extracts a product graph. A
+deterministic tree-sitter layer produces the reliable backbone: files, symbols,
+modules, imports, calls, API routes, config keys, and database tables, plus
+Jira tickets and doc headings from non-code sources. A bounded LLM layer then
+adds only allowlisted relationship types (`CALLS`, `IMPLEMENTS`, `DEPENDS_ON`,
+`CONSTRAINS`, `DOCUMENTS`, `MENTIONS`, `PART_OF_FLOW`), each with a confidence
+score and source-line anchors; anything malformed or off-list is dropped
+rather than trusted.
+
+**The link between them.** Graph node IDs are deterministic and human-readable
+(for example `symbol:<product>:<file>:<name>:Class`), so they stay stable
+across re-syncs. At ingest, every chunk's payload records the graph nodes whose
+source lines overlap it (`graph_node_ids`) and the chunk IDs of its depth-one
+graph neighbors (`neighbor_chunk_ids`). That payload metadata is what lets a
+graph traversal land back on citable source text.
+
+### How a query uses both
+
+```mermaid
+flowchart TD
+  classDef step  fill:#14142a,stroke:#7C8CFF,color:#e8e8ff
+  classDef vec   fill:#12241d,stroke:#39d3a0,color:#d6fff0
+  classDef gr fill:#2a1622,stroke:#ff7cae,color:#ffd6e8
+  classDef gate  fill:#12121A,stroke:#3a3a55,color:#cfcfe6
+  classDef out   fill:#7C8CFF,stroke:#5566dd,color:#0b0b14
+
+  Q["Product-scoped query"] --> U["Understand query<br/>anchors · paths · facets · shape"]
+
+  U --> H["Qdrant hybrid search<br/>dense + BM25 → RRF → rerank"]
+  U --> X["Exact grep"]
+  U --> R["Repo-map symbols"]
+  U --> S["Summaries + approved skills"]
+  U --> F["FalkorDB<br/>resolve anchors → traverse edges"]
+
+  F --> I["Related graph node IDs"]
+  I --> G["Qdrant chunks tagged<br/>with those IDs"]
+
+  H --> P["Pool source-backed candidates"]
+  X --> P
+  R --> P
+  S --> P
+  G --> P
+
+  P --> M["Mixed rerank → dedupe → diversity"]
+  M --> C{"Evidence coverage<br/>sufficient?"}
+  C -->|yes| E["Cited EvidenceSet"]
+  C -->|no| D["DRIFT-lite / coverage repair"]
+  D --> M
+
+  class Q,U,X,R,S,P,M,D step
+  class H,G vec
+  class F,I gr
+  class C gate
+  class E out
+```
+
+Every query fans out across six channels at once. The graph channel resolves
+entities mentioned in the query to graph nodes, walks their relationships
+(bounded depth, edge types chosen from the query shape), and sends the
+resulting node IDs back to Qdrant to fetch the chunks tagged with them. For
+one-hop questions there is a fast path: the precomputed `neighbor_chunk_ids`
+in seed payloads answer the hop without touching FalkorDB at all.
+
+The principle throughout: **the graph navigates, the corpus answers**. Graph
+nodes and edges explain *why* two pieces of evidence are related and steer
+retrieval toward structurally relevant code, but every claim in the final
+evidence set cites a real source chunk with a file and line span. See
+[Vector + Graph Implementation](./ENGINEERING.md#vector--graph-implementation-anvayingestindexerpy-anvaygraph)
+in the engineering spec for the exact contracts.
+
 ## Runtime Flow
 
 From connecting a source to an agent retrieving grounded, cited context — the
@@ -307,8 +425,8 @@ sequenceDiagram
     API->>SRC: Clone repo / open FS / connect Jira · Confluence · MCP
     SRC->>ING: Stream resource refs + contents
     ING->>REG: Load manifest + compute delta
-    ING->>QD: Upsert changed chunks (dense + BM25)
-    ING->>GR: Upsert graph nodes/edges + community summaries
+    ING->>QD: Upsert changed chunks + graph summaries (dense + BM25)
+    ING->>GR: Upsert graph nodes and edges
     ING->>QD: Delete stale chunk IDs after upsert
     ING->>REG: Persist manifest + sync run counts
     API->>RM: Save combined symbol outline
