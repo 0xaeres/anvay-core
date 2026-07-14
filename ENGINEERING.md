@@ -1,4 +1,4 @@
-# Anvay — Engineering Reference
+# Anvay: Engineering Reference
 
 The formal spec. Data model, pipeline shapes, API contracts. Code-first; if a
 behaviour diverges from this doc, the code is the source of truth and the doc
@@ -92,7 +92,7 @@ class Skill(BaseModel):
 
 `tier`/`parent`/`related`/`coverage` are carried on every `Skill` and
 `SkillProposal`, but the current council (§5) only ever emits `tier =
-"product_master"` with no parent — the multi-tier hierarchy these fields
+"product_master"` with no parent; the multi-tier hierarchy these fields
 describe (application/domain/interface/tech_stack/quality_security children of
 a product master) is schema-ready but not produced by any pipeline today. Don't
 assume a UI or API surfaces child tiers until the council actually emits them.
@@ -187,7 +187,7 @@ class Chunk(BaseModel):
         return self.content
 ```
 
-Chunks are content-addressed via UUID5 so re-ingest is idempotent — the same
+Chunks are content-addressed via UUID5 so re-ingest is idempotent: the same
 file at the same lines produces the same chunk id every time, and re-indexing
 overwrites the same Qdrant point.
 
@@ -289,7 +289,7 @@ Configured languages:
 | TypeScript, TSX, JavaScript | `comment` | TSDoc / JSDoc `/** … */` and `//` line-blocks |
 | Go | `comment` | Go doc-comments are `//` lines immediately preceding an exported declaration |
 | Rust | `line_comment`, `block_comment` | `///` rustdoc, `//!` inner doc, `/** */` variants |
-| Python | *(empty)* | Docstrings are string literals inside the function/class node — already in the span |
+| Python | *(empty)* | Docstrings are string literals inside the function/class node, already in the span |
 
 When adding a new language (see CONTRIBUTING.md recipe), set
 `doc_comment_nodes` to the tree-sitter node types your grammar uses for
@@ -401,8 +401,8 @@ dense + BM25 -> RRF -> configured reranker.
 
 Qdrant collections (per `anvay.yaml`):
 
-- `anvay_code` — code chunks, dense + sparse vectors
-- `anvay_text` — doc chunks, dense + sparse vectors
+- `anvay_code`: code chunks, dense + sparse vectors
+- `anvay_text`: doc chunks, dense + sparse vectors
 
 Both collections filter payloads on `product_id`; all retrieval paths include
 that filter. Sparse vectors come from BM25 (`Qdrant/bm25` via fastembed). One
@@ -631,7 +631,7 @@ fast path does not make Qdrant the graph store: FalkorDB remains the
 canonical graph; the payload fields are a precomputed cache of one specific
 traversal shape.
 
-## 5. Council — Product Skill
+## 5. Council: Product Skill
 
 `anvay/council/graph.py`. LangGraph state graph for the single product skill:
 
@@ -678,7 +678,7 @@ class CouncilState(TypedDict, total=False):
 Planner retrieves the initial evidence, assembles the deterministic KB
 `context_pack` (repo map + graph/structural summaries built at ingest), and
 creates exactly one `product_master` skill outline. There is **no expert
-fanout** — the Synthesizer builds the full skill from the planner's context
+fanout**: the Synthesizer builds the full skill from the planner's context
 pack in a single LLM call. The synthesizer model resolves
 `models.synthesizer → models.planner → models.council`.
 
@@ -703,9 +703,9 @@ entry.
 
 OpenAI-compatible (`/chat/completions`) async client. Three methods:
 
-- `chat(messages, *, json_mode=False)` — single call.
-- `chat_json(messages)` — adds `response_format: json_object`.
-- `chat_markdown(messages, *, max_continuations=2)` — the aider/cursor
+- `chat(messages, *, json_mode=False)`: single call.
+- `chat_json(messages)`: adds `response_format: json_object`.
+- `chat_markdown(messages, *, max_continuations=2)`: the aider/cursor
   pattern. On `finish_reason == "length"` resends the partial as an
   assistant message + `"Continue exactly where you stopped"` user message,
   concatenates the chunks. Token usage is summed.
@@ -725,9 +725,9 @@ pub/sub hub (`HUB`) so SSE clients see live deliberation + cost + critique
 
 SQLite. Two tables:
 
-- `proposals` — one row per `SkillProposal`. Status transitions:
+- `proposals`: one row per `SkillProposal`. Status transitions:
   `pending → approved | rejected | edited`.
-- `sessions` — one row per council run. Carries `deliberation_js`,
+- `sessions`: one row per council run. Carries `deliberation_js`,
   `costs_js`, `proposal_id`, `started_at`, `completed_at`, `status`.
 
 The `org_proposals` + `change_requests` tables from the old org-library
@@ -737,13 +737,13 @@ flow are gone.
 
 `anvay/skills/approval.py::approve_proposal()` is the source of truth. Both
 the API (`POST /proposals/{id}/approve`) and the CLI call it. Idempotent
-within a session — re-approving a row already at `approved` is a no-op.
+within a session: re-approving a row already at `approved` is a no-op.
 
 Flow:
 
 1. Look up the queue row by `proposal_id`.
 2. Build a `Skill` from the row's fields (no separate `kind` / `scope` from
-   the old org-library model — see §13; the current council only produces
+   the old org-library model (see §13); the current council only produces
    `tier="product_master"`) with `Provenance(council_session, validated_by,
    validated_at, evidence_chunks, adversary_critique, revision_count)`.
 3. `SkillStore.save(skill)` writes `SKILL.md` under
@@ -773,10 +773,10 @@ uv run anvay-mcp-server --product <your-product-id>
 
 ### Resources
 
-- `anvay://meta-skill` — Jinja-rendered "how to use Anvay" doc.
-- `anvay://hierarchy` — flat list of all skills for the active product.
-- `anvay://skills/<name>` — markdown body for a named skill.
-- `anvay://corpus/<product>` — counts (chunks, sources) for the product.
+- `anvay://meta-skill`: Jinja-rendered "how to use Anvay" doc.
+- `anvay://hierarchy`: flat list of all skills for the active product.
+- `anvay://skills/<name>`: markdown body for a named skill.
+- `anvay://corpus/<product>`: counts (chunks, sources) for the product.
 
 ## 8. API Contracts (`anvay/api/routes/`)
 
@@ -820,7 +820,7 @@ resources use canonical `resource_uri` values like `github:owner/repo/path.py`;
 temp clone directories never enter Qdrant or the manifest. A multi-repo source
 gets one manifest `source_key` per repo, so resyncing one repo does not mark
 the others removed. Sync stores aggregate `resourceCount` and emits one
-combined repo map after successful ingest (warn on failure — the council still
+combined repo map after successful ingest (warn on failure; the council still
 runs without one).
 
 Important SSE stages: `read`, `diff`, `skip`, `chunk`, `enrich`, `embed`,
@@ -917,7 +917,7 @@ models:
     model: google/gemma-4-26B-A4B-it
     api_key: ${LLM_API_KEY}
     base_url: https://api.deepinfra.com/v1/openai
-  # Optional per-role overrides — same ModelCfg shape as `council`. Omit a role
+  # Optional per-role overrides: same ModelCfg shape as `council`. Omit a role
   # to inherit it. Resolution: planner/evaluator/repair -> council;
   # synthesizer -> planner -> council.
   #   planner:     { provider: ..., model: ..., api_key: ..., base_url: ... }
@@ -972,7 +972,7 @@ storage:
   council_checkpoint: ./data/council.sqlite
 ```
 
-`<state_dir>` is `storage.proposal_queue.parent` — also holds
+`<state_dir>` is `storage.proposal_queue.parent`; also holds
 `repomaps/<product_id>.json` and `registry.db`.
 
 Changing embedding provider/model/dim/instruction profile or Qdrant
@@ -989,8 +989,8 @@ background enrichment when enabled.
 
 The unified eval harness (`anvay eval run`) is the definitive quality gate.
 It evaluates the full production retrieval path
-(`anvay/retrieval/evidence.py::retrieve_evidence`) — hybrid + grep + repo-map
-+ graph-local traversal + summaries + skills — not the low-level primitive.
+(`anvay/retrieval/evidence.py::retrieve_evidence`): hybrid + grep + repo-map
++ graph-local traversal + summaries + skills, not the low-level primitive.
 
 ```bash
 uv run anvay eval run --products guava,zod                # all products, full golden set
@@ -1017,7 +1017,7 @@ Two classes of metric gate:
 
 **LLM-judged (gated at n ≥ ~15).** Measured at n=15 against the guava golden
 set after the doc-comment attachment fix (run 20260630, HQE off). At n=5 these
-swing ±0.2 between identical runs; they become stable — and gateable — once n
+swing ±0.2 between identical runs; they become stable, and gateable, once n
 is large enough. Faithfulness and context_precision remain diagnostic only:
 faithfulness is typically near-ceiling (≥ 0.95) and adds little signal;
 context_precision is noisy even at larger n.
@@ -1035,7 +1035,7 @@ and more products are measured at larger n.
 
 `answer_correctness` captures whether the synthesized answer matches the
 reference. Low scores on conceptual queries ("what is X?") indicate that
-retrieved chunks contain no prose description of the concept — only
+retrieved chunks contain no prose description of the concept, only
 implementation detail. The leading doc-comment attachment (`_LangCfg.
 doc_comment_nodes`) is the primary mechanism that keeps this above its floor:
 it ensures the class javadoc / JSDoc / rustdoc lands in the same chunk as
@@ -1070,8 +1070,8 @@ the file path (and optionally overlaps a `line_start..line_end` range).
 
 Two metrics, both reported by `EvalReport.render()`:
 
-- **recall@K** — fraction of queries with ≥ 1 match in the top-K.
-- **MRR** — mean reciprocal rank of the first match per query.
+- **recall@K**: fraction of queries with ≥ 1 match in the top-K.
+- **MRR**: mean reciprocal rank of the first match per query.
 
 Floors live in `queries.json._meta`:
 
@@ -1088,7 +1088,7 @@ pytest -m eval                                    # via pytest, skips if infra a
 uv run python -m tests.eval.harness --product <pid>  # standalone CLI
 ```
 
-The CLI exits non-zero when either floor is violated — drops into CI
+The CLI exits non-zero when either floor is violated, so it drops into CI
 cleanly. Re-run after any change to chunking, optional enrichment, hybrid,
 rerank, repo map, graph extraction, exact grep, or evidence assembly.
 
@@ -1127,9 +1127,9 @@ by more than `0.05` from that baseline.
 This manual runner uses the same golden set and retrieves top 10 contexts. It
 reports:
 
-- **nDCG@10** — ranking quality for expected files in the retrieved list.
-- **Recall@10** — expected-file coverage in the top 10.
-- **Pairwise preference accuracy** — for items with an `anti_answer`, the judge
+- **nDCG@10**: ranking quality for expected files in the retrieved list.
+- **Recall@10**: expected-file coverage in the top 10.
+- **Pairwise preference accuracy**: for items with an `anti_answer`, the judge
   chooses between the expected answer and anti-answer using retrieved contexts.
 
 Current gates:
@@ -1145,14 +1145,14 @@ retrieval behavior or expanding `evals/golden.jsonl`.
 
 ## 11. Storage
 
-- **Skills repo** — single Git repo, one per org, cloned to
+- **Skills repo**: single Git repo, one per org, cloned to
   `hierarchy_root`. The first commit comes from the council's first
   approval; setup creates the repo empty.
-- **Derived retrieval index** — Qdrant dense + sparse collections.
-- **SQLite** — `proposals` + `sessions` (`storage.proposal_queue`);
+- **Derived retrieval index**: Qdrant dense + sparse collections.
+- **SQLite**: `proposals` + `sessions` (`storage.proposal_queue`);
   `registry.db` (products, users, runtime sources, sync manifests, sync runs,
   setup KV).
-- **Local files** — `<state_dir>/repomaps/<product_id>.json` per product.
+- **Local files**: `<state_dir>/repomaps/<product_id>.json` per product.
 
 Product deletion is intentionally guarded behind the CLI:
 
@@ -1179,21 +1179,21 @@ derived index cleanup for offline/local-only recovery.
 - **FalkorDB** (Redis-protocol graph) for the derived product graph;
   tree-sitter + a bounded, validated LLM fact layer populate it.
 - **DeepInfra Qwen3** embeddings/reranker are the default low-resource dev
-  profile. Alternative providers — including local llama.cpp servers — are
+  profile. Alternative providers, including local llama.cpp servers, are
   supported through the same OpenAI-compatible `ModelCfg` by setting
   `provider`, `model`, `base_url`, and `dim` in `anvay.yaml`.
 - **DeepInfra** (OpenAI-compatible) for council LLMs and optional enrichment in
   dev. Swap the `provider` + `base_url` to point at any compatible endpoint.
 - **MCP** (stdio transport) for the agent-facing skill server.
 
-## 13. Cut layers — kept out by design
+## 13. Cut layers: kept out by design
 
 The following were in earlier iterations and have been removed. Don't
 reintroduce them without a written justification + a measured win on the
 eval set.
 
 - **Assistant layer** (Jira/Confluence conversational + action loop)
-- **Neo4j** (the graph backend — replaced by FalkorDB; the GraphRAG layer
+- **Neo4j** (the graph backend, replaced by FalkorDB; the GraphRAG layer
   itself is active, see §3–§4)
 - **HyDE, query classifier, semantic cache, circuit breakers, prompt-
   injection guard** (retrieval over-engineering)
@@ -1202,7 +1202,7 @@ eval set.
 - **Skill composition** (`composes_with`, SkillKind master / product_domain,
   SkillScope product / org)
 - **Multi-agent council** (Archaeologist + Domain Expert + Synthesizer +
-  Adversary, and the later architect/domain/quality expert fanout — collapsed
+  Adversary, and the later architect/domain/quality expert fanout, collapsed
   to a single synthesis call: planner → synthesizer → eval ⇄ repair →
   finalizer)
 - **Change-gated cadence, weekly cap, override flag, corrections compaction**

@@ -44,12 +44,12 @@ the Jira board, the Confluence space, the README nobody updated, and the three
 senior engineers who answer the same questions in Slack every week. New
 contributors can't find the starting line. Maintainers re-explain the same
 architecture. Docs drift out of sync with the code they describe. And your AI
-coding agents — the ones you now trust to write real changes — dive into
+coding agents (the ones you now trust to write real changes) dive into
 unfamiliar code with **none** of that context. They don't know your conventions,
 your blast radius, or why that "obvious" refactor will page someone at 3am.
 
-Anvay exists to end that. It takes everything your product knows — scattered
-across systems and people — and turns it into a single, queryable, **cited**
+Anvay exists to end that. It takes everything your product knows, scattered
+across systems and people, and turns it into a single, queryable, **cited**
 brain that agents and humans consume the same way.
 
 Not a search box. Not another wiki. A retrieval engine that reasons over code,
@@ -65,30 +65,30 @@ surface area of what your product actually knows:
 |---|---|
 | **GitHub repositories** | Code, structure, symbols, and doc-comments across every language you ship. |
 | **Local filesystems** | Monorepos, notes, and anything on disk you point it at. |
-| **Jira** | The *why* behind the work — decisions, constraints, and history that never made it into code. |
+| **Jira** | The *why* behind the work: decisions, constraints, and history that never made it into code. |
 | **Confluence** | Architecture docs, runbooks, and the long-form knowledge your wiki was supposed to preserve. |
 | **Remote MCP servers** | Any Streamable-HTTP MCP source, so the brain grows with your toolchain. |
 
-A live **watch daemon** keeps the brain current — it re-syncs on update events so
+A live **watch daemon** keeps the brain current: it re-syncs on update events so
 what agents retrieve reflects reality, not last quarter's snapshot.
 
 Anvay calls each isolated knowledge boundary a **product**. For open-source
 users, a product is usually one project or a tightly related set of repos. The
 same engine scales cleanly to internal engineering products without changing the
-core model — every chunk, proposal, session, skill, and query is scoped by
+core model: every chunk, proposal, session, skill, and query is scoped by
 `product_id`, and there is **no cross-product read path**. Your brains never leak
 into each other.
 
-## What makes it hard — and why it matters
+## What makes it hard, and why it matters
 
 Anyone can stuff files into a vector database. Anvay is the part that's actually
 difficult, done right:
 
 - **Retrieval that doesn't lie.** A single naive similarity search misses exact
   symbols, drowns precise matches in "semantically adjacent" noise, and can't
-  trace impact. Anvay runs **six complementary channels** — dense + BM25 hybrid
+  trace impact. Anvay runs **six complementary channels** (dense + BM25 hybrid
   search, exact indexed grep, tree-sitter repo-map symbol lookup, graph-local
-  traversal, community summaries, and approved-skill memory — then mixes them
+  traversal, community summaries, and approved-skill memory), then mixes them
   with cross-encoder reranking, channel quotas, file diversity, and a coverage
   gate. One call: `retrieve_evidence()`.
 - **A knowledge graph, not just chunks.** Tree-sitter extraction plus a bounded,
@@ -103,7 +103,7 @@ difficult, done right:
   disk or in Git until an authenticated human approves it. Your brain is curated,
   not hallucinated.
 - **Quality you can prove.** The retrieval and answer paths are gated by
-  continuous evaluation — recall, MRR, nDCG, faithfulness, answer correctness —
+  continuous evaluation (recall, MRR, nDCG, faithfulness, answer correctness)
   with hard floors that fail CI. "Better" is a number here, not a vibe.
 
 ## Product quality, measured
@@ -148,7 +148,7 @@ latency diagnostics independently. The metrics of eval results speak for themsel
   stale cleanup, and deletes removed resources from derived indexes.
 - **Measured retrieval.** `retrieve_evidence()` mixes dense + BM25, exact grep,
   repo-map symbols, graph-local paths, community summaries, and approved skills
-  via cross-encoder reranking — gated by continuous retrieval and
+  via cross-encoder reranking, gated by continuous retrieval and
   answer-quality evals across Zod and Guava.
 - **Portable output.** Approved skills are ordinary Agent Skills served over MCP,
   so Claude, Codex, Cursor, Continue, and any other client consume the same
@@ -190,7 +190,7 @@ flowchart LR
     PIPE["Delta ingest pipeline<br/>chunk · enrich · embed<br/>BM25 · graph · repo map"]
   end
 
-  subgraph DRV["Derived brain — serving indexes"]
+  subgraph DRV["Derived brain: serving indexes"]
     direction TB
     QD["Qdrant<br/>code + text<br/>dense + BM25"]
     FK["FalkorDB<br/>product graph"]
@@ -393,7 +393,7 @@ in the engineering spec for the exact contracts.
 
 ## Runtime Flow
 
-From connecting a source to an agent retrieving grounded, cited context — the
+From connecting a source to an agent retrieving grounded, cited context: the
 full loop, including the live daemon that keeps the brain current.
 
 ```mermaid
@@ -415,7 +415,7 @@ sequenceDiagram
   participant AG as MCP client
 
   rect rgb(20,20,42)
-    Note over User,RM: 1 — Connect & sync a source
+    Note over User,RM: 1 · Connect & sync a source
     User->>UI: Create product + add source
     UI->>API: POST /products · POST /sources
     API->>REG: Store product, membership, encrypted config
@@ -435,7 +435,7 @@ sequenceDiagram
   end
 
   rect rgb(18,36,29)
-    Note over User,QUE: 2 — Draft a skill (council)
+    Note over User,QUE: 2 · Draft a skill (council)
     User->>UI: Run council
     UI->>API: POST /council/sessions
     API->>QUE: Create session + load prior signals
@@ -448,7 +448,7 @@ sequenceDiagram
   end
 
   rect rgb(20,20,42)
-    Note over User,SK: 3 — Human approval
+    Note over User,SK: 3 · Human approval
     User->>UI: Review + approve
     UI->>API: POST /proposals/{id}/approve
     API->>QUE: Load pending proposal
@@ -458,7 +458,7 @@ sequenceDiagram
   end
 
   rect rgb(30,22,34)
-    Note over AG,QUE: 4 — Agents consume the brain
+    Note over AG,QUE: 4 · Agents consume the brain
     AG->>MCP: find_skills / get_skill
     MCP->>SK: Load approved product skills
     AG->>MCP: query_code / grep / hybrid_search
@@ -474,7 +474,7 @@ sequenceDiagram
 ## Product Skill Lifecycle
 
 Every skill Anvay serves earns its place. Drafts are evaluated deterministically
-and repaired before a human ever sees them — incomplete skills never reach the
+and repaired before a human ever sees them; incomplete skills never reach the
 review queue.
 
 ```mermaid
@@ -505,7 +505,7 @@ flowchart TD
 
 The council emits one Markdown product skill, not JSON. Incomplete drafts never
 enter the review queue. The expert fanout (architect, domain_expert,
-quality_expert) is not part of the current pipeline — the Synthesizer builds the
+quality_expert) is not part of the current pipeline: the Synthesizer builds the
 full skill in a single LLM call from the Planner's context pack. See
 [ENGINEERING.md](./ENGINEERING.md) for the full council contract.
 
